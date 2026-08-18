@@ -203,8 +203,30 @@ def convert_tool_call(tc):
     return fn["name"], args, tool_call_to_action(fn["name"], args)
 
 
+def _assistant_with_tool_calls(tc):
+    """按 OpenAI tool-call 协议构造 assistant 消息（必须携带 tool_calls 字段）。"""
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": tc.get("id", ""),
+                "type": "function",
+                "function": {
+                    "name": tc["function"]["name"],
+                    "arguments": tc["function"].get("arguments", "{}") or "{}",
+                },
+            }
+        ],
+    }
+
+
 def run_arm(task, arm, llm, env, out_path):
-    """跑一条轨迹并落盘。返回 record dict。"""
+    """跑一条轨迹并落盘。返回 record dict。
+
+    消息协议与参考项目一致：system + user(仅 Instruction)，之后
+    assistant(tool_calls) -> tool(observation) 交替；不注入初始页面文本。
+    """
     record = {
         "task_id": task["task_id"],
         "arm": arm,
@@ -214,11 +236,10 @@ def run_arm(task, arm, llm, env, out_path):
         "terminal": {"done": False, "reward": None},
     }
     tools = tool_schemas_for(arm)
-    obs = env.reset(task["task_id"])
+    env.reset(task["task_id"])
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT[arm]},
         {"role": "user", "content": "Instruction: " + task["under_query"]},
-        {"role": "assistant", "content": "（当前页面）\n" + obs},
     ]
 
     for step_i in range(MAX_STEPS):
@@ -233,8 +254,12 @@ def run_arm(task, arm, llm, env, out_path):
 
         tc = tool_calls[0]
         name = tc["function"]["name"]
+        assistant_msg = _assistant_with_tool_calls(tc)
+
         if name == "ask_user":
             if record["clarify_turns"] >= MAX_CLARIFY:
+                record["terminal"]["max_clarify"] = True
+                messages.append(assistant_msg)
                 messages.append({"role": "tool", "tool_call_id": tc["id"],
                                  "content": "不能再追问了，请基于现有信息继续购物。"})
                 continue
@@ -242,6 +267,7 @@ def run_arm(task, arm, llm, env, out_path):
             args = json.loads(tc["function"].get("arguments", "{}") or "{}")
             question = args.get("question", "")
             answer, _info = answer_question(question, task.get("fake_profile", {}))
+            messages.append(assistant_msg)
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": answer})
             record["steps"].append({"step": step_i, "kind": "ask", "question": question, "answer": answer})
             continue
@@ -249,13 +275,14 @@ def run_arm(task, arm, llm, env, out_path):
         try:
             action = convert_tool_call(tc)[2]
         except Exception as exc:  # noqa: BLE001
+            messages.append(assistant_msg)
             messages.append({"role": "tool", "tool_call_id": tc["id"],
                              "content": f"工具调用无法转换（{exc}），请换一个合法动作。"})
             record["steps"].append({"step": step_i, "kind": "invalid", "detail": str(exc)})
             continue
 
         obs, done = env.step(action)
-        messages.append({"role": "assistant", "content": f"{name}({tc['function'].get('arguments')})"})
+        messages.append(assistant_msg)
         messages.append({"role": "tool", "tool_call_id": tc["id"], "content": obs})
         record["steps"].append({"step": step_i, "kind": "action", "action": action})
         if done:
@@ -269,18 +296,34 @@ def run_arm(task, arm, llm, env, out_path):
     return record
 
 
+def _load_reference_system_prompt():
+    """读取参考 SFT 数据里真实使用的 system prompt（基线与训练完全一致）。"""
+    try:
+        with open(REPO / "data" / "sft" / "train.jsonl", "r", encoding="utf-8") as f:
+            rec = json.loads(f.readline())
+        for m in rec.get("messages", []):
+            if m.get("role") == "system":
+                return m["content"]
+    except Exception:
+        return None
+    return None
+
+
+_REF_SYSTEM = _load_reference_system_prompt()
+_FALLBACK = (
+    "你是购物 Agent，负责在 ShopSimulator 中替用户完成购物任务。"
+    "只调用提供的工具与商店交互，目标是购买最符合需求的商品，无法满足时合理结束。"
+)
+_CLARIFY_APPENDIX = (
+    "\n【探针附加】用户需求可能不完整。若需求缺少预算/品牌/颜色/规格等关键信息，"
+    "可先调用 ask_user 向用户提问，最多 2 次；之后根据回答继续购物，不要过度提问。"
+)
 SYSTEM_PROMPT = {
-    "baseline": (
-        "你是购物 Agent，负责在 ShopSimulator 中替用户完成一次购物任务。"
-        "用户需求只会在开始时给出一句。不得向用户追问、确认；只调用提供的工具与商店交互。"
-        "目标是找到整体最符合需求的商品并购买；经过有效探索仍无法完成时合理结束。"
-    ),
-    "clarify": (
-        "你是购物 Agent，负责在 ShopSimulator 中替用户完成一次购物任务。"
-        "用户需求可能不完整。如果需求存在明显缺失（如预算、品牌、颜色、规格不明），"
-        "你可以先调用 ask_user 向用户提 1~2 个澄清问题，再根据回答继续搜索与购买。"
-        "澄清后应基于回答完成购物；不要过度追问。"
-    ),
+    "baseline": _REF_SYSTEM or _FALLBACK,
+    "clarify": (_REF_SYSTEM or _FALLBACK).replace(
+        "不得向用户追问、确认",
+        "可以视需要向用户提问澄清",
+    ) + _CLARIFY_APPENDIX,
 }
 
 def main():
