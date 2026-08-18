@@ -1,367 +1,613 @@
-# -*- coding: utf-8 -*-
-"""阶段 3：双臂运行器（基线 vs 1~2 轮澄清）。
+"""Probe B V2 controlled runner: No-Ask versus fixed Oracle-Ask.
 
-用法：
-  python probes/runner.py --mode mock            # 离线冒烟（不依赖环境/API）
-  python probes/runner.py --mode real --limit 5  # 真实运行（需 ShopSimulator 服务 + LLM API）
+Examples:
+  python probes/runner.py --mode validate
+  python probes/runner.py --mode mock --run-id mock-v2
+  python probes/runner.py --mode real --run-id oracle-v2-smoke --limit-pairs 1 --allow-real-api
 
-设计：
-  - EnvAdapter 抽象 reset/step，真实模式包装参考项目的 ShopAgentEnv；
-  - LLM 抽象 complete(messages, tools)；澄清臂多一个 ask_user 工具，由 harness
-    拦截后调用 user_simulator 回答（不进入环境）。
+Real API execution is deliberately gated by ``--allow-real-api``. The runner
+never exposes an ask tool: the Oracle arm receives one frozen dialogue before
+the first model-generated shopping action.
 """
+
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import random
+import subprocess
 import sys
-import time
+from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Mapping
+from urllib.request import Request, urlopen
+
 
 REPO = Path(__file__).resolve().parents[1]
+PROBE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(PROBE_DIR))
 
-from user_simulator import answer_question  # noqa: E402
-
-MAX_STEPS = 35
-MAX_CLARIFY = 2
-
-ASK_USER_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "ask_user",
-        "description": "向用户提出一个澄清问题以获取需求中缺失的信息（如预算、品牌、颜色、规格）。最多使用 2 次。",
-        "parameters": {
-            "type": "object",
-            "properties": {"question": {"type": "string", "description": "要问用户的中文问题"}},
-            "required": ["question"],
-            "additionalProperties": False,
-        },
-    },
-}
+from shopping_grpo.environment.client import ShopAgentEnv  # noqa: E402
+from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS  # noqa: E402
+from shopping_grpo.evaluation.rollout import (  # noqa: E402
+    OpenAIChatClient,
+    SYSTEM_PROMPT,
+    collect_for_task,
+)
+from task_schema import (  # noqa: E402
+    DEFAULT_TASKS,
+    canonical_hash,
+    load_tasks,
+    validate_tasks,
+)
 
 
-class EnvAdapter:
-    """reset(task_id)->observation_text ; step(action)->(observation_text, done)。"""
+ARMS = ("no_ask", "oracle_ask")
+DEFAULT_SEED = 20260818
+DEFAULT_MAX_STEPS = 35
+DEFAULT_MAX_LLM_CALLS = 700
+DEFAULT_OUTPUT_ROOT = PROBE_DIR / "outputs" / "v2"
+TRAJECTORIES_FILE = "trajectories.jsonl"
+MANIFEST_FILE = "manifest.json"
+
+
+class CallBudgetExceeded(RuntimeError):
+    """The configured global LLM request cap has been reached."""
+
+
+class CallBudget:
+    def __init__(self, maximum: int, used: int = 0, on_change=None):
+        self.maximum = int(maximum)
+        self.used = int(used)
+        self.on_change = on_change
+        if self.maximum < 1:
+            raise ValueError("max_llm_calls must be positive")
+        if not 0 <= self.used <= self.maximum:
+            raise ValueError("persisted llm_call_count is outside the configured budget")
+
+    def consume(self) -> None:
+        if self.used >= self.maximum:
+            raise CallBudgetExceeded(
+                f"LLM call budget exhausted ({self.used}/{self.maximum}); no request was sent"
+            )
+        self.used += 1
+        if self.on_change is not None:
+            self.on_change(self.used)
+
+
+class CappedTransport:
+    """Count every HTTP attempt, including retries inside OpenAIChatClient."""
+
+    def __init__(self, budget: CallBudget):
+        self.budget = budget
+
+    def __call__(self, url, payload, headers, timeout):
+        self.budget.consume()
+        request = Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+class InstructionOverrideEnv:
+    """Keep the original hidden TaskFacts while replacing only visible user text."""
+
+    def __init__(self, inner, *, visible_instruction: str, expected_clear_query: str):
+        self.inner = inner
+        self.visible_instruction = str(visible_instruction)
+        self.expected_clear_query = str(expected_clear_query)
 
     def reset(self, task_id):
-        raise NotImplementedError
+        result = dict(self.inner.reset(task_id))
+        original = str(result.get("instruction") or "")
+        if original and _strip_instruction_prefix(original) != self.expected_clear_query.strip():
+            raise ValueError(
+                "ShopSimulator instruction differs from frozen clear_query for "
+                f"task_id={task_id}"
+            )
+        result["environment_instruction"] = original
+        result["instruction"] = self.visible_instruction
+        return result
 
     def step(self, action):
-        raise NotImplementedError
+        return self.inner.step(action)
 
     def release(self):
-        pass
-
-    def last_reward(self):
-        """终端 reward（真实环境提供；mock 返回 None）。"""
-        return None
+        return self.inner.release()
 
 
-class FakeEnv(EnvAdapter):
-    """离线冒烟用：返回最小合法 observation，让 MockLLM 能走完整循环。"""
+class FakeShopEnv:
+    """Offline ShopSimulator substitute used by the full V2 mock run."""
 
+    def __init__(self, task: Mapping[str, Any]):
+        self.task = task
+        self.released = False
+
+    def reset(self, task_id):
+        return {"env_idx": 0, "instruction": f"Instruction: {self.task['clear_query']}"}
+
+    def step(self, action):
+        if action == "search[探针测试商品]":
+            return {
+                "instruction": (
+                    "[SHOPPING_OBSERVATION_V2]\npage_type: search_results\n"
+                    "1|100000000001|1.0|测试品牌|测试品类|测试属性|探针测试商品\n"
+                    '可点击的按钮: ["100000000001"]'
+                ),
+                "reward": 0.0,
+                "done": False,
+            }
+        if action == "click[100000000001]":
+            return {
+                "instruction": (
+                    "[SHOPPING_OBSERVATION_V2]\npage_type: product_detail\n"
+                    "asin: 100000000001\nprice: 1.0\n"
+                    '可点击的按钮: ["Buy Now"]'
+                ),
+                "reward": 0.0,
+                "done": False,
+            }
+        if action == "click[Buy Now]":
+            purchase = _mock_purchase(self.task)
+            detail = {
+                "reward_version": "shopsimulator-reward-v3",
+                "reward_type": "gold_purchase",
+                "reward_valid": True,
+                "purchase_success": True,
+                "termination_reason": "gold_purchase",
+                "terminal_utility": 1.0,
+                "weighted_score": 1.0,
+            }
+            return {
+                "instruction": "done",
+                "reward": 1.0,
+                "done": True,
+                "over": True,
+                "purchase": purchase,
+                "reward_detail": detail,
+                "termination_reason": "gold_purchase",
+            }
+        raise AssertionError(f"unexpected mock action: {action}")
+
+    def release(self):
+        self.released = True
+
+
+class MockClient:
     def __init__(self):
-        self.page = "search_home"
-        self.done = False
-
-    def _obs(self):
-        footer = "搜索功能是否可用: True\n可点击的按钮: [\"search\"]"
-        if self.page == "search_home":
-            return f"[SHOPPING_OBSERVATION_V2]\npage_type: search_home\n{footer}"
-        return f"[SHOPPING_OBSERVATION_V2]\npage_type: search_results\n{footer}"
-
-    def reset(self, task_id):
-        self.page = "search_home"
-        self.done = False
-        return self._obs()
-
-    def step(self, action):
-        if action.startswith("search["):
-            self.page = "search_results"
-        elif "Buy Now" in action or action.startswith("click[Buy Now]"):
-            self.done = True
-        elif action.startswith("click["):
-            self.page = "product_detail"
-        elif action.startswith("finish"):
-            self.done = True
-        return self._obs(), self.done
-
-
-class RealEnv(EnvAdapter):
-    """包装参考项目 ShopAgentEnv；渲染 observation 供模型读取。"""
-
-    def __init__(self, base_url="http://127.0.0.1:5700", timeout=60):
-        from shopping_grpo.environment.client import ShopAgentEnv
-        from shopping_grpo.environment.observation import render_structured_observation
-
-        self._client = ShopAgentEnv(base_url=base_url, timeout=timeout)
-        self._render = render_structured_observation
-        self._last = None
-
-    def reset(self, task_id):
-        result = self._client.reset(task_id)
-        state = result.get("observation_state")
-        if state is not None:
-            return self._render(state)
-        # 兜底：直接返回原始 result 的文本表示
-        return json.dumps(result, ensure_ascii=False)
-
-    def step(self, action):
-        result = self._client.step(action)
-        self._last = result
-        state = result.get("observation_state")
-        obs = self._render(state) if state is not None else json.dumps(result, ensure_ascii=False)
-        return obs, bool(result.get("done", False))
-
-    def release(self):
-        self._client.release()
-
-    def last_reward(self):
-        if not self._last:
-            return None
-        return self._last.get("reward")
-
-
-class BaseLLM:
-    """LLM 抽象：complete(messages, tools) -> list[tool_call_dict] 或 None。"""
+        self.responses = [
+            _assistant_tool("search_products", {"query": "探针测试商品"}, "mock_search"),
+            _assistant_tool("open_product", {"asin": "100000000001"}, "mock_open"),
+            _assistant_tool("buy_now", {}, "mock_buy"),
+        ]
 
     def complete(self, messages, tools):
-        raise NotImplementedError
+        if not self.responses:
+            return {"role": "assistant", "content": "mock exhausted"}
+        return self.responses.pop(0)
 
 
-class MockLLM(BaseLLM):
-    """离线冒烟策略：ask(澄清臂) -> search -> buy，带状态计数推进。"""
+def build_arm_inputs(task: Mapping[str, Any], arm: str) -> tuple[list[dict], str]:
+    """Return prompt prefix and the final user message supplied by reset."""
 
-    def __init__(self, arm):
-        self.arm = arm
-        self._n = 0
-
-    def complete(self, messages, tools):
-        self._n += 1
-        tool_names = [t["function"]["name"] for t in tools]
-        if self.arm == "clarify" and self._n == 1 and "ask_user" in tool_names:
-            return [{"id": "ask_1", "type": "function",
-                     "function": {"name": "ask_user", "arguments": json.dumps({"question": "请问您的预算大概多少？"}, ensure_ascii=False)}}]
-        if "search_products" in tool_names and self._n <= 2:
-            return [{"id": "s1", "type": "function",
-                     "function": {"name": "search_products", "arguments": json.dumps({"query": "默认查询"}, ensure_ascii=False)}}]
-        if "buy_now" in tool_names:
-            return [{"id": "b1", "type": "function",
-                     "function": {"name": "buy_now", "arguments": "{}"}}]
-        return None
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm: {arm}")
+    system = {"role": "system", "content": SYSTEM_PROMPT}
+    under = "Instruction: " + str(task["under_query"])
+    if arm == "no_ask":
+        return [system], under
+    oracle = task["oracle_turn"]
+    return (
+        [
+            system,
+            {"role": "user", "content": under},
+            {"role": "assistant", "content": str(oracle["question"])},
+        ],
+        str(oracle["answer"]),
+    )
 
 
-class RealLLM(BaseLLM):
-    """OpenAI 兼容 chat completions 客户端。"""
-
-    def __init__(self, model=None, base_url=None, api_key=None, temperature=0.7):
-        from openai import OpenAI
-
-        self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"),
-                             base_url=base_url or os.environ.get("OPENAI_BASE_URL"))
-        self.model = model or os.environ.get("OPENAI_MODEL", "deepseek-chat")
-        self.temperature = temperature
-
-    def complete(self, messages, tools):
-        kwargs = {"model": self.model, "messages": messages, "temperature": self.temperature}
-        if tools:
-            kwargs["tools"] = tools
-        resp = self.client.chat.completions.create(**kwargs)
-        msg = resp.choices[0].message
-        if msg.tool_calls:
-            return [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in msg.tool_calls
-            ]
-        return None
+def schedule_pairs(
+    tasks: list[dict], seed: int, limit_pairs: int | None = None
+) -> list[tuple[dict, str]]:
+    rng = random.Random(int(seed))
+    ordered = list(tasks)
+    rng.shuffle(ordered)
+    if limit_pairs is not None:
+        if not 1 <= int(limit_pairs) <= len(ordered):
+            raise ValueError(f"limit_pairs must be between 1 and {len(ordered)}")
+        ordered = ordered[: int(limit_pairs)]
+    schedule: list[tuple[dict, str]] = []
+    for task in ordered:
+        arms = list(ARMS)
+        rng.shuffle(arms)
+        schedule.extend((task, arm) for arm in arms)
+    return schedule
 
 
-def tool_schemas_for(arm):
-    """基线臂只有购物工具；澄清臂额外加 ask_user。"""
-    from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS
+def run_trajectory(
+    task: Mapping[str, Any],
+    arm: str,
+    *,
+    client,
+    env_factory,
+    base_url: str,
+    max_steps: int,
+    run_id: str,
+    task_hash: str,
+    llm_calls_before: int,
+) -> dict[str, Any]:
+    prompt, visible_instruction = build_arm_inputs(task, arm)
 
-    schemas = [json.loads(json.dumps(s)) for s in SHOP_TOOL_SCHEMAS]
-    if arm == "clarify":
-        schemas.append(json.loads(json.dumps(ASK_USER_SCHEMA)))
-    return schemas
+    def factory(**kwargs):
+        inner = env_factory(task, kwargs.get("base_url", base_url))
+        return InstructionOverrideEnv(
+            inner,
+            visible_instruction=visible_instruction,
+            expected_clear_query=str(task["clear_query"]),
+        )
+
+    trajectory = collect_for_task(
+        {"task_id": int(task["task_id"]), "prompt": prompt},
+        client=client,
+        env_factory=factory,
+        base_url=base_url,
+        max_steps=int(max_steps),
+        tools=SHOP_TOOL_SCHEMAS,
+        attempt_index=0,
+    )
+    trajectory["run_id"] = run_id
+    trajectory["arm"] = arm
+    valid, validity_reason = _trajectory_validity(trajectory)
+    trajectory["probe"] = {
+        "query": task["under_query"],
+        "clear_query": task["clear_query"],
+        "latent_goal": deepcopy(task["latent_goal"]),
+        "oracle_turn": deepcopy(task["oracle_turn"]) if arm == "oracle_ask" else None,
+        "oracle_injected": arm == "oracle_ask",
+        "task_hash": task_hash,
+        "llm_calls_before": int(llm_calls_before),
+        "valid": valid,
+        "validity_reason": validity_reason,
+    }
+    return trajectory
 
 
-def convert_tool_call(tc):
-    from shopping_grpo.environment.tools import tool_call_to_action
+def load_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                records.append(json.loads(line))
+    return records
 
-    fn = tc["function"]
+
+def append_record(path: Path, record: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def create_or_load_manifest(
+    run_dir: Path,
+    *,
+    run_id: str,
+    mode: str,
+    tasks_path: Path,
+    validation: Mapping[str, Any],
+    seed: int,
+    max_steps: int,
+    max_llm_calls: int,
+    temperature: float,
+    model: str,
+    base_url: str,
+) -> dict[str, Any]:
+    path = run_dir / MANIFEST_FILE
+    immutable = {
+        "run_id": run_id,
+        "mode": mode,
+        "task_file": str(tasks_path.resolve()),
+        "task_hash": validation["task_hash"],
+        "task_count": validation["task_count"],
+        "field_distribution": validation["distribution"],
+        "seed": int(seed),
+        "max_steps": int(max_steps),
+        "max_llm_calls": int(max_llm_calls),
+        "temperature": float(temperature),
+        "model": model,
+        "api_base": _public_api_base(base_url),
+        "system_prompt_hash": canonical_hash(SYSTEM_PROMPT),
+        "tool_schema_hash": canonical_hash(SHOP_TOOL_SCHEMAS),
+        "git_commit": _git_commit(),
+        "environment_version": "shopsimulator-environment-v2.1",
+        "reward_version": "shopsimulator-reward-v3",
+        "observation_version": "shopping-observation-v2",
+        "tool_schema_version": "shop-tool-schema-v2",
+    }
+    if path.exists():
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        for key, value in immutable.items():
+            if manifest.get(key) != value:
+                raise ValueError(
+                    f"run_id {run_id!r} already exists with a different {key}: "
+                    f"{manifest.get(key)!r} != {value!r}"
+                )
+        return manifest
+    run_dir.mkdir(parents=True, exist_ok=False)
+    manifest = {
+        **immutable,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "llm_call_count": 0,
+        "trajectory_attempt_count": 0,
+        "completed_keys": [],
+        "invalid_keys": [],
+    }
+    write_json(path, manifest)
+    return manifest
+
+
+def write_json(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.replace(path)
+
+
+def run(args) -> int:
+    tasks_path = Path(args.tasks)
+    tasks = load_tasks(tasks_path)
+    validation = validate_tasks(tasks)
+    print(
+        "validated "
+        f"{validation['task_count']} tasks {validation['distribution']} "
+        f"hash={validation['task_hash'][:12]}"
+    )
+    if args.mode == "validate":
+        return 0
+    if args.mode == "real" and not args.allow_real_api:
+        raise ValueError("real mode requires --allow-real-api after explicit user approval")
+    if args.mode == "real" and not args.run_id:
+        raise ValueError("real mode requires an explicit --run-id for safe resume")
+    if args.mode == "real" and float(args.temperature) != 0.0:
+        raise ValueError("Probe B V2 real mode requires temperature=0")
+
+    run_id = args.run_id or _default_run_id(args.mode)
+    if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
+        raise ValueError("run_id must be one plain directory name")
+    run_dir = Path(args.outdir) / run_id
+    model = args.model or os.environ.get("OPENAI_MODEL", "deepseek-chat")
+    base_url = args.base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    manifest = create_or_load_manifest(
+        run_dir,
+        run_id=run_id,
+        mode=args.mode,
+        tasks_path=tasks_path,
+        validation=validation,
+        seed=args.seed,
+        max_steps=args.max_steps,
+        max_llm_calls=args.max_llm_calls,
+        temperature=args.temperature,
+        model=model if args.mode == "real" else "mock",
+        base_url=base_url if args.mode == "real" else "mock://offline",
+    )
+    manifest_path = run_dir / MANIFEST_FILE
+
+    def persist_call_count(used):
+        manifest["llm_call_count"] = int(used)
+        write_json(manifest_path, manifest)
+
+    budget = CallBudget(
+        args.max_llm_calls,
+        used=int(manifest.get("llm_call_count", 0)),
+        on_change=persist_call_count,
+    )
+    if args.mode == "real":
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY is required for real mode")
+        client_factory = lambda: OpenAIChatClient(  # noqa: E731
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=0.0,
+            max_tokens=args.max_tokens,
+            timeout=args.timeout,
+            transport=CappedTransport(budget),
+        )
+        env_factory = lambda task, url: ShopAgentEnv(  # noqa: E731
+            base_url=url, timeout=args.timeout
+        )
+    else:
+        client_factory = MockClient
+        env_factory = lambda task, url: FakeShopEnv(task)  # noqa: E731
+
+    trajectories_path = run_dir / TRAJECTORIES_FILE
+    existing = load_records(trajectories_path)
+    attempted = {(int(row["task_id"]), str(row["arm"])) for row in existing}
+    schedule = schedule_pairs(tasks, args.seed, args.limit_pairs)
+    task_hash = validation["task_hash"]
+    wrote = 0
+    for task, arm in schedule:
+        key = (int(task["task_id"]), arm)
+        if key in attempted:
+            continue
+        if int(manifest.get("trajectory_attempt_count", 0)) >= 50:
+            print("trajectory attempt budget exhausted (50/50); stopping")
+            break
+        if args.mode == "real" and budget.used >= budget.maximum:
+            print(
+                f"LLM call budget exhausted ({budget.used}/{budget.maximum}); "
+                "stopped before starting a new trajectory"
+            )
+            break
+        calls_before = budget.used
+        trajectory = run_trajectory(
+            task,
+            arm,
+            client=client_factory(),
+            env_factory=env_factory,
+            base_url=base_url,
+            max_steps=args.max_steps,
+            run_id=run_id,
+            task_hash=task_hash,
+            llm_calls_before=calls_before,
+        )
+        trajectory["probe"]["llm_calls_after"] = budget.used
+        append_record(trajectories_path, trajectory)
+        attempted.add(key)
+        wrote += 1
+        manifest["trajectory_attempt_count"] = int(manifest.get("trajectory_attempt_count", 0)) + 1
+        key_text = f"{key[0]}:{key[1]}"
+        manifest.setdefault("completed_keys", []).append(key_text)
+        if not trajectory["probe"]["valid"]:
+            manifest.setdefault("invalid_keys", []).append(key_text)
+        manifest["llm_call_count"] = budget.used
+        write_json(manifest_path, manifest)
+        print(
+            f"[{arm}] task={key[0]} status={trajectory['status']} "
+            f"steps={len(trajectory.get('steps') or [])} calls={budget.used}"
+        )
+        if not trajectory["probe"]["valid"]:
+            print("invalid infrastructure/local trajectory; stopped before the next attempt")
+            break
+
+    print(f"wrote {wrote} trajectories -> {run_dir}")
+    return 0
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Probe B V2 controlled paired runner")
+    parser.add_argument("--mode", choices=["validate", "mock", "real"], default="validate")
+    parser.add_argument("--tasks", default=str(DEFAULT_TASKS))
+    parser.add_argument(
+        "--run-id", help="required for stable resume; auto-generated only when omitted"
+    )
+    parser.add_argument("--limit-pairs", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
+    parser.add_argument("--max-llm-calls", type=int, default=DEFAULT_MAX_LLM_CALLS)
+    parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--model")
+    parser.add_argument("--base-url")
+    parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_ROOT))
+    parser.add_argument("--allow-real-api", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
     try:
-        args = json.loads(fn.get("arguments", "{}") or "{}")
-    except json.JSONDecodeError:
-        args = {}
-    return fn["name"], args, tool_call_to_action(fn["name"], args)
+        return run(parse_args(argv))
+    except (CallBudgetExceeded, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
-def _assistant_with_tool_calls(tc):
-    """按 OpenAI tool-call 协议构造 assistant 消息（必须携带 tool_calls 字段）。"""
+def _assistant_tool(name: str, arguments: Mapping[str, Any], call_id: str) -> dict[str, Any]:
     return {
         "role": "assistant",
-        "content": "",
+        "content": None,
         "tool_calls": [
             {
-                "id": tc.get("id", ""),
+                "id": call_id,
                 "type": "function",
                 "function": {
-                    "name": tc["function"]["name"],
-                    "arguments": tc["function"].get("arguments", "{}") or "{}",
+                    "name": name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
                 },
             }
         ],
     }
 
 
-def run_arm(task, arm, llm, env, out_path):
-    """跑一条轨迹并落盘。返回 record dict。
-
-    消息协议与参考项目一致：system + user(仅 Instruction)，之后
-    assistant(tool_calls) -> tool(observation) 交替；不注入初始页面文本。
-    """
-    record = {
-        "task_id": task["task_id"],
-        "arm": arm,
-        "query": task["under_query"],
-        "clarify_turns": 0,
-        "steps": [],
-        "terminal": {"done": False, "reward": None},
+def _mock_purchase(task: Mapping[str, Any]) -> dict[str, Any]:
+    latent = task["latent_goal"]
+    normalized = latent["normalized_value"]
+    purchase = {
+        "asin": "100000000001",
+        "title": "探针测试商品",
+        "price": 1.0,
+        "brand": "测试品牌",
+        "options": {},
+        "attributes": [],
     }
-    tools = tool_schemas_for(arm)
-    env.reset(task["task_id"])
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT[arm]},
-        {"role": "user", "content": "Instruction: " + task["under_query"]},
-    ]
-
-    for step_i in range(MAX_STEPS):
-        try:
-            tool_calls = llm.complete(messages, tools)
-        except Exception as exc:  # noqa: BLE001
-            record["terminal"]["error"] = str(exc)
-            break
-        if not tool_calls:
-            record["terminal"]["no_tool_call"] = True
-            break
-
-        tc = tool_calls[0]
-        name = tc["function"]["name"]
-        assistant_msg = _assistant_with_tool_calls(tc)
-
-        if name == "ask_user":
-            if record["clarify_turns"] >= MAX_CLARIFY:
-                record["terminal"]["max_clarify"] = True
-                messages.append(assistant_msg)
-                messages.append({"role": "tool", "tool_call_id": tc["id"],
-                                 "content": "不能再追问了，请基于现有信息继续购物。"})
-                continue
-            record["clarify_turns"] += 1
-            args = json.loads(tc["function"].get("arguments", "{}") or "{}")
-            question = args.get("question", "")
-            answer, _info = answer_question(question, task.get("fake_profile", {}))
-            messages.append(assistant_msg)
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": answer})
-            record["steps"].append({"step": step_i, "kind": "ask", "question": question, "answer": answer})
-            continue
-
-        try:
-            action = convert_tool_call(tc)[2]
-        except Exception as exc:  # noqa: BLE001
-            messages.append(assistant_msg)
-            messages.append({"role": "tool", "tool_call_id": tc["id"],
-                             "content": f"工具调用无法转换（{exc}），请换一个合法动作。"})
-            record["steps"].append({"step": step_i, "kind": "invalid", "detail": str(exc)})
-            continue
-
-        obs, done = env.step(action)
-        messages.append(assistant_msg)
-        messages.append({"role": "tool", "tool_call_id": tc["id"], "content": obs})
-        record["steps"].append({"step": step_i, "kind": "action", "action": action})
-        if done:
-            record["terminal"]["done"] = True
-            record["terminal"]["reward"] = env.last_reward()
-            break
-
-    env.release()
-    with open(out_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return record
+    field = latent["field"]
+    if field == "budget":
+        purchase["price"] = max(0.01, float(normalized["amount"]) - 1.0)
+    elif field == "brand":
+        purchase["brand"] = normalized["value"]
+    elif field == "color":
+        purchase["options"] = {"颜色": normalized["value"]}
+    elif field == "origin":
+        purchase["attributes"] = [normalized["value"]]
+    return purchase
 
 
-def _load_reference_system_prompt():
-    """读取参考 SFT 数据里真实使用的 system prompt（基线与训练完全一致）。"""
+def _trajectory_validity(trajectory: Mapping[str, Any]) -> tuple[bool, str]:
+    if trajectory.get("release_error"):
+        return False, "environment_release_error"
+    error = trajectory.get("error")
+    if isinstance(error, Mapping):
+        steps = trajectory.get("steps") or []
+        last_step = steps[-1] if steps else {}
+        messages = trajectory.get("messages") or []
+        last_message = messages[-1] if messages else {}
+        has_agent_tool_call = bool(
+            last_step.get("tool_call") or last_message.get("tool_calls")
+        )
+        error_type = str(error.get("type") or "")
+        if has_agent_tool_call and error_type in {
+            "JSONDecodeError",
+            "KeyError",
+            "TypeError",
+            "ValueError",
+        }:
+            return True, "agent_malformed_tool_call"
+        return False, "infrastructure_or_local_error"
+    if trajectory.get("status") == "environment_release_failed":
+        return False, "environment_release_error"
+    return True, "behavioral_result"
+
+
+def _strip_instruction_prefix(value: str) -> str:
+    text = str(value).strip()
+    if text.startswith("Instruction:"):
+        return text[len("Instruction:") :].strip()
+    return text
+
+
+def _default_run_id(mode: str) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{mode}-{stamp}"
+
+
+def _git_commit() -> str:
     try:
-        with open(REPO / "data" / "sft" / "train.jsonl", "r", encoding="utf-8") as f:
-            rec = json.loads(f.readline())
-        for m in rec.get("messages", []):
-            if m.get("role") == "system":
-                return m["content"]
-    except Exception:
-        return None
-    return None
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
 
 
-_REF_SYSTEM = _load_reference_system_prompt()
-_FALLBACK = (
-    "你是购物 Agent，负责在 ShopSimulator 中替用户完成购物任务。"
-    "只调用提供的工具与商店交互，目标是购买最符合需求的商品，无法满足时合理结束。"
-)
-_CLARIFY_PROMPT = (
-    "你是购物 Agent，负责在 ShopSimulator 中替用户完成购物任务。"
-    "用户需求可能不完整：可能缺少预算范围、品牌、颜色、规格或型号等关键信息。"
-    "决策规则：若需求缺少上述关键信息之一，且该信息对挑选商品有实际影响，你必须先调用 "
-    "ask_user 向用户提出一个最关键的问题来补全，最多提问 2 次；在关键约束补全之前，"
-    "不要搜索也不要购买。拿到回答后，严格按照用户给出的约束搜索、核验并购买。"
-    "注意你的目标是买到完全满足用户需求的商品，宁可先问清楚，也不要蒙着买。"
-)
-SYSTEM_PROMPT = {
-    "baseline": _REF_SYSTEM or _FALLBACK,
-    "clarify": _CLARIFY_PROMPT,
-}
-
-def main():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="B 探针双臂运行器")
-    parser.add_argument("--mode", choices=["mock", "real"], default="mock")
-    parser.add_argument("--tasks", default=str(Path(__file__).resolve().parent / "data" / "tasks.json"))
-    parser.add_argument("--limit", type=int, default=None, help="只跑前 N 个任务（冒烟用）")
-    parser.add_argument("--arm", choices=["both", "baseline", "clarify"], default="both")
-    parser.add_argument("--outdir", default=str(Path(__file__).resolve().parent / "outputs"))
-    args = parser.parse_args()
-
-    tasks = json.loads(open(args.tasks, "r", encoding="utf-8").read())
-    if args.limit:
-        tasks = tasks[: args.limit]
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    arms = ["baseline", "clarify"] if args.arm == "both" else [args.arm]
-
-    if args.mode == "mock":
-        env = FakeEnv()
-        llm_maker = lambda arm: MockLLM(arm)  # noqa: E731
-    else:
-        env = RealEnv()
-        llm_maker = lambda arm: RealLLM()  # noqa: E731
-
-    started = time.time()
-    for task in tasks:
-        for arm in arms:
-            out_path = outdir / f"trajectories_{arm}.jsonl"
-            rec = run_arm(task, arm, llm_maker(arm), env, out_path)
-            print(f"[{arm}] task={task['task_id']} steps={len(rec['steps'])} "
-                  f"clarify={rec['clarify_turns']} done={rec['terminal']['done']}")
-    print(f"done in {time.time() - started:.1f}s -> {outdir}")
+def _public_api_base(base_url: str) -> str:
+    return str(base_url).split("?", 1)[0].split("#", 1)[0]
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

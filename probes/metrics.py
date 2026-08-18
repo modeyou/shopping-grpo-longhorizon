@@ -1,156 +1,363 @@
-# -*- coding: utf-8 -*-
-"""阶段 4：指标计算与判据判断。
+"""Paired metrics for Probe B V2 No-Ask versus Oracle-Ask runs."""
 
-从 probes/outputs/trajectories_{arm}.jsonl 读取，按 Reward V3 终局分档：
-  - reward >= 0.999            -> gold_purchase（严格成功）
-  - reward == 0.55             -> valid_alternative（替代购买，非严格成功）
-  - 0 < reward < 0.55         -> partial（部分满足）
-  - reward < 0                 -> failure（错误购买/过早放弃/循环/超步）
-  - reward is None             -> 无法判定（unknown）
-
-输出对比表与 PASS/FAIL 判据结论。
-"""
 from __future__ import annotations
 
+import argparse
 import json
 import sys
-from collections import defaultdict
+from collections import Counter
 from pathlib import Path
-
-OUT_DIR = Path(__file__).resolve().parent / "outputs"
-ARMS = ["baseline", "clarify"]
-
-# 判据（设计文档 §5）
-SS_IMPROVE_PP = 10.0         # 模糊子集严格成功率 ≥ +10pp
-WR_NOT_HIGHER = True         # 错误购买率不得高于基线
-CLARIFY_MAX = 2              # 澄清 ≤ 2 轮
-STEPS_RATIO_MAX = 1.3        # 平均步数 ≤ ~1.3x 基线
+from typing import Any, Mapping
 
 
-def classify(reward):
-    if reward is None:
-        return "unknown"
-    if reward >= 0.999:
-        return "gold_purchase"
-    if reward == 0.55 or abs(reward - 0.55) < 1e-6:
-        return "valid_alternative"
-    if reward > 0:
-        return "partial"
-    return "failure"
+REPO = Path(__file__).resolve().parents[1]
+PROBE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(PROBE_DIR))
+
+from runner import (  # noqa: E402
+    ARMS,
+    DEFAULT_OUTPUT_ROOT,
+    MANIFEST_FILE,
+    TRAJECTORIES_FILE,
+    load_records,
+    write_json,
+)
+from task_schema import (  # noqa: E402
+    DEFAULT_TASKS,
+    latent_goal_satisfied,
+    load_tasks,
+    validate_tasks,
+)
 
 
-def load(arm):
-    path = OUT_DIR / f"trajectories_{arm}.jsonl"
-    if not path.exists():
-        return []
-    out = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
+EXPECTED_PAIRS = 25
+MIN_NET_STRICT_WINS = 3
 
 
-def summarize(records):
-    n = len(records)
-    if n == 0:
-        return {"n": 0, "gold": 0, "failure": 0, "unknown": 0, "success_rate": None,
-                "wrong_rate": None, "avg_steps": None, "avg_clarify": None}
-    cats = defaultdict(int)
-    steps = 0
-    clarify = 0
-    for r in records:
-        cats[classify(r.get("terminal", {}).get("reward"))] += 1
-        steps += len(r.get("steps", []))
-        clarify += r.get("clarify_turns", 0)
-    gold = cats.get("gold_purchase", 0)
-    failure = cats.get("failure", 0)
-    unknown = cats.get("unknown", 0) + cats.get("valid_alternative", 0) + cats.get("partial", 0)
+def strict_success(record: Mapping[str, Any]) -> bool:
+    terminal = _terminal(record)
+    detail = _reward_detail(record)
+    return (
+        _record_valid(record)
+        and record.get("status") == "done"
+        and record.get("done") is True
+        and terminal.get("done") is True
+        and terminal.get("over") is True
+        and detail.get("reward_version") == "shopsimulator-reward-v3"
+        and detail.get("reward_type") == "gold_purchase"
+        and detail.get("reward_valid") is True
+        and detail.get("purchase_success") is True
+    )
+
+
+def wrong_purchase(record: Mapping[str, Any]) -> bool:
+    return _record_valid(record) and _reward_detail(record).get("reward_type") == "wrong_purchase"
+
+
+def analyze(
+    tasks: list[dict[str, Any]], records: list[dict[str, Any]], mode: str = "real"
+) -> dict[str, Any]:
+    tasks_by_id = {int(task["task_id"]): task for task in tasks}
+    by_key: dict[tuple[int, str], dict[str, Any]] = {}
+    duplicates = []
+    for record in records:
+        key = (int(record["task_id"]), str(record.get("arm")))
+        if key in by_key:
+            duplicates.append(f"{key[0]}:{key[1]}")
+        by_key[key] = record
+    if duplicates:
+        raise ValueError("duplicate task-arm trajectories: " + ", ".join(sorted(duplicates)))
+
+    invalid_keys = sorted(
+        f"{task_id}:{arm}"
+        for (task_id, arm), record in by_key.items()
+        if not _record_valid(record)
+    )
+    paired_ids = [
+        task_id
+        for task_id in tasks_by_id
+        if all(
+            (task_id, arm) in by_key and _record_valid(by_key[(task_id, arm)])
+            for arm in ARMS
+        )
+    ]
+    paired_ids.sort()
+    arm_stats = {
+        arm: _arm_summary(
+            [by_key[(task_id, arm)] for task_id in paired_ids],
+            tasks_by_id,
+        )
+        for arm in ARMS
+    }
+
+    fail_to_success = 0
+    success_to_fail = 0
+    both_success = 0
+    both_fail = 0
+    pair_rows = []
+    for task_id in paired_ids:
+        no_ask = by_key[(task_id, "no_ask")]
+        oracle = by_key[(task_id, "oracle_ask")]
+        no_success = strict_success(no_ask)
+        oracle_success = strict_success(oracle)
+        if not no_success and oracle_success:
+            fail_to_success += 1
+        elif no_success and not oracle_success:
+            success_to_fail += 1
+        elif no_success and oracle_success:
+            both_success += 1
+        else:
+            both_fail += 1
+        task = tasks_by_id[task_id]
+        pair_rows.append(
+            {
+                "task_id": task_id,
+                "field": task["latent_goal"]["field"],
+                "no_ask": _row_view(task, no_ask),
+                "oracle_ask": _row_view(task, oracle),
+            }
+        )
+
+    net_strict_wins = fail_to_success - success_to_fail
+    paired_count = len(paired_ids)
+    strict_delta = net_strict_wins / paired_count if paired_count else None
+    full_pairs = paired_count == EXPECTED_PAIRS
+    conditions = {
+        "net_strict_wins_at_least_3": net_strict_wins >= MIN_NET_STRICT_WINS,
+        "latent_satisfaction_higher": (
+            arm_stats["oracle_ask"]["latent_satisfaction_rate"]
+            > arm_stats["no_ask"]["latent_satisfaction_rate"]
+            if paired_count
+            else False
+        ),
+        "wrong_purchase_not_higher": (
+            arm_stats["oracle_ask"]["wrong_purchase_count"]
+            <= arm_stats["no_ask"]["wrong_purchase_count"]
+        ),
+    }
+    if mode != "real":
+        gate_status = "NOT_APPLICABLE_MOCK"
+    elif not full_pairs:
+        gate_status = "INCOMPLETE"
+    else:
+        gate_status = "PASS" if all(conditions.values()) else "FAIL"
+
+    attempted_keys = {f"{task_id}:{arm}" for task_id, arm in by_key}
+    expected_keys = {f"{task_id}:{arm}" for task_id in tasks_by_id for arm in ARMS}
     return {
-        "n": n,
-        "gold": gold,
-        "failure": failure,
-        "unknown": unknown,
-        "categories": dict(cats),
-        "success_rate": gold / n if n else None,
-        "wrong_rate": failure / n if n else None,
-        "avg_steps": steps / n if n else None,
-        "avg_clarify": clarify / n if n else None,
+        "mode": mode,
+        "expected_pair_count": EXPECTED_PAIRS,
+        "valid_pair_count": paired_count,
+        "trajectory_count": len(records),
+        "invalid_keys": invalid_keys,
+        "missing_keys": sorted(expected_keys - attempted_keys),
+        "arms": arm_stats,
+        "paired_transitions": {
+            "no_ask_fail_to_oracle_success": fail_to_success,
+            "no_ask_success_to_oracle_fail": success_to_fail,
+            "both_success": both_success,
+            "both_fail": both_fail,
+            "net_strict_wins": net_strict_wins,
+            "strict_success_delta": strict_delta,
+        },
+        "continue_gate": {
+            "status": gate_status,
+            "evaluable": mode == "real" and full_pairs,
+            "conditions": conditions,
+        },
+        "pairs": pair_rows,
     }
 
 
-def decision(base, clarify):
-    """按判据输出 PASS/FAIL 逐项结果。"""
-    rows = []
-    if base["n"] == 0 or clarify["n"] == 0:
-        return [("数据不足", "NEED_DATA", False)]
-    imp_pp = (clarify["success_rate"] - base["success_rate"]) * 100 if base["success_rate"] is not None and clarify["success_rate"] is not None else 0
-    rows.append((f"严格成功率提升(pp): {imp_pp:+.1f}",
-                 f"要求 >= +{SS_IMPROVE_PP:.0f}",
-                 imp_pp >= SS_IMPROVE_PP))
-    wr_ratio = (clarify["wrong_rate"] / base["wrong_rate"]) if base["wrong_rate"] else None
-    rows.append((f"错误购买率: 澄清={clarify['wrong_rate']:.3f} 基线={base['wrong_rate']:.3f}",
-                 f"要求 <= 基线",
-                 (clarify["wrong_rate"] or 0) <= (base["wrong_rate"] or 0)))
-    rows.append((f"平均澄清轮数: {clarify['avg_clarify']:.2f}",
-                 f"要求 <= {CLARIFY_MAX}",
-                 (clarify["avg_clarify"] or 0) <= CLARIFY_MAX))
-    st_ratio = (clarify["avg_steps"] / base["avg_steps"]) if base["avg_steps"] else None
-    rows.append((f"平均步数比: {st_ratio:.2f}x" if st_ratio else "平均步数: 数据不足",
-                 f"要求 <= {STEPS_RATIO_MAX}x",
-                 st_ratio is not None and st_ratio <= STEPS_RATIO_MAX))
-    return rows
+def render_markdown(report: Mapping[str, Any]) -> str:
+    arms = report["arms"]
+    transitions = report["paired_transitions"]
+    gate = report["continue_gate"]
+    lines = [
+        "# Probe B V2 配对结果",
+        "",
+        f"- 模式：`{report['mode']}`",
+        f"- 有效任务对：{report['valid_pair_count']} / {report['expected_pair_count']}",
+        f"- 判据状态：**{gate['status']}**",
+        f"- 无效轨迹：{len(report['invalid_keys'])}",
+        f"- 未尝试轨迹：{len(report['missing_keys'])}",
+        "",
+        "## 两臂汇总",
+        "",
+        "| 指标 | No-Ask | Oracle-Ask |",
+        "|---|---:|---:|",
+        (
+            "| 严格成功率 | "
+            f"{_percent(arms['no_ask']['strict_success_rate'])} | "
+            f"{_percent(arms['oracle_ask']['strict_success_rate'])} |"
+        ),
+        (
+            "| 隐藏字段满足率 | "
+            f"{_percent(arms['no_ask']['latent_satisfaction_rate'])} | "
+            f"{_percent(arms['oracle_ask']['latent_satisfaction_rate'])} |"
+        ),
+        (
+            "| 真实 wrong_purchase | "
+            f"{arms['no_ask']['wrong_purchase_count']} | "
+            f"{arms['oracle_ask']['wrong_purchase_count']} |"
+        ),
+        (
+            "| 平均环境步数 | "
+            f"{arms['no_ask']['average_steps']:.2f} | "
+            f"{arms['oracle_ask']['average_steps']:.2f} |"
+        ),
+        "",
+        "## 配对变化",
+        "",
+        f"- No-Ask 失败 → Oracle 成功：{transitions['no_ask_fail_to_oracle_success']}",
+        f"- No-Ask 成功 → Oracle 失败：{transitions['no_ask_success_to_oracle_fail']}",
+        f"- 净增加严格成功任务：{transitions['net_strict_wins']}",
+        f"- 严格成功率差：{_percent(transitions['strict_success_delta'])}",
+        "",
+        "## 预登记继续门槛",
+        "",
+    ]
+    labels = {
+        "net_strict_wins_at_least_3": "净增加至少 3 个严格成功任务",
+        "latent_satisfaction_higher": "隐藏字段满足率提高",
+        "wrong_purchase_not_higher": "真实错误购买不增加",
+    }
+    for key, label in labels.items():
+        lines.append(f"- [{'PASS' if gate['conditions'][key] else 'FAIL'}] {label}")
+    if not gate["evaluable"]:
+        reason = (
+            "当前是 Mock 结果，不适用真实实验的 PASS/FAIL 决策。"
+            if report["mode"] != "real"
+            else "当前结果不足 25 个完整有效真实任务对，不能做 PASS/FAIL 决策。"
+        )
+        lines.extend(
+            [
+                "",
+                reason,
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 逐任务",
+            "",
+            "| task | field | No-Ask strict | Oracle strict | No-Ask latent | "
+            "Oracle latent | No-Ask type | Oracle type |",
+            "|---:|---|---:|---:|---:|---:|---|---|",
+        ]
+    )
+    for pair in report["pairs"]:
+        no_ask = pair["no_ask"]
+        oracle = pair["oracle_ask"]
+        lines.append(
+            f"| {pair['task_id']} | {pair['field']} | "
+            f"{int(no_ask['strict_success'])} | {int(oracle['strict_success'])} | "
+            f"{int(no_ask['latent_satisfied'])} | {int(oracle['latent_satisfied'])} | "
+            f"{no_ask['reward_type']} | {oracle['reward_type']} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
-def main():
-    records = {a: load(a) for a in ARMS}
-    sums = {a: summarize(records[a]) for a in ARMS}
-    base, clarify = sums["baseline"], sums["clarify"]
+def _arm_summary(
+    records: list[dict[str, Any]], tasks_by_id: Mapping[int, Mapping[str, Any]]
+) -> dict[str, Any]:
+    count = len(records)
+    strict_count = sum(strict_success(record) for record in records)
+    wrong_count = sum(wrong_purchase(record) for record in records)
+    latent_count = sum(
+        latent_goal_satisfied(tasks_by_id[int(record["task_id"])], record)
+        for record in records
+    )
+    reward_types = Counter(_reward_type(record) for record in records)
+    step_count = sum(len(record.get("steps") or []) for record in records)
+    return {
+        "paired_record_count": count,
+        "strict_success_count": strict_count,
+        "strict_success_rate": strict_count / count if count else 0.0,
+        "latent_satisfaction_count": latent_count,
+        "latent_satisfaction_rate": latent_count / count if count else 0.0,
+        "wrong_purchase_count": wrong_count,
+        "wrong_purchase_rate": wrong_count / count if count else 0.0,
+        "average_steps": step_count / count if count else 0.0,
+        "reward_type_counts": dict(sorted(reward_types.items())),
+    }
 
-    lines = ["# B 探针对比结果\n"]
-    lines.append("| 指标 | 基线臂 | 澄清臂 |")
-    lines.append("|---|---|---|")
-    for key, label in [("success_rate", "严格成功率"), ("wrong_rate", "错误购买率"),
-                       ("avg_steps", "平均步数"), ("avg_clarify", "平均澄清轮数"), ("n", "任务数")]:
-        lines.append(f"| {label} | {base.get(key)} | {clarify.get(key)} |")
-    lines.append("\n## 判据判断")
-    for msg, req, ok in decision(base, clarify):
-        lines.append(f"- [{'PASS' if ok else 'FAIL'}] {msg} — {req}")
 
-    out = OUT_DIR / "metrics_summary.md"
-    with open(out, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    print("\n".join(lines))
-    print(f"\n-> {out}")
+def _row_view(task: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "strict_success": strict_success(record),
+        "latent_satisfied": latent_goal_satisfied(task, record),
+        "wrong_purchase": wrong_purchase(record),
+        "reward_type": _reward_type(record),
+        "status": record.get("status"),
+        "steps": len(record.get("steps") or []),
+    }
 
-    # ---- 逐任务对比（帮助定位差异来源）----
-    by_id = {}
-    for arm in ARMS:
-        by_id[arm] = {r["task_id"]: r for r in records[arm]}
 
-    order = sorted(by_id["baseline"].keys())
-    pt = ["# 逐任务对比\n", "| task | 基线reward | 澄清reward | diff | 澄清是否提问 |"]
-    pt.append("|---|---|---|---|---|")
-    used = 0
-    for tid in order:
-        b = by_id["baseline"].get(tid)
-        c = by_id["clarify"].get(tid)
-        br = b["terminal"].get("reward") if b else None
-        cr = c["terminal"].get("reward") if c else None
-        asked = sum(1 for s in (c.get("steps") or []) if s.get("kind") == "ask") if c else 0
-        used += bool(asked)
-        diff = (cr - br) if (br is not None and cr is not None) else None
-        pt.append(f"| {tid} | {br} | {cr} | {round(diff,3) if diff is not None else '—'} | {asked} |")
+def _terminal(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    terminal = record.get("terminal_result")
+    return terminal if isinstance(terminal, Mapping) else {}
 
-    pt.append("")
-    pt.append(f"澄清臂实际提问的任务数: {used} / {len(order)}")
-    pt_out = OUT_DIR / "per_task.md"
-    with open(pt_out, "w", encoding="utf-8") as f:
-        f.write("\n".join(pt) + "\n")
-    print("\n".join(pt))
-    print(f"\n-> {pt_out}")
+
+def _reward_detail(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    detail = _terminal(record).get("reward_detail")
+    return detail if isinstance(detail, Mapping) else {}
+
+
+def _reward_type(record: Mapping[str, Any]) -> str:
+    return str(_reward_detail(record).get("reward_type") or record.get("status") or "unknown")
+
+
+def _record_valid(record: Mapping[str, Any]) -> bool:
+    probe = record.get("probe")
+    return isinstance(probe, Mapping) and probe.get("valid") is True
+
+
+def _percent(value: object) -> str:
+    return "—" if value is None else f"{float(value) * 100:.1f}%"
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Probe B V2 paired metrics")
+    parser.add_argument("--run-id")
+    parser.add_argument("--run-dir")
+    parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_ROOT))
+    parser.add_argument("--tasks", default=str(DEFAULT_TASKS))
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    if bool(args.run_id) == bool(args.run_dir):
+        print("error: provide exactly one of --run-id or --run-dir", file=sys.stderr)
+        return 2
+    run_dir = Path(args.run_dir) if args.run_dir else Path(args.outdir) / args.run_id
+    manifest_path = run_dir / MANIFEST_FILE
+    if not manifest_path.exists():
+        print(f"error: missing {manifest_path}", file=sys.stderr)
+        return 2
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tasks = load_tasks(args.tasks)
+    validation = validate_tasks(tasks)
+    if manifest.get("task_hash") != validation["task_hash"]:
+        print("error: manifest task_hash differs from current V2 task file", file=sys.stderr)
+        return 2
+    records = load_records(run_dir / TRAJECTORIES_FILE)
+    try:
+        report = analyze(tasks, records, mode=str(manifest.get("mode") or "unknown"))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    report["run_id"] = manifest.get("run_id")
+    write_json(run_dir / "metrics_summary.json", report)
+    markdown = render_markdown(report)
+    (run_dir / "metrics_summary.md").write_text(markdown, encoding="utf-8")
+    print(markdown)
+    print(f"-> {run_dir / 'metrics_summary.md'}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

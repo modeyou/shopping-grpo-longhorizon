@@ -1,73 +1,75 @@
-# B 探针：澄清 + 个性化价值验证
+# Probe B V2：Oracle 信息价值低成本筛查
 
-> 目的：在投入大工程前，验证"在欠约束/有歧义的购物指令上，允许 Agent 做 1~2 轮澄清，能否显著提升任务成功、降低错误购买，且不伤害清晰任务"。
->
-> 关联文档：`docs/superpowers/specs/2026-08-18-probe-b-multiturn-personalization-design.md`
+本探针只回答：从购物指令中隐藏一个当前约束后，在首次模型购物动作前固定披露该约束，是否比不披露更容易完成任务。
 
-## 目录结构
+关联文档：
 
-```
+- 设计：`docs/superpowers/specs/2026-08-18-probe-b-oracle-information-value-v2-design.md`
+- 实现计划：`docs/superpowers/plans/2026-08-18-probe-b-oracle-information-value-v2-plan.md`
+
+V2 不测试自主提问，也不测试用户画像。`tasks.json`、`user_simulator.py`、`build_tasks.py` 和 `_gen_tasks_v2.py` 是 V1 历史文件，不进入 V2 运行。
+
+## V2 文件
+
+```text
 probes/
-  build_tasks.py        # 阶段1：从 data/sft 构造欠约束任务（clear/under query + fake_profile）
-  user_simulator.py     # 阶段2：受控版用户模拟器（规则+模板，只答所问）
-  test_user_simulator.py# 用户模拟器单元测试
-  runner.py             # 阶段3：双臂运行器（基线 vs 澄清），mock/real 两种模式
-  metrics.py            # 阶段4：指标计算 + 判据 PASS/FAIL
-  data/tasks.json       # 生成的 25 个欠约束任务
-  data/tasks_review.md  # 人工抽查清单（未勾选）
-  outputs/              # 轨迹与结果（git-ignore 可加）
-  README.md             # 本文档
+  data/tasks_v2.json  # 25 个单隐藏字段任务
+  task_schema.py      # 零 API 校验与隐藏字段满足判断
+  runner.py           # No-Ask / Oracle-Ask 配对运行器
+  metrics.py          # 配对指标与预登记门槛
+  outputs/v2/<run_id>/
+    manifest.json
+    trajectories.jsonl
+    metrics_summary.json
+    metrics_summary.md
 ```
 
-## 快速开始
+## 零成本检查
 
-```bash
-# 1) 离线冒烟（不依赖环境/API，验证链路）
-python probes/runner.py --mode mock --limit 3
+```powershell
+# 1. 检查训练来源、评测集隔离、单字段、泄漏、Oracle 一致性和字段分布
+python probes/runner.py --mode validate
 
-# 2) 真实运行（需 ShopSimulator 服务 + LLM API）
-python probes/runner.py --mode real --limit 5   # 先小批量
-python probes/runner.py --mode real             # 全量 25 任务 × 2 臂
+# 2. 跑完整 25×2 Mock 链路，不连接 ShopSimulator 或模型 API
+python probes/runner.py --mode mock --run-id mock-v2
 
-# 3) 指标与判据
-python probes/metrics.py
+# 3. 验证配对汇总；Mock 结果会标记 NOT_APPLICABLE_MOCK
+python probes/metrics.py --run-id mock-v2
+
+# 4. 专项单元测试
+python -m pytest tests/test_probe_b_v2.py -q
 ```
 
-## 真实运行前置
+## 真实一对冒烟
 
-- ShopSimulator 环境服务：`bash scripts/start_environment.sh`（端口 5700，无 GPU）
-- LLM API：`RealLLM` 走 OpenAI 兼容接口，通过环境变量提供：
-  - `OPENAI_BASE_URL`（如 DeepSeek 的 `https://api.deepseek.com/v1`）
-  - `OPENAI_API_KEY`
-  - `OPENAI_MODEL`（如 `deepseek-chat`）
-- **注意**：真实模式的 `RealEnv` 依赖环境的 `observation_state` 结构，首次运行前
-  建议先手动 reset+step 一次确认字段（见 `runner.py` 中兜底逻辑）。
+真实模式需要：
 
-## 指标与判据（预先固定）
+- ShopSimulator Environment v2.1 已运行在 `http://127.0.0.1:5700`；
+- 设置 `OPENAI_BASE_URL`、`OPENAI_API_KEY` 和 `OPENAI_MODEL`；
+- 用户明确批准这次付费调用。
 
-| 指标 | 判据 |
-|---|---|
-| 严格成功率（模糊子集） | 澄清臂 ≥ 基线 +10pp |
-| 错误购买率 | 澄清臂 ≤ 基线 |
-| 平均澄清轮数 | ≤ 2 轮 |
-| 平均步数 | ≤ 1.3x 基线 |
-| 清晰任务成功率（对照） | 两臂相当 |
+批准后只运行一个配对任务：
 
-## 当前进度
+```powershell
+python probes/runner.py --mode real --run-id oracle-v2-real --limit-pairs 1 --allow-real-api
+python probes/metrics.py --run-id oracle-v2-real
+```
 
-- [x] 阶段1：任务欠约束化（25 任务生成，`tasks_review.md` 待人工抽查勾选）
-- [x] 阶段2：受控用户模拟器 + 单测（5/5 PASS）
-- [x] 阶段3：双臂运行器 + mock 冒烟通过
-- [x] 阶段4：指标计算与判据
-- [ ] 阶段3 真实运行（需环境服务 + API key）
-- [ ] 阶段5 结论填写（下表）
+这两条有效轨迹直接计入最终 25 对。人工确认消息顺序、Oracle 注入、环境步数和 Reward 明细后，用同一个 `run_id` 断点续跑剩余任务：
 
-## 结果（待真实运行后填写）
+```powershell
+python probes/runner.py --mode real --run-id oracle-v2-real --limit-pairs 25 --allow-real-api
+python probes/metrics.py --run-id oracle-v2-real
+```
 
-> 占位：跑完 `--mode real` + `metrics.py` 后，把对比表与结论贴到这里。
+Runner 会跳过已经尝试的 task-arm 组合。首轮最多 50 次轨迹尝试、默认最多 700 次模型 HTTP 请求；基础设施异常会停止运行，不自动补跑，也不会提高调用上限。
 
-## 诚实边界
+## 固定判据
 
-- 探针验证的是**"澄清对欠约束指令的价值"**（机制层面），**不等于**真实用户画像个性化的完整验证；
-- 本探针用"从原 Query 隐藏约束"代理用户偏好（`fake_profile`），真正的结构化用户画像（年龄/性别/消费层级/品牌偏好等）需在后续自建多轮数据时按 ShopSimulator 论文构造；
-- mock 模式 reward 为 None，指标仅验证流程，不代表真实效果。
+只有 25 个完整有效真实任务对才能做决策，并且三项必须同时满足：
+
+1. Oracle 相对 No-Ask 净增加至少 3 个严格成功任务；
+2. Oracle 隐藏字段满足率更高；
+3. Oracle 的真实 `reward_type == "wrong_purchase"` 数量不高于 No-Ask。
+
+结果仍然只是低成本机制筛查，不是统计显著性结论。通过后才加入 Autonomous-Ask；用户画像实验排在自主澄清机制之后。

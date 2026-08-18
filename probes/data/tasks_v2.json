@@ -1,0 +1,477 @@
+[
+  {
+    "task_id": 16576,
+    "clear_query": "推荐一双适合职场女性的黑色高跟鞋，脚36码，跟高5厘米，细跟，带有水钻装饰，预算价格1000元以内。",
+    "under_query": "推荐一双适合职场女性的黑色高跟鞋，脚36码，跟高5厘米，细跟，带有水钻装饰。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "1000元以内",
+      "normalized_value": {"operator": "<=", "amount": 1000, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "预算价格1000元以内",
+      "leakage_terms": ["1000元", "一千元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "预算价格1000元以内。",
+      "answer_facts": {"budget_max": 1000, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 16576, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 21247,
+    "clear_query": "我要买一支有防晒和保湿功能的绿色隔离霜，适合日常打底使用，能够修饰泛红皮肤。WLAB家的口碑不错，价格大概在70元左右，帮我找下。",
+    "under_query": "我要买一支有防晒和保湿功能的隔离霜，适合日常打底使用，能够修饰泛红皮肤。WLAB家的口碑不错，价格大概在70元左右，帮我找下。",
+    "latent_goal": {
+      "field": "color",
+      "raw_value": "绿色",
+      "normalized_value": {"value": "绿色", "match_terms": ["绿色"]},
+      "reward_role": "soft_preference",
+      "source_span": "绿色",
+      "leakage_terms": ["绿色"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对颜色有什么要求？",
+      "answer": "想要绿色。",
+      "answer_facts": {"color": "绿色"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 21247, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 7211,
+    "clear_query": "请找一双美国进口的垒球鞋，想在闽旺外贸库存鞋店里买，要适合小孩参加比赛时穿着，上脚特别轻，蹦跳灵活，长时间穿也不容易坏，要碎钉鞋底的，白蓝配色，适合40码的脚，预算价格在180元以内。",
+    "under_query": "请找一双垒球鞋，想在闽旺外贸库存鞋店里买，要适合小孩参加比赛时穿着，上脚特别轻，蹦跳灵活，长时间穿也不容易坏，要碎钉鞋底的，白蓝配色，适合40码的脚，预算价格在180元以内。",
+    "latent_goal": {
+      "field": "origin",
+      "raw_value": "美国进口",
+      "normalized_value": {"value": "美国进口", "match_terms": ["美国进口", "美国"]},
+      "reward_role": "soft_preference",
+      "source_span": "美国进口",
+      "leakage_terms": ["美国进口", "美国"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对产地有什么要求？",
+      "answer": "想要美国进口的。",
+      "answer_facts": {"origin": "美国进口"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 7211, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 18520,
+    "clear_query": "想找一支韩国产的多功能水光棒，集高光、腮红和修容于一体，颜色为天蓝色系，质地水润自然，能提亮脸部并修饰轮廓。预算在200元以内。",
+    "under_query": "想找一支韩国产的多功能水光棒，集高光、腮红和修容于一体，颜色为天蓝色系，质地水润自然，能提亮脸部并修饰轮廓。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "200元以内",
+      "normalized_value": {"operator": "<=", "amount": 200, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "预算在200元以内",
+      "leakage_terms": ["200元", "两百元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "预算在200元以内。",
+      "answer_facts": {"budget_max": 200, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 18520, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 13489,
+    "clear_query": "我想找一款可折叠式的儿童座椅，规格要小一点的，可以安装在9号Nz系列电动车座位前面使用，座椅的颜色是黑色的，价格在90元左右。",
+    "under_query": "我想找一款可折叠式的儿童座椅，规格要小一点的，可以安装在9号Nz系列电动车座位前面使用，座椅的颜色是黑色的。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "90元左右",
+      "normalized_value": {"operator": "<=", "amount": 90, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "价格在90元左右",
+      "leakage_terms": ["90元", "九十元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "价格在90元左右。",
+      "answer_facts": {"budget_max": 90, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 13489, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 12403,
+    "clear_query": "推荐一款家用多功能按摩器，颜色偏金色，具有颈、肩、腰、背四个部位同时按摩的功能，可以用来当靠垫，覆盖到的按摩面积加高加宽，可以酸解全身肌肉酸痛，还拥有恒定温度热敷功能，智能的遥控设备能进行多种模式和档位选择，同时有节能模式，售价600元左右。",
+    "under_query": "推荐一款家用多功能按摩器，颜色偏金色，具有颈、肩、腰、背四个部位同时按摩的功能，可以用来当靠垫，覆盖到的按摩面积加高加宽，可以酸解全身肌肉酸痛，还拥有恒定温度热敷功能，智能的遥控设备能进行多种模式和档位选择，同时有节能模式。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "600元左右",
+      "normalized_value": {"operator": "<=", "amount": 600, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "售价600元左右",
+      "leakage_terms": ["600元", "六百元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "售价600元左右。",
+      "answer_facts": {"budget_max": 600, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 12403, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 13089,
+    "clear_query": "打算买款贴纸给玻璃和亚克力板改个颜色，想要红色的，有透光性且呈透明状态，可直接粘贴，要尺寸为50×100厘米的，预算十元出头。",
+    "under_query": "打算买款贴纸给玻璃和亚克力板改个颜色，要有透光性且呈透明状态，可直接粘贴，要尺寸为50×100厘米的，预算十元出头。",
+    "latent_goal": {
+      "field": "color",
+      "raw_value": "红色",
+      "normalized_value": {"value": "红色", "match_terms": ["红色"]},
+      "reward_role": "soft_preference",
+      "source_span": "红色",
+      "leakage_terms": ["红色"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对颜色有什么要求？",
+      "answer": "想要红色。",
+      "answer_facts": {"color": "红色"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 13089, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 2720,
+    "clear_query": "请帮我找一款粉银色包装的口红，是圆管形状的，价格在180元左右，品牌为圣罗兰，不是预售的。",
+    "under_query": "请帮我找一款粉银色包装的口红，是圆管形状的，价格在180元左右，不是预售的。",
+    "latent_goal": {
+      "field": "brand",
+      "raw_value": "圣罗兰",
+      "normalized_value": {"value": "圣罗兰", "match_terms": ["圣罗兰", "YSL"]},
+      "reward_role": "soft_preference",
+      "source_span": "品牌为圣罗兰",
+      "leakage_terms": ["圣罗兰", "YSL"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对品牌有什么要求？",
+      "answer": "品牌想要圣罗兰。",
+      "answer_facts": {"brand": "圣罗兰"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 2720, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 10882,
+    "clear_query": "帮我找一款不用打孔可以简易安装的家用闭门器，能够自动关门，有液压缓冲作用，适用于推拉门，拉绳是黑色的，拉力为500克拉力，使用1.2米长的304实心钢丝绳，价格在25元左右。",
+    "under_query": "帮我找一款不用打孔可以简易安装的家用闭门器，能够自动关门，有液压缓冲作用，适用于推拉门，拉绳是黑色的，拉力为500克拉力，使用1.2米长的304实心钢丝绳。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "25元左右",
+      "normalized_value": {"operator": "<=", "amount": 25, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "价格在25元左右",
+      "leakage_terms": ["25元", "二十五元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "价格在25元左右。",
+      "answer_facts": {"budget_max": 25, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 10882, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 10584,
+    "clear_query": "能否推荐一款通用于PSVita2000和PSVita1000的黑色硬质保护包，材质是EVA的，要求能把灰挡在外面，不用经常清理，还能经得住压，在上面放东西也不容易变形，同时还要不怕晃，不小心磕碰到，也能保护里面的东西，价格在20元以下。",
+    "under_query": "能否推荐一款通用于PSVita2000和PSVita1000的黑色硬质保护包，材质是EVA的，要求能把灰挡在外面，不用经常清理，还能经得住压，在上面放东西也不容易变形，同时还要不怕晃，不小心磕碰到，也能保护里面的东西。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "20元以下",
+      "normalized_value": {"operator": "<=", "amount": 20, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "价格在20元以下",
+      "leakage_terms": ["20元", "二十元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "价格在20元以下。",
+      "answer_facts": {"budget_max": 20, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 10584, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 21175,
+    "clear_query": "麻烦推荐一款金色采用尼龙纤维的织锦缎类布料，幅宽70多cm，用来做国风服饰，预算十来块钱就行。",
+    "under_query": "麻烦推荐一款采用尼龙纤维的织锦缎类布料，幅宽70多cm，用来做国风服饰，预算十来块钱就行。",
+    "latent_goal": {
+      "field": "color",
+      "raw_value": "金色",
+      "normalized_value": {"value": "金色", "match_terms": ["金色"]},
+      "reward_role": "soft_preference",
+      "source_span": "金色",
+      "leakage_terms": ["金色"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对颜色有什么要求？",
+      "answer": "想要金色。",
+      "answer_facts": {"color": "金色"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 21175, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 15886,
+    "clear_query": "给我找一瓶五百毫升左右、德国进口的身体乳，香味特别好闻的，擦完皮肤滑滑的还留香很久，价格两百元左右。",
+    "under_query": "给我找一瓶五百毫升左右的身体乳，香味特别好闻的，擦完皮肤滑滑的还留香很久，价格两百元左右。",
+    "latent_goal": {
+      "field": "origin",
+      "raw_value": "德国进口",
+      "normalized_value": {"value": "德国进口", "match_terms": ["德国进口", "德国"]},
+      "reward_role": "soft_preference",
+      "source_span": "德国进口",
+      "leakage_terms": ["德国进口", "德国"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对产地有什么要求？",
+      "answer": "想要德国进口的。",
+      "answer_facts": {"origin": "德国进口"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 15886, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 16673,
+    "clear_query": "有没有一款专为110身高的儿童设计的三合一户外夹克，要左西品牌的，采用黑色系配色，具有4级防水功能，适合春秋穿着，价格大概在150元左右的。",
+    "under_query": "有没有一款专为110身高的儿童设计的三合一户外夹克，要左西品牌的，采用黑色系配色，具有4级防水功能，适合春秋穿着。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "150元左右",
+      "normalized_value": {"operator": "<=", "amount": 150, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "价格大概在150元左右",
+      "leakage_terms": ["150元", "一百五十元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "价格大概在150元左右。",
+      "answer_facts": {"budget_max": 150, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 16673, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 17278,
+    "clear_query": "有没有Monster Guardians品牌的女款一体式瑜伽服，穿上去紧身很有弹性，裸感质地，M码，想买银灰色套装，预算在五百元以内。",
+    "under_query": "有没有一款女款一体式瑜伽服，穿上去紧身很有弹性，裸感质地，M码，想买银灰色套装，预算在五百元以内。",
+    "latent_goal": {
+      "field": "brand",
+      "raw_value": "Monster Guardians",
+      "normalized_value": {"value": "Monster Guardians", "match_terms": ["Monster Guardians"]},
+      "reward_role": "soft_preference",
+      "source_span": "Monster Guardians品牌",
+      "leakage_terms": ["Monster Guardians"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对品牌有什么要求？",
+      "answer": "品牌想要Monster Guardians。",
+      "answer_facts": {"brand": "Monster Guardians"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 17278, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 4820,
+    "clear_query": "我的预算在110元内，要买集多功能于一体的定位合页，大小是4寸的，带隐藏式铰链，带减缓冲击的功能，可以90度固定位置，颜色为偏黑色，需要4只。",
+    "under_query": "要买集多功能于一体的定位合页，大小是4寸的，带隐藏式铰链，带减缓冲击的功能，可以90度固定位置，颜色为偏黑色，需要4只。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "110元内",
+      "normalized_value": {"operator": "<=", "amount": 110, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "我的预算在110元内",
+      "leakage_terms": ["110元", "一百一十元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "我的预算在110元内。",
+      "answer_facts": {"budget_max": 110, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 4820, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 7974,
+    "clear_query": "最近迷上旗袍，但没有与之搭配的包包，想要一款具有复古风又有新中式风的迷你型包包，表面点缀着金色蝴蝶图案，十分漂亮，手提是藤编的，不易损坏，价格中等就行，在90元以内。",
+    "under_query": "最近迷上旗袍，但没有与之搭配的包包，想要一款具有复古风又有新中式风的迷你型包包，表面点缀着金色蝴蝶图案，十分漂亮，手提是藤编的，不易损坏。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "90元以内",
+      "normalized_value": {"operator": "<=", "amount": 90, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "价格中等就行，在90元以内",
+      "leakage_terms": ["90元", "九十元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "价格中等就行，在90元以内。",
+      "answer_facts": {"budget_max": 90, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 7974, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 6935,
+    "clear_query": "帮我看看有没有一款适合儿童使用的彩色假发片，多巴胺风格的那种，颜色是棕黑色渐变白茶灰色，两片装，价格在30元左右，可以用来增加发量，适合编发和扎发。",
+    "under_query": "帮我看看有没有一款适合儿童使用的彩色假发片，多巴胺风格的那种，两片装，价格在30元左右，可以用来增加发量，适合编发和扎发。",
+    "latent_goal": {
+      "field": "color",
+      "raw_value": "棕黑色渐变白茶灰色",
+      "normalized_value": {"value": "棕黑色渐变白茶灰色", "match_terms": ["棕黑色渐变白茶灰色", "白茶灰"]},
+      "reward_role": "soft_preference",
+      "source_span": "颜色是棕黑色渐变白茶灰色",
+      "leakage_terms": ["棕黑色渐变白茶灰色", "白茶灰"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对颜色有什么要求？",
+      "answer": "想要棕黑色渐变白茶灰色。",
+      "answer_facts": {"color": "棕黑色渐变白茶灰色"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 6935, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 18637,
+    "clear_query": "想买双绣花鞋作为母亲节礼物，送给妈妈，鞋子穿起来要舒服轻快不勒脚，妈妈喜欢米白色一点，脚码好像是36吧，90块钱左右最好。",
+    "under_query": "想买双绣花鞋作为母亲节礼物，送给妈妈，鞋子穿起来要舒服轻快不勒脚，脚码好像是36吧，90块钱左右最好。",
+    "latent_goal": {
+      "field": "color",
+      "raw_value": "米白色",
+      "normalized_value": {"value": "米白色", "match_terms": ["米白色", "米白"]},
+      "reward_role": "soft_preference",
+      "source_span": "妈妈喜欢米白色一点",
+      "leakage_terms": ["米白色", "米白"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对颜色有什么要求？",
+      "answer": "想要米白色。",
+      "answer_facts": {"color": "米白色"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 18637, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 5496,
+    "clear_query": "我需要买一款全真发的轻薄蓬松卷发片，水波纹设计，长度为40厘米，颜色是那种深棕色，1片就够了，适合日常佩戴，看起来隐形无痕，价格在70元左右。",
+    "under_query": "我需要买一款全真发的轻薄蓬松卷发片，水波纹设计，长度为40厘米，颜色是那种深棕色，1片就够了，适合日常佩戴，看起来隐形无痕。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "70元左右",
+      "normalized_value": {"operator": "<=", "amount": 70, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "价格在70元左右",
+      "leakage_terms": ["70元", "七十元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "价格在70元左右。",
+      "answer_facts": {"budget_max": 70, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 5496, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 20121,
+    "clear_query": "请问有没有德国进口的艾者思颗粒，主要成分为车前草。需要适合解决孕妇便秘问题用的，想买三盒装的，预算600块左右。",
+    "under_query": "请问有没有艾者思颗粒，主要成分为车前草。需要适合解决孕妇便秘问题用的，想买三盒装的，预算600块左右。",
+    "latent_goal": {
+      "field": "origin",
+      "raw_value": "德国进口",
+      "normalized_value": {"value": "德国进口", "match_terms": ["德国进口", "德国"]},
+      "reward_role": "soft_preference",
+      "source_span": "德国进口",
+      "leakage_terms": ["德国进口", "德国"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对产地有什么要求？",
+      "answer": "想要德国进口的。",
+      "answer_facts": {"origin": "德国进口"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 20121, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 13871,
+    "clear_query": "给我推荐一款25年最新的适合男生使用的人工智能翻译眼镜，购买以后要永久不付费使用，支持在说话者讲话的同时将其语言转化为需要的语言，包含前沿技术，不能让别人看出来，同时装有无线耳机，眼镜的镜片要可以替换，颜色为黑色，价格在160元以下。",
+    "under_query": "给我推荐一款25年最新的适合男生使用的人工智能翻译眼镜，购买以后要永久不付费使用，支持在说话者讲话的同时将其语言转化为需要的语言，包含前沿技术，不能让别人看出来，同时装有无线耳机，眼镜的镜片要可以替换，颜色为黑色。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "160元以下",
+      "normalized_value": {"operator": "<=", "amount": 160, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "价格在160元以下",
+      "leakage_terms": ["160元", "一百六十元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "价格在160元以下。",
+      "answer_facts": {"budget_max": 160, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 13871, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 20518,
+    "clear_query": "我的预算在55元左右，想找一款适合女性在夏季穿戴的焦下防晒袖套，我想买2双，颜色最好都是灰色，希望适合我在开车时使用。",
+    "under_query": "想找一款适合女性在夏季穿戴的焦下防晒袖套，我想买2双，颜色最好都是灰色，希望适合我在开车时使用。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "55元左右",
+      "normalized_value": {"operator": "<=", "amount": 55, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "我的预算在55元左右",
+      "leakage_terms": ["55元", "五十五元"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "我的预算在55元左右。",
+      "answer_facts": {"budget_max": 55, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 20518, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 17319,
+    "clear_query": "给我找一款米白色的小型电动升降支架，结构要求是剪叉式，我想用于茶台和工作台，价格在520元左右的。",
+    "under_query": "给我找一款小型电动升降支架，结构要求是剪叉式，我想用于茶台和工作台，价格在520元左右的。",
+    "latent_goal": {
+      "field": "color",
+      "raw_value": "米白色",
+      "normalized_value": {"value": "米白色", "match_terms": ["米白色", "米白"]},
+      "reward_role": "soft_preference",
+      "source_span": "米白色",
+      "leakage_terms": ["米白色", "米白"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对颜色有什么要求？",
+      "answer": "想要米白色。",
+      "answer_facts": {"color": "米白色"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 17319, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 20248,
+    "clear_query": "找一款宝宝推车，适合大童的，要求能一按就收好，单手携带轻松，要带个帆布收纳包，遮阳篷和底袋都能拆洗的那种，靠背还能调角度，整体外观是白色的，价格在300左右。",
+    "under_query": "找一款宝宝推车，适合大童的，要求能一按就收好，单手携带轻松，要带个帆布收纳包，遮阳篷和底袋都能拆洗的那种，靠背还能调角度，整体外观是白色的。",
+    "latent_goal": {
+      "field": "budget",
+      "raw_value": "300左右",
+      "normalized_value": {"operator": "<=", "amount": 300, "currency": "CNY"},
+      "reward_role": "hard_gate",
+      "source_span": "价格在300左右",
+      "leakage_terms": ["300", "三百"]
+    },
+    "oracle_turn": {
+      "question": "这次购买的预算上限是多少？",
+      "answer": "价格在300元左右。",
+      "answer_facts": {"budget_max": 300, "currency": "CNY"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 20248, "construction_version": "probe_b_v2", "review_status": "approved"}
+  },
+  {
+    "task_id": 21881,
+    "clear_query": "请筛选一台徕卡品牌的数码照相机，要黑色机身的，带有64G内存卡，可以把照片上传给苹果手机，能够自动对焦，带有多种滤镜，像素为5000w，价格在200元左右，适合学生拍vlog时使用。",
+    "under_query": "请筛选一台数码照相机，要黑色机身的，带有64G内存卡，可以把照片上传给苹果手机，能够自动对焦，带有多种滤镜，像素为5000w，价格在200元左右，适合学生拍vlog时使用。",
+    "latent_goal": {
+      "field": "brand",
+      "raw_value": "徕卡",
+      "normalized_value": {"value": "徕卡", "match_terms": ["徕卡", "Leica"]},
+      "reward_role": "soft_preference",
+      "source_span": "徕卡品牌",
+      "leakage_terms": ["徕卡", "Leica"]
+    },
+    "oracle_turn": {
+      "question": "这次购买对品牌有什么要求？",
+      "answer": "品牌想要徕卡。",
+      "answer_facts": {"brand": "徕卡"}
+    },
+    "provenance": {"source_split": "sft_train", "source_task_id": 21881, "construction_version": "probe_b_v2", "review_status": "approved"}
+  }
+]
