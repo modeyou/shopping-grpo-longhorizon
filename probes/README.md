@@ -56,6 +56,7 @@ export DASHSCOPE_API_KEY
 export OPENAI_API_KEY="$DASHSCOPE_API_KEY"
 export OPENAI_BASE_URL="https://ws-66q3vmu9ebhzahay.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 export OPENAI_MODEL="deepseek-v4-flash-0731"
+export SHOPSIM_BASE_URL="http://127.0.0.1:5700"
 ```
 
 Runner 会为该百炼 DeepSeek V4 模型显式发送 `enable_thinking: false`，避免思考 Token 增加成本；API Key 不会写入 manifest 或轨迹。

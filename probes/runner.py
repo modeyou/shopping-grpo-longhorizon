@@ -49,6 +49,7 @@ ARMS = ("no_ask", "oracle_ask")
 DEFAULT_SEED = 20260818
 DEFAULT_MAX_STEPS = 35
 DEFAULT_MAX_LLM_CALLS = 700
+DEFAULT_SHOPSIM_BASE_URL = "http://127.0.0.1:5700"
 DEFAULT_OUTPUT_ROOT = PROBE_DIR / "outputs" / "v2"
 TRAJECTORIES_FILE = "trajectories.jsonl"
 MANIFEST_FILE = "manifest.json"
@@ -238,7 +239,7 @@ def run_trajectory(
     *,
     client,
     env_factory,
-    base_url: str,
+    shopsim_base_url: str,
     max_steps: int,
     run_id: str,
     task_hash: str,
@@ -247,7 +248,7 @@ def run_trajectory(
     prompt, visible_instruction = build_arm_inputs(task, arm)
 
     def factory(**kwargs):
-        inner = env_factory(task, kwargs.get("base_url", base_url))
+        inner = env_factory(task, kwargs.get("base_url", shopsim_base_url))
         return InstructionOverrideEnv(
             inner,
             visible_instruction=visible_instruction,
@@ -258,7 +259,7 @@ def run_trajectory(
         {"task_id": int(task["task_id"]), "prompt": prompt},
         client=client,
         env_factory=factory,
-        base_url=base_url,
+        base_url=shopsim_base_url,
         max_steps=int(max_steps),
         tools=SHOP_TOOL_SCHEMAS,
         attempt_index=0,
@@ -310,6 +311,7 @@ def create_or_load_manifest(
     temperature: float,
     model: str,
     base_url: str,
+    shopsim_base_url: str,
 ) -> dict[str, Any]:
     path = run_dir / MANIFEST_FILE
     immutable = {
@@ -325,6 +327,7 @@ def create_or_load_manifest(
         "temperature": float(temperature),
         "model": model,
         "api_base": _public_api_base(base_url),
+        "shopsim_base": _public_api_base(shopsim_base_url),
         "system_prompt_hash": canonical_hash(SYSTEM_PROMPT),
         "tool_schema_hash": canonical_hash(SHOP_TOOL_SCHEMAS),
         "git_commit": _git_commit(),
@@ -385,7 +388,7 @@ def run(args) -> int:
         raise ValueError("run_id must be one plain directory name")
     run_dir = Path(args.outdir) / run_id
     model = args.model or os.environ.get("OPENAI_MODEL", "deepseek-chat")
-    base_url = args.base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    llm_base_url, shopsim_base_url = resolve_service_urls(args)
     manifest = create_or_load_manifest(
         run_dir,
         run_id=run_id,
@@ -397,7 +400,10 @@ def run(args) -> int:
         max_llm_calls=args.max_llm_calls,
         temperature=args.temperature,
         model=model if args.mode == "real" else "mock",
-        base_url=base_url if args.mode == "real" else "mock://offline",
+        base_url=llm_base_url if args.mode == "real" else "mock://offline",
+        shopsim_base_url=(
+            shopsim_base_url if args.mode == "real" else "mock://offline"
+        ),
     )
     manifest_path = run_dir / MANIFEST_FILE
 
@@ -416,7 +422,7 @@ def run(args) -> int:
             raise ValueError("OPENAI_API_KEY is required for real mode")
         client_factory = lambda: OpenAIChatClient(  # noqa: E731
             model=model,
-            base_url=base_url,
+            base_url=llm_base_url,
             api_key=api_key,
             temperature=0.0,
             max_tokens=args.max_tokens,
@@ -455,7 +461,7 @@ def run(args) -> int:
             arm,
             client=client_factory(),
             env_factory=env_factory,
-            base_url=base_url,
+            shopsim_base_url=shopsim_base_url,
             max_steps=args.max_steps,
             run_id=run_id,
             task_hash=task_hash,
@@ -499,10 +505,29 @@ def parse_args(argv=None):
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--model")
-    parser.add_argument("--base-url")
+    parser.add_argument("--base-url", help="LLM OpenAI-compatible base URL")
+    parser.add_argument(
+        "--shopsim-base-url",
+        help=(
+            "ShopSimulator service URL "
+            "(default: SHOPSIM_BASE_URL or 127.0.0.1:5700)"
+        ),
+    )
     parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--allow-real-api", action="store_true")
     return parser.parse_args(argv)
+
+
+def resolve_service_urls(args) -> tuple[str, str]:
+    """Resolve the LLM and ShopSimulator endpoints without conflating them."""
+
+    llm_base_url = args.base_url or os.environ.get(
+        "OPENAI_BASE_URL", "https://api.openai.com/v1"
+    )
+    shopsim_base_url = args.shopsim_base_url or os.environ.get(
+        "SHOPSIM_BASE_URL", DEFAULT_SHOPSIM_BASE_URL
+    )
+    return llm_base_url.rstrip("/"), shopsim_base_url.rstrip("/")
 
 
 def main(argv=None) -> int:

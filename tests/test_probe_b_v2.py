@@ -13,6 +13,8 @@ from probes.runner import (
     build_arm_inputs,
     load_records,
     main as runner_main,
+    parse_args,
+    resolve_service_urls,
     run_trajectory,
     schedule_pairs,
 )
@@ -75,7 +77,7 @@ class ProbeBV2TaskTest(unittest.TestCase):
                 arm,
                 client=MockClient(),
                 env_factory=lambda current_task, url, env=env: env,
-                base_url="mock://offline",
+                shopsim_base_url="mock://offline",
                 max_steps=35,
                 run_id="test",
                 task_hash=task_hash,
@@ -105,7 +107,7 @@ class ProbeBV2TaskTest(unittest.TestCase):
             "no_ask",
             client=FailingClient(),
             env_factory=lambda current_task, url: env,
-            base_url="mock://offline",
+            shopsim_base_url="mock://offline",
             max_steps=35,
             run_id="test",
             task_hash=validate_tasks(self.tasks)["task_hash"],
@@ -141,7 +143,7 @@ class ProbeBV2TaskTest(unittest.TestCase):
             "no_ask",
             client=MalformedClient(),
             env_factory=lambda current_task, url: env,
-            base_url="mock://offline",
+            shopsim_base_url="mock://offline",
             max_steps=35,
             run_id="test",
             task_hash=validate_tasks(self.tasks)["task_hash"],
@@ -165,6 +167,47 @@ class ProbeBV2TaskTest(unittest.TestCase):
 
         self.assertEqual(budget.used, 2)
         self.assertEqual(changes, [1, 2])
+
+    def test_llm_and_shopsim_urls_are_resolved_separately(self):
+        args = parse_args(
+            [
+                "--base-url",
+                "https://workspace.maas.aliyuncs.com/compatible-mode/v1/",
+                "--shopsim-base-url",
+                "http://127.0.0.1:5700/",
+            ]
+        )
+
+        self.assertEqual(
+            resolve_service_urls(args),
+            (
+                "https://workspace.maas.aliyuncs.com/compatible-mode/v1",
+                "http://127.0.0.1:5700",
+            ),
+        )
+
+    def test_run_trajectory_passes_only_shopsim_url_to_environment(self):
+        task = self.tasks[0]
+        env = FakeShopEnv(task)
+        seen_urls = []
+
+        def env_factory(current_task, url):
+            seen_urls.append(url)
+            return env
+
+        run_trajectory(
+            task,
+            "no_ask",
+            client=MockClient(),
+            env_factory=env_factory,
+            shopsim_base_url="http://127.0.0.1:5700",
+            max_steps=35,
+            run_id="test",
+            task_hash=validate_tasks(self.tasks)["task_hash"],
+            llm_calls_before=0,
+        )
+
+        self.assertEqual(seen_urls, ["http://127.0.0.1:5700"])
 
     def test_schedule_is_seeded_and_contains_one_attempt_per_arm(self):
         first = schedule_pairs(self.tasks, 20260818, limit_pairs=3)
