@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -158,8 +159,9 @@ class RealLLM(BaseLLM):
     def __init__(self, model=None, base_url=None, api_key=None, temperature=0.7):
         from openai import OpenAI
 
-        self.client = OpenAI(api_key=api_key or None, base_url=base_url or None)
-        self.model = model or "deepseek-chat"
+        self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"),
+                             base_url=base_url or os.environ.get("OPENAI_BASE_URL"))
+        self.model = model or os.environ.get("OPENAI_MODEL", "deepseek-chat")
         self.temperature = temperature
 
     def complete(self, messages, tools):
