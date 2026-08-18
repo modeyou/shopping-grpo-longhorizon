@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 BUDGET_KW = ["预算", "价格", "多少钱", "价位", "能接受", "花销", "贵", "便宜", "预算内", "价格上限"]
@@ -24,38 +25,49 @@ FIELD_TEMPLATES = {
 
 UNKNOWN_ANSWER = "这个我不太确定，你按合适的来就行。"
 
+# 预算值的口语前缀清理（"价格在180元左右" -> "180元左右"）
+_BUDGET_PREFIXES = ["我的预算在", "价格大概在", "价格在", "售价在", "费用控制在", "预算控制在", "预算", "售价", "价格", "费用", "花费"]
+
+spec_pattern = re.compile(r"[^。！？;；,，]*" + "|".join(SPEC_KW) + r"[^。！？;；,，]*")
+
+
+def _clean_budget(value: str) -> str:
+    v = value.strip()
+    for p in _BUDGET_PREFIXES:
+        if v.startswith(p):
+            v = v[len(p):].strip()
+            break
+    # 处理"别超太多"/"左右"+尾巴，保留主体
+    return v
+
 
 def _match_intent(question: str) -> str | None:
-    """返回命中的字段名（budget/brand/color），未命中返回 None。"""
     q = question.lower()
     for field, (_tpl, kws) in FIELD_TEMPLATES.items():
         for kw in kws:
             if kw.lower() in q:
                 return field
-    # 规格/数量等其它字段：若 fake_profile 中有则按 key 回答
     return "spec"
 
 
 def answer_question(question: str, fake_profile: dict[str, Any]) -> tuple[str, dict]:
-    """根据问题与 fake_profile 生成用户回答。
-
-    返回 (回答文本, info)，info 包含命中字段与是否未知。
-    """
+    """根据问题与 fake_profile 生成用户回答。返回 (回答文本, info)。"""
     field = _match_intent(question)
     if field == "spec":
-        # 尝试匹配 fake_profile 里的具体键
+        # 尝试匹配 fake_profile 里的其它键
         for key, value in fake_profile.items():
             if key in ("budget", "brand", "color"):
                 continue
             if str(key) in question or str(value)[:2] in question:
-                tpl = f"{value}就行。"
-                return tpl, {"field": key, "unknown": False}
+                return f"{value}就行。", {"field": key, "unknown": False}
         return UNKNOWN_ANSWER, {"field": "spec", "unknown": True}
 
     value = fake_profile.get(field)
     if value is None:
         return UNKNOWN_ANSWER, {"field": field, "unknown": True}
 
+    if field == "budget":
+        value = _clean_budget(value)
     tpl = FIELD_TEMPLATES[field][0]
     answer = tpl.format(value=value)
     return answer, {"field": field, "unknown": False}

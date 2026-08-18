@@ -124,6 +124,33 @@ def main():
     print("\n".join(lines))
     print(f"\n-> {out}")
 
+    # ---- 逐任务对比（帮助定位差异来源）----
+    by_id = {}
+    for arm in ARMS:
+        by_id[arm] = {r["task_id"]: r for r in records[arm]}
+
+    order = sorted(by_id["baseline"].keys())
+    pt = ["# 逐任务对比\n", "| task | 基线reward | 澄清reward | diff | 澄清是否提问 |"]
+    pt.append("|---|---|---|---|---|")
+    used = 0
+    for tid in order:
+        b = by_id["baseline"].get(tid)
+        c = by_id["clarify"].get(tid)
+        br = b["terminal"].get("reward") if b else None
+        cr = c["terminal"].get("reward") if c else None
+        asked = sum(1 for s in (c.get("steps") or []) if s.get("kind") == "ask") if c else 0
+        used += bool(asked)
+        diff = (cr - br) if (br is not None and cr is not None) else None
+        pt.append(f"| {tid} | {br} | {cr} | {round(diff,3) if diff is not None else '—'} | {asked} |")
+
+    pt.append("")
+    pt.append(f"澄清臂实际提问的任务数: {used} / {len(order)}")
+    pt_out = OUT_DIR / "per_task.md"
+    with open(pt_out, "w", encoding="utf-8") as f:
+        f.write("\n".join(pt) + "\n")
+    print("\n".join(pt))
+    print(f"\n-> {pt_out}")
+
 
 if __name__ == "__main__":
     main()

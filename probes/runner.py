@@ -314,16 +314,17 @@ _FALLBACK = (
     "你是购物 Agent，负责在 ShopSimulator 中替用户完成购物任务。"
     "只调用提供的工具与商店交互，目标是购买最符合需求的商品，无法满足时合理结束。"
 )
-_CLARIFY_APPENDIX = (
-    "\n【探针附加】用户需求可能不完整。若需求缺少预算/品牌/颜色/规格等关键信息，"
-    "可先调用 ask_user 向用户提问，最多 2 次；之后根据回答继续购物，不要过度提问。"
+_CLARIFY_PROMPT = (
+    "你是购物 Agent，负责在 ShopSimulator 中替用户完成购物任务。"
+    "用户需求可能不完整：可能缺少预算范围、品牌、颜色、规格或型号等关键信息。"
+    "决策规则：若需求缺少上述关键信息之一，且该信息对挑选商品有实际影响，你必须先调用 "
+    "ask_user 向用户提出一个最关键的问题来补全，最多提问 2 次；在关键约束补全之前，"
+    "不要搜索也不要购买。拿到回答后，严格按照用户给出的约束搜索、核验并购买。"
+    "注意你的目标是买到完全满足用户需求的商品，宁可先问清楚，也不要蒙着买。"
 )
 SYSTEM_PROMPT = {
     "baseline": _REF_SYSTEM or _FALLBACK,
-    "clarify": (_REF_SYSTEM or _FALLBACK).replace(
-        "不得向用户追问、确认",
-        "可以视需要向用户提问澄清",
-    ) + _CLARIFY_APPENDIX,
+    "clarify": _CLARIFY_PROMPT,
 }
 
 def main():
