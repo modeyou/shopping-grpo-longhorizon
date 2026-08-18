@@ -10,8 +10,9 @@ import time
 import traceback
 from datetime import datetime, timezone
 from http.client import RemoteDisconnected
-from urllib.error import URLError
 from pathlib import Path
+from urllib.error import URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -82,6 +83,8 @@ class OpenAIChatClient:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.responses_api = self.base_url.endswith("/responses")
+        hostname = (urlsplit(self.base_url).hostname or "").casefold()
+        self.bailian_compatible_api = hostname.endswith(".maas.aliyuncs.com")
         self.api_key = api_key
         self.temperature = float(temperature)
         self.top_p = float(top_p)
@@ -169,21 +172,25 @@ class OpenAIChatClient:
                 # 不能防止模型在未调用工具时持续生成纯文本。
                 "max_tokens": self.max_tokens,
             }
+        is_deepseek_v4 = self.model.casefold().startswith("deepseek-v4")
         if self.thinking:
-            # DeepSeek tool-call thinking requires reasoning_content in later messages.
-            payload.update(
-                {
-                    "thinking": {"type": "enabled"},
-                    "reasoning_effort": self.reasoning_effort,
-                }
-            )
+            # Providers expose different non-standard controls for DeepSeek V4.
+            # Bailian uses enable_thinking; OpenCode Go uses a thinking object.
+            if is_deepseek_v4 and self.bailian_compatible_api:
+                payload["enable_thinking"] = True
+            else:
+                # DeepSeek tool-call thinking requires reasoning_content in later messages.
+                payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = self.reasoning_effort
         else:
             payload.update({"temperature": self.temperature, "top_p": self.top_p})
-            # OpenCode Go defaults DeepSeek V4 to thinking enabled. Omitting the
-            # field therefore does not mean disabled; be explicit for this model
-            # family without sending a provider-specific field to local vLLM.
-            if self.model.casefold().startswith("deepseek-v4"):
-                payload["thinking"] = {"type": "disabled"}
+            # Both Bailian and OpenCode Go default DeepSeek V4 to thinking enabled.
+            # Disable it explicitly using the parameter expected by each provider.
+            if is_deepseek_v4:
+                if self.bailian_compatible_api:
+                    payload["enable_thinking"] = False
+                else:
+                    payload["thinking"] = {"type": "disabled"}
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",

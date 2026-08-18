@@ -854,6 +854,32 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(captured["payload"]["temperature"], 0.0)
         self.assertEqual(captured["payload"]["top_p"], 1.0)
 
+    def test_openai_client_uses_bailian_deepseek_thinking_parameter(self):
+        captured = {}
+
+        def transport(url, payload, headers, timeout):
+            captured.update({"url": url, "payload": payload})
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+        client = OpenAIChatClient(
+            model="deepseek-v4-flash-0731",
+            base_url=(
+                "https://ws-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+            ),
+            api_key="secret",
+            thinking=False,
+            transport=transport,
+        )
+
+        client.complete([{"role": "user", "content": "继续"}], tools=[])
+
+        self.assertFalse(captured["payload"]["enable_thinking"])
+        self.assertNotIn("thinking", captured["payload"])
+        self.assertEqual(
+            captured["url"],
+            "https://ws-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+        )
+
     def test_openai_client_does_not_send_thinking_to_local_non_deepseek_model(self):
         captured = {}
 
