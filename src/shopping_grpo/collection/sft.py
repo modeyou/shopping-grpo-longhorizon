@@ -25,6 +25,7 @@ from shopping_grpo.environment.tools import (
     tool_call_to_action,
 )
 from shopping_grpo.training.sft.dataset import split_rows_by_task
+from shopping_grpo.personalization.masking import MASKED_TEACHER_HINT
 
 
 COLLECTION_SCHEMA_VERSION = "shopping-sft-collection-v2"
@@ -390,6 +391,13 @@ def _is_blocked_training_message(message, blocked_call_ids):
 
 def _sanitize_message(message, terminal_tool_call_id):
     clean = {key: deepcopy(message[key]) for key in ALLOWED_MESSAGE_KEYS if key in message}
+    teacher_suffix = "\n\n" + MASKED_TEACHER_HINT
+    if (
+        clean.get("role") == "system"
+        and isinstance(clean.get("content"), str)
+        and clean["content"].endswith(teacher_suffix)
+    ):
+        clean["content"] = clean["content"][: -len(teacher_suffix)]
     if clean.get("role") == "tool" and clean.get("tool_call_id") == terminal_tool_call_id:
         clean["content"] = "购买已完成。"
     if "tool_calls" in clean:

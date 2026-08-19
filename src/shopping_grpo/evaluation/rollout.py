@@ -30,7 +30,11 @@ from shopping_grpo.environment.tools import (
     tool_call_to_action,
 )
 from shopping_grpo.environment.observation import render_structured_observation
-from shopping_grpo.personalization.masking import apply_persona_mask
+from shopping_grpo.personalization.masking import (
+    MASKED_TEACHER_GUIDANCE_VERSION,
+    MASKED_TEACHER_HINT,
+    apply_persona_mask,
+)
 
 
 SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用户完成一次单轮购物任务。
@@ -322,6 +326,9 @@ def collect_for_task(
             "single_fact_mask" if mask_spec is not None else ("full_persona" if persona else None)
         ),
         "persona_mask_audit": None,
+        "teacher_guidance_version": (
+            MASKED_TEACHER_GUIDANCE_VERSION if mask_spec is not None else None
+        ),
         "interaction_protocol": (
             "shopsimulator-persona-ask-v1" if persona else "shopsimulator-standard-v2"
         ),
@@ -717,6 +724,13 @@ def _initial_messages(task, initial):
             else SYSTEM_PROMPT
         )
         messages.insert(0, {"role": "system", "content": prompt_text})
+    if task.get("persona_mask") is not None:
+        for message in messages:
+            if message.get("role") == "system":
+                message["content"] = (
+                    message.get("content", "") + "\n\n" + MASKED_TEACHER_HINT
+                )
+                break
     user_content = initial.get("instruction", "")
     if initial.get("persona_mode"):
         user_content += "\n\n用户画像：" + json.dumps(

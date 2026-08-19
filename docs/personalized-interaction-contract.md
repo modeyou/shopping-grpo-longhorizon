@@ -178,3 +178,22 @@ SFT schema v2 按条件验收：
 
 这套规则验证“模型发现缺口并通过用户回答恢复了事实”，严格成功则验证最终购物结果。3 条 masked pilot
 仍只是数据管线冒烟，不用来报告模型能力；正式阶段再冻结更大任务集以及 matched no-ask 对照。
+
+## 11. Masked-Pilot-01 与 Teacher 特权提示
+
+`deepseek-v4-flash` 对首批 3 条遮蔽任务均未调用 `ask_user`：
+
+| task | 遮蔽事实 | 提问 | Reward v3 终局 | SFT 判定 |
+|---:|---|---:|---|---|
+| 0 | 儿童年龄 | 0 | 无，`assistant_final` | 拒绝 |
+| 1 | 灯泡功率 | 0 | `gold_purchase` | 拒绝：未恢复 50W 事实 |
+| 2 | 机器型号 | 0 | `partial_alternative_purchase` | 拒绝 |
+
+accepted 为 0/3，证明 mask 与 schema v2 验收按预期工作，也说明仅靠通用个性化 prompt 不能让当前 Teacher
+稳定产生澄清正样本。task 1 的 Gold 不能证明满足隐藏规格，因此仍必须拒绝。此时不扩大数据采集。
+
+Masked-Pilot-02 增加 `masked-gap-teacher-v1` 采集提示：只告诉 Teacher“Actor 可见信息中恰有一个会影响
+选择的事实被遮蔽”，要求它从请求、剩余画像和商品类型推断应询问的事实。提示不包含 mask ID、属性名、
+答案或预生成问题。它属于生成示范所用的特权 Teacher 信号，完整保存在 raw 轨迹便于审计，但在转换 SFT
+行时按精确内容确定性删除；训练样本仍只包含部署时可见的标准个性化 system prompt、遮蔽后的请求画像、
+工具轨迹和用户回答。这样既避免把“存在一个人为遮蔽”作为模型输入捷径，又能低成本蒸馏正确提问动作。

@@ -8,6 +8,13 @@ from copy import deepcopy
 
 
 MASK_SCHEMA_VERSION = "shopsimulator-persona-mask-v1"
+MASKED_TEACHER_GUIDANCE_VERSION = "masked-gap-teacher-v1"
+MASKED_TEACHER_HINT = (
+    "数据采集专用提示：Actor 当前可见信息中有且只有一项会影响正确商品或规格选择的具体事实被遮蔽。"
+    "请结合当前请求、剩余画像和商品类型，判断最可能缺少的适用对象、兼容型号或关键规格，并在首次搜索前"
+    "调用 `ask_user` 提出一个简洁问题。不得猜测答案，一次只问一个主题；用户回答后立即按回答继续购物。"
+    "该提示不包含被遮蔽属性或答案。"
+)
 
 
 class PersonaMaskError(ValueError):

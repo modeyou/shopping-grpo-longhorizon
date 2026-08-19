@@ -11,6 +11,8 @@ from shopping_grpo.evaluation.rollout import (
 )
 from shopping_grpo.personalization import (
     LLMShopper,
+    MASKED_TEACHER_GUIDANCE_VERSION,
+    MASKED_TEACHER_HINT,
     MASK_SCHEMA_VERSION,
     PersonaMaskError,
     apply_persona_mask,
@@ -243,6 +245,24 @@ class PersonalizedInteractionTest(unittest.TestCase):
         self.assertEqual(shopper.calls[0]["context"]["user_persona"]["budget"], "节俭")
         self.assertEqual(trajectory["persona_condition"], "single_fact_mask")
         self.assertEqual(trajectory["persona_mask_audit"]["mask_id"], "budget-style")
+        self.assertEqual(
+            trajectory["teacher_guidance_version"],
+            MASKED_TEACHER_GUIDANCE_VERSION,
+        )
+        self.assertTrue(
+            any(
+                MASKED_TEACHER_HINT in (message.get("content") or "")
+                for message in actor.requests[0]["messages"]
+            )
+        )
+        sft_row = build_sft_row(trajectory)
+        self.assertFalse(
+            any(
+                MASKED_TEACHER_HINT in (message.get("content") or "")
+                for message in sft_row["messages"]
+            )
+        )
+        self.assertEqual(sft_row["messages"][0]["content"], PERSONALIZED_SYSTEM_PROMPT)
 
     def test_llm_shopper_uses_exactly_one_completion_and_no_tools(self):
         client = SequenceClient([{"role": "assistant", "content": "我希望控制在70元以内。"}])
