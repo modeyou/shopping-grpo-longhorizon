@@ -8,6 +8,7 @@ from shopping_grpo.personalization.schema import (
     actor_view,
     finalize_task,
     validate_task,
+    validate_task_against_source,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "actor_view",
     "finalize_task",
     "validate_task",
+    "validate_task_against_source",
 ]

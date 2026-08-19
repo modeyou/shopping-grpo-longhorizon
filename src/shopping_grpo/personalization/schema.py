@@ -38,6 +38,16 @@ CONSTRAINT_SOURCES = {
     "profile_preference",
 }
 HARDNESS = {"hard", "soft"}
+SOURCE_EVIDENCE_PATHS = {
+    "category",
+    "title",
+    "shop_name",
+    "pricing",
+    "attributes",
+    "required_options",
+    "available_options",
+    "original_instruction",
+}
 PROFILE_LIST_FIELDS = {
     "stable_facts",
     "category_preferences",
@@ -145,6 +155,14 @@ def _validate_constraints(private_goal: object, errors: list[str]) -> tuple[dict
             errors.append(f"{prefix}.hardness must be hard or soft")
         if item.get("value") in (None, "", [], {}):
             errors.append(f"{prefix}.value must be non-empty")
+        evidence = item.get("evidence")
+        if not isinstance(evidence, Mapping):
+            errors.append(f"{prefix}.evidence must be an object")
+        else:
+            if evidence.get("source_path") not in SOURCE_EVIDENCE_PATHS:
+                errors.append(f"{prefix}.evidence.source_path is unsupported")
+            if evidence.get("source_value") in (None, "", [], {}):
+                errors.append(f"{prefix}.evidence.source_value must be non-empty")
     return by_id, clarification_ids
 
 
@@ -288,6 +306,53 @@ def finalize_task(task: object) -> dict:
     audit.pop("task_hash", None)
     result["audit"] = audit
     audit["task_hash"] = stable_hash(result)
+    return result
+
+
+def _value_terms(value: object) -> list[str]:
+    if isinstance(value, Mapping):
+        return [term for item in value.values() for term in _value_terms(item)]
+    if isinstance(value, list):
+        return [term for item in value for term in _value_terms(item)]
+    normalized = _normalized_text(value)
+    return [normalized] if normalized else []
+
+
+def validate_task_against_source(task: object, source: object) -> dict:
+    """Check code-owned identity and constraint evidence against one source row."""
+
+    result = validate_task(task)
+    if not isinstance(source, Mapping):
+        raise TaskValidationError(["source facts must be an object"])
+    errors = []
+    identity = result["source"]
+    if identity["shopsim_task_id"] != source.get("shopsim_task_id"):
+        errors.append("task/source shopsim_task_id mismatch")
+    if identity["target_asin"] != str(source.get("target_asin") or ""):
+        errors.append("task/source target_asin mismatch")
+    if identity.get("source_hash") and identity["source_hash"] != source.get("source_hash"):
+        errors.append("task/source source_hash mismatch")
+
+    for constraint in result["private_goal"]["constraints"]:
+        evidence = constraint["evidence"]
+        source_path = evidence["source_path"]
+        actual = source.get(source_path)
+        claimed = evidence["source_value"]
+        actual_text = _normalized_text(canonical_json(actual))
+        claimed_text = _normalized_text(canonical_json(claimed))
+        if not claimed_text or claimed_text not in actual_text:
+            errors.append(
+                f"constraint {constraint['constraint_id']} evidence is absent from source.{source_path}"
+            )
+            continue
+        for term in _value_terms(constraint["value"]):
+            if len(term) >= 2 and term not in claimed_text and claimed_text not in term:
+                errors.append(
+                    f"constraint {constraint['constraint_id']} value disagrees with evidence"
+                )
+                break
+    if errors:
+        raise TaskValidationError(errors)
     return result
 
 

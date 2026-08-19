@@ -4,6 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from shopping_grpo.personalization.generation import (
+    OpenAICompatibleJSONClient,
+    build_architect_task,
+    extract_json_object,
+    validate_critic_response,
+)
 from shopping_grpo.personalization.schema import (
     TaskValidationError,
     actor_view,
@@ -46,6 +52,7 @@ def _clarification_task():
                     "value": "40",
                     "hardness": "hard",
                     "source": "clarification_answer",
+                    "evidence": {"source_path": "required_options", "source_value": "40"},
                 }
             ],
         },
@@ -93,6 +100,7 @@ class PersonalizedTaskSchemaTests(unittest.TestCase):
                 "value": "宽楦",
                 "hardness": "hard",
                 "source": "clarification_answer",
+                "evidence": {"source_path": "required_options", "source_value": "宽楦"},
             }
         )
         duplicate["clarification"]["targets"].append(
@@ -168,6 +176,70 @@ class SourceTaskExportTests(unittest.TestCase):
         self.assertEqual(rows[0]["shopsim_task_id"], 1)
         self.assertNotIn("user_persona", rows[1])
         self.assertTrue(rows[1]["has_reference_persona"])
+
+
+class GenerationBoundaryTests(unittest.TestCase):
+    def test_api_json_parsing_and_code_owned_identity(self):
+        generated = {
+            "profile": {},
+            "current_request": "我想买一双缓震羽毛球鞋。",
+            "private_goal": {
+                "category": "羽毛球鞋",
+                "constraints": [
+                    {
+                        "constraint_id": "c-function",
+                        "field": "function",
+                        "value": "缓震",
+                        "hardness": "hard",
+                        "source": "request_explicit",
+                        "evidence": {"source_path": "attributes", "source_value": "缓震"},
+                    }
+                ],
+            },
+            "clarification": {
+                "should_ask": False,
+                "max_questions": 2,
+                "targets": [],
+            },
+            "conflicts": [],
+        }
+
+        def transport(endpoint, payload, headers, timeout):
+            self.assertTrue(endpoint.endswith("/chat/completions"))
+            self.assertEqual(headers["Authorization"], "Bearer test-key")
+            self.assertEqual(timeout, 10)
+            content = "```json\n" + json.dumps(generated, ensure_ascii=False) + "\n```"
+            return {"choices": [{"message": {"content": content}}]}
+
+        client = OpenAICompatibleJSONClient(
+            model="test-model",
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+            timeout=10,
+            transport=transport,
+        )
+        parsed, _ = client.complete_json(system="system", user="user")
+        task = build_architect_task(
+            parsed,
+            source={
+                "shopsim_task_id": 9,
+                "target_asin": "100000000009",
+                "source_hash": "source-hash",
+                "attributes": ["缓震"],
+            },
+            scenario="complete_request",
+            sequence=3,
+            model="test-model",
+        )
+
+        self.assertEqual(task["task_id"], "pca-000003")
+        self.assertEqual(task["profile"]["profile_id"], "profile-000003")
+        self.assertEqual(client.call_count, 1)
+        self.assertEqual(extract_json_object('{"verdict":"accept","issues":[]}')["verdict"], "accept")
+        self.assertEqual(
+            validate_critic_response({"verdict": "reject", "issues": ["unnatural"]})["issues"],
+            ["unnatural"],
+        )
 
 
 if __name__ == "__main__":
