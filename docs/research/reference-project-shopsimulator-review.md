@@ -95,6 +95,10 @@ Qwen3-8B 做 4 epochs SFT；正文和附录没有 A/B/C curriculum。之后使�
 `instruction_simple`，可直接作为继承的个性化基准任务。但当前 HTTP 服务初始化环境时没有开启
 persona 模式，项目客户端 reset 也没有多轮 Shopper 协议；当前训练/评测 prompt 反而明确禁止追问。
 
+需要注意，冻结压缩包并不含环境源码所引用的 `instruction_sample` 字段；个性化开场请求实际存储在
+非空 `instruction_simple` 中。因此 persona 环境必须保持原 task ID，只允许上述 4,666 条记录 reset，
+并以 `instruction_simple` 作为 Actor 可见请求；不能重编号，也不能对缺失字段做 LLM 补写。
+
 正式项目因此采用以下继承边界：
 
 - 继承：冻结商品目录、购物环境动作、完整任务目标、内嵌画像、个性化请求和可验证终局；

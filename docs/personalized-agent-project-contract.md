@@ -84,7 +84,7 @@ V2 已证明披露隐藏约束能将严格成功率从 76% 提升至 96%；V3 �
 
 ## 6. 数据与可复现性契约
 
-- ShopSimulator 的商品目录、目标事实、`user_persona`、`instruction_sample` 和 `instruction_simple`
+- ShopSimulator 的商品目录、目标事实、`user_persona` 和 `instruction_simple`
   作为基准输入保留；这部分不是本项目生成的数据；
 - 原作者发布的 SFT/GRPO 轨迹不进入本项目正式模型的梯度数据；
 - 本项目自行实现 persona 环境透传、Shopper 多轮回答、`ask_user`、教师环境 rollout、轨迹验收、划分和

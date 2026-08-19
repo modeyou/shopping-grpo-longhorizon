@@ -9,8 +9,7 @@
 ShopSimulator 内嵌数据已经同时提供：
 
 - 完整购买目标 `instruction`，由环境和 Shopper 私有持有；
-- 个性化初始请求 `instruction_sample`；
-- 简化请求 `instruction_simple`；
+- 个性化初始请求 `instruction_simple`；
 - 用户画像 `user_persona`；
 - 目标商品、规格、Reward 所需事实。
 
@@ -57,7 +56,7 @@ ShopSimulator persona task
 ## 5. 已实现闭环
 
 - `SHOPSIM_PERSONA_MODE=1` 在环境池创建时启用原生 persona 任务，客户端 reset 同时声明 persona 协议；
-- Actor 只接收 `instruction_sample` 与删除 `__reasoning__` 后的画像；完整要求由环境经私有通道交给 Shopper，
+- Actor 只接收 `instruction_simple` 与删除 `__reasoning__` 后的画像；完整要求由环境经私有通道交给 Shopper，
   不进入 Actor 消息和轨迹的 `initial_result`；
 - 个性化 Teacher 获得自然语言 `ask_user(question)` 工具，每条轨迹至多提问两次；
 - 每次提问只触发一次 Shopper completion，回答写入同一消息轨迹，随后保留原商店页面状态继续购物；
@@ -67,8 +66,11 @@ Reward 公式和最终评测设计继续后置，不在真实冒烟闭环通过�
 
 ## 6. 最小真实冒烟
 
-`data/personalized/pilot_tasks.jsonl` 固定 5 个开发任务 ID，仅用于验证协议，不是正式训练集，也不与
-`data/evaluation/tasks.jsonl` 重叠。先运行 3 条，检查问答和终局后再决定是否运行剩余两条。
+23,421 条完整目标在 standard 与 persona 模式下保持相同 task ID；其中 4,666 条同时具有非空
+`user_persona` 和 `instruction_simple`，可被 persona reset 使用，其余 ID 会被明确拒绝而不会重编号或
+补写画像。`data/personalized/pilot_tasks.jsonl` 固定 5 个有效开发任务 ID，仅用于验证协议，不是正式
+训练集，并且与 `data/evaluation/tasks.jsonl` 无重叠。先运行 3 条，检查问答和终局后再决定是否运行
+剩余两条。
 
 启动 persona 环境：
 

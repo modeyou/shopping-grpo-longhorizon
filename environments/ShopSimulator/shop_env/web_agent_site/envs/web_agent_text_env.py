@@ -344,6 +344,11 @@ class WebAgentTextEnv(gym.Env):
 
     def reset(self,idx=None,session=None, instruction_text=None):
         """Create a new session and reset environment variables"""
+        goal = self.server.goals[idx]
+        if self.if_persona and not goal.get('persona_available', False):
+            raise ValueError(
+                f"Task {idx} has no complete ShopSimulator persona request"
+            )
         session_int = None
 
         if session is not None:

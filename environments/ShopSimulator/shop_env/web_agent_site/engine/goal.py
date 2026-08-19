@@ -10,6 +10,7 @@ from web_agent_site.engine.constraints import (
 from web_agent_site.engine.reward_features import (
     compile_reward_features,
 )
+from web_agent_site.engine.persona import actor_instruction, has_persona_request
 import math
 import pdb
 
@@ -63,7 +64,7 @@ def get_goals(all_products, product_prices, if_persona=False):
 def get_existed_goals(all_products, product_prices, if_persona=False):
     goals = []
     cnt_atts = defaultdict(int)
-    cnt_1, cnt_2, cnt_3 = 0, 0, 0
+    cnt_1, cnt_2, cnt_3, cnt_persona = 0, 0, 0, 0
     goal_instructions = []
     for item in all_products:
         if 'instructions' not in item:
@@ -81,6 +82,13 @@ def get_existed_goals(all_products, product_prices, if_persona=False):
                 cnt_3 += 1
                 continue
 
+            # Keep the original task index stable across standard and persona
+            # modes.  Only 4,666 rows in the frozen archive have both fields;
+            # persona reset rejects other IDs instead of reindexing the pool.
+            persona_available = has_persona_request(item, product)
+            if if_persona and not persona_available:
+                cnt_persona += 1
+
             if product_prices is not None:
                 # Reward v3 must not invent an unstated budget from the Gold
                 # product. Price availability remains a hard verifiability
@@ -93,10 +101,10 @@ def get_existed_goals(all_products, product_prices, if_persona=False):
                 price_upper = 10000000
 
             # Process user_persona, place __reasoning__ field in the first position
-            if not isinstance(item['user_persona'], dict):
+            if not isinstance(item.get('user_persona'), dict):
                 item['user_persona'] = {}
             user_persona = item['user_persona'].copy()
-            reason_key = item['reason_key']
+            reason_key = item.get('reason_key')
             if user_persona and '__reasoning__' in user_persona:
                 reasoning_value = user_persona.pop('__reasoning__')
                 # Create a new ordered dictionary with __reasoning__ in the first position
@@ -104,10 +112,7 @@ def get_existed_goals(all_products, product_prices, if_persona=False):
                 ordered_persona.update(user_persona)
                 user_persona = ordered_persona
 
-            if if_persona:
-                instruction_text = product['instruction_sample']
-            else:
-                instruction_text = product['instruction']
+            instruction_text = actor_instruction(item, product, if_persona)
             goal = {
                 'asin': asin,
                 'category': item['category'],
@@ -118,12 +123,13 @@ def get_existed_goals(all_products, product_prices, if_persona=False):
                 # mode ``instruction_text`` is the partial user utterance shown
                 # to the Actor; the Shopper alone receives this private field.
                 'instruction_full': product['instruction'],
-                'instruction_simple': product['instruction_simple'],
+                'instruction_simple': product.get('instruction_simple') or product['instruction'],
                 'attributes': attributes,
                 'price_upper': price_upper,
-                'goal_options': product['instruction_options'],
+                'goal_options': product.get('instruction_options') or [],
                 'user_persona': user_persona,
                 'reason_key': reason_key,
+                'persona_available': persona_available,
             }
             goal.update(compile_reward_features(product, item))
             goals.append(goal)
@@ -133,7 +139,7 @@ def get_existed_goals(all_products, product_prices, if_persona=False):
     for goal in goals:
         goal['weight'] = 1
     print('skipped')
-    print(cnt_1, cnt_2, cnt_3)
+    print(cnt_1, cnt_2, cnt_3, cnt_persona)
     return goals
 
 def get_type_reward(purchased_product, goal):
