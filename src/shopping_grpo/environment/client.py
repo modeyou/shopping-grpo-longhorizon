@@ -30,12 +30,17 @@ class ShopEnvironmentStateError(RuntimeError):
 class ShopAgentEnv:
     """一条 trajectory 独占的 ShopSimulator API 租约。"""
 
-    def __init__(self, base_url="http://127.0.0.1:5700", timeout=60, transport=None):
+    def __init__(
+        self, base_url="http://127.0.0.1:5700", timeout=60,
+        transport=None, multiturn=False,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.transport = transport
         self.env_idx = None
         self.done = False
+        self.multiturn = bool(multiturn)
+        self.shopper_context = None
 
     def __enter__(self):
         return self
@@ -48,18 +53,28 @@ class ShopAgentEnv:
                 raise
         return False
 
-    def reset(self, task_id):
+    def reset(self, task_id, initial_request=None):
         """为任务申请环境实例，并保存服务端返回的 ``env_idx``。"""
         if self.env_idx is not None:
             raise ShopEnvironmentStateError("Environment is already leased; release it before reset")
 
         # reset 只负责建立租约；真正的购物动作统一走 step，便于上层记录轨迹。
-        result = self._call({"action": "reset", "idx": int(task_id)})
+        if initial_request is not None and not self.multiturn:
+            raise ValueError("initial_request requires multiturn=True")
+        payload = {"action": "reset", "idx": int(task_id)}
+        if self.multiturn:
+            payload["if_multiturn"] = True
+        result = self._call(payload)
         env_idx = result.get("env_idx")
         if not isinstance(env_idx, int):
             raise ShopProtocolError("reset response is missing integer env_idx")
         self.env_idx = env_idx
         self.done = False
+        self.shopper_context = result.pop("_shopper_context", None)
+        if self.multiturn:
+            if not isinstance(self.shopper_context, dict):
+                raise ShopProtocolError("multiturn reset is missing private shopper context")
+            result["instruction"] = initial_request or ""
         return result
 
     def step(self, action):
@@ -83,6 +98,7 @@ class ShopAgentEnv:
         result = self._call({"action": "release_one", "env_idx": env_idx})
         self.env_idx = None
         self.done = False
+        self.shopper_context = None
         return result
 
     def _leased_env_idx(self):

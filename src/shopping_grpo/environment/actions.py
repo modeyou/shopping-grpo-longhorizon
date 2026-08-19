@@ -8,7 +8,10 @@ import json
 import re
 
 from shopping_grpo.environment.product_id import PRODUCT_ID_CAPTURE
-from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS, tool_call_to_action
+from shopping_grpo.environment.tools import (
+    MULTITURN_SHOP_TOOL_SCHEMAS,
+    tool_call_to_action,
+)
 
 
 RUNTIME_GUARD_FIELD = "runtime_action_guard"
@@ -24,7 +27,7 @@ NAVIGATION_BUTTONS = {
 }
 TOOL_ARGUMENT_NAMES = {
     tool["function"]["name"]: set(tool["function"]["parameters"].get("properties", {}))
-    for tool in SHOP_TOOL_SCHEMAS
+    for tool in MULTITURN_SHOP_TOOL_SCHEMAS
 }
 
 
@@ -38,6 +41,10 @@ def action_reject_reason(name, arguments, observation):
     if extra_argument_names:
         return "schema_extra_arguments:" + ",".join(extra_argument_names)
     if name == "think":
+        return None
+    if name == "ask_shopper":
+        if not str(arguments.get("question", "")).strip():
+            return "empty_shopper_question"
         return None
     if name == "finish_without_purchase":
         if arguments.get("reason") != "no_suitable_product":

@@ -61,6 +61,7 @@ def api_some_function() -> Response:
     env_idx = data.get('env_idx', None)
     response = data.get('response', None)
     idx = data.get('idx', None)
+    if_multiturn = bool(data.get('if_multiturn', False))
     try:
         # Release all environments
         if action == 'release_all':
@@ -98,7 +99,10 @@ def api_some_function() -> Response:
                 return jsonify({'result': {'error': 'Unable to get available environment resource, please try again later'}})
 
         # Call shop_agent function
-        result = shop_agent(envs[env_idx], env_idx, action, idx, response)
+        result = shop_agent(
+            envs[env_idx], env_idx, action, idx, response,
+            if_multiturn=if_multiturn,
+        )
 
         # The caller owns the lease until release_one.  Auto-releasing here
         # races with the caller's finally-release: another worker can lease

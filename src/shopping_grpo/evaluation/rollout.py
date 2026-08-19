@@ -25,10 +25,12 @@ from shopping_grpo.environment.context import (
 from shopping_grpo.environment.projection import project_observation
 from shopping_grpo.environment.client import ShopAgentEnv, ShopEnvironmentError, ShopHttpError
 from shopping_grpo.environment.tools import (
+    MULTITURN_SHOP_TOOL_SCHEMAS,
     SHOP_TOOL_SCHEMAS,
     tool_call_to_action,
 )
 from shopping_grpo.environment.observation import render_structured_observation
+from shopping_grpo.multiturn.tasks import validate_task_row
 
 
 SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用户完成一次单轮购物任务。
@@ -44,6 +46,15 @@ SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用�
 6. 主动结束。经过多次有实质差异的搜索和多个候选核验，仍没有可接受商品，并且当前没有明显值得继续核验的候选时，调用 `finish_without_purchase`。不得过早结束，也不要为了增加搜索次数继续无效探索；是否达到结束资格由环境判断。
 7. 防止循环和非法动作。不要连续重复同一动作，也不要在相同结果、商品或子页之间无目的往返；后续操作应带来新候选、新商品信息、新规格选择或新的需求证据。不要调用 `think` 工具。若 tool 返回“本地动作守卫拒绝，未执行”，依据错误消息和最新 observation 改为一个合法动作，不要重复被拒绝的调用。不要在任务结束前输出最终答复或推荐总结；只有环境报告任务结束后才停止。
 """
+
+
+MULTITURN_SYSTEM_PROMPT = """You are a shopping agent in ShopSimulator. The shopper's first request may omit
+purchase-critical facts. Use ask_shopper for one concise question only when the answer
+could change the product choice; do not ask for facts already stated or facts that can
+be learned from product pages. You may ask at most twice. Continue using the standard
+shop tools after clarification, verify the best candidate, and purchase only when safe.
+Each assistant turn must contain at most one tool call."""
+MULTITURN_SYSTEM_PROMPT += "\n\n执行规则：" + SYSTEM_PROMPT.split("执行规则：", 1)[1]
 
 
 MAX_BLOCKED_TOOL_CALLS = 3
@@ -169,6 +180,9 @@ class OpenAIChatClient:
                 # 不能防止模型在未调用工具时持续生成纯文本。
                 "max_tokens": self.max_tokens,
             }
+        if not tools:
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
         if self.thinking:
             # DeepSeek tool-call thinking requires reasoning_content in later messages.
             payload.update(
@@ -279,6 +293,8 @@ def collect_for_task(
     max_steps=30,
     tools=None,
     attempt_index=0,
+    shopper=None,
+    max_shopper_questions=2,
 ):
     """执行一个任务并返回完整轨迹；所有异常都会被写入轨迹后再释放环境。"""
     trajectory = {
@@ -299,11 +315,25 @@ def collect_for_task(
         "done": False,
         "error": None,
         "release_error": None,
+        "interaction_mode": "multiturn" if shopper is not None else "standard",
+        "shopper_questions": [],
+        "actor_llm_calls": 0,
+        "shopper_llm_calls": 0,
     }
-    env = env_factory(base_url=base_url)
+    if shopper is not None:
+        validate_task_row(task)
+        env = env_factory(base_url=base_url, multiturn=True)
+        shopper_calls_before = int(getattr(shopper, "call_count", 0))
+    else:
+        env = env_factory(base_url=base_url)
+        shopper_calls_before = 0
     try:
         # reset 建立任务状态；后续每一轮只允许一个工具调用。
-        initial = env.reset(task["task_id"])
+        initial = (
+            env.reset(task["task_id"], initial_request=task["initial_request"])
+            if shopper is not None
+            else env.reset(task["task_id"])
+        )
         if initial.get("observation_state") is not None:
             latest_observation = render_structured_observation(
                 initial["observation_state"]
@@ -313,15 +343,18 @@ def collect_for_task(
                 "instruction", initial.get("observation", "")
             )
         trajectory["initial_result"] = initial
-        messages = _initial_messages(task, initial)
+        messages = _initial_messages(task, initial, multiturn=shopper is not None)
         trajectory["messages"] = messages
-        tool_schemas = tools or SHOP_TOOL_SCHEMAS
+        tool_schemas = tools or (
+            MULTITURN_SHOP_TOOL_SCHEMAS if shopper is not None else SHOP_TOOL_SCHEMAS
+        )
         consecutive_blocked_calls = 0
         latest_observation_truncated = False
 
         while len(trajectory["steps"]) < int(max_steps):
             # 先请求模型，再校验动作；工具结果会追加到 messages，成为下一轮上下文。
             assistant = client.complete(messages, tool_schemas)
+            trajectory["actor_llm_calls"] += 1
             context_tokens = getattr(client, "last_context_tokens", None)
             if context_tokens is not None:
                 trajectory["context_turn_tokens"].append(
@@ -355,11 +388,13 @@ def collect_for_task(
             tool_call = tool_calls[0]
             try:
                 name, arguments = _tool_call_name_args(tool_call)
-                reason = action_reject_reason(
-                    name,
-                    arguments,
-                    latest_observation,
-                )
+                if (
+                    name == "ask_shopper"
+                    and len(trajectory["shopper_questions"]) >= int(max_shopper_questions)
+                ):
+                    reason = "shopper_question_limit"
+                else:
+                    reason = action_reject_reason(name, arguments, latest_observation)
             except Exception as exc:
                 reason = f"invalid_tool_call:{exc.__class__.__name__}"
             if reason:
@@ -384,9 +419,24 @@ def collect_for_task(
                 return trajectory
             messages.append(assistant)
             # 只有通过当前 observation 守卫的调用才会触碰环境并消耗一个执行步骤。
-            step = _execute_tool_call(env, tool_call, len(trajectory["steps"]))
+            if name == "ask_shopper":
+                if shopper is None:
+                    raise ValueError("ask_shopper requires a ShopperSimulator")
+                step = _execute_shopper_call(
+                    shopper, env.shopper_context, trajectory["shopper_questions"],
+                    tool_call, len(trajectory["steps"]),
+                )
+                trajectory["shopper_questions"].append({
+                    "question": arguments["question"],
+                    "answer": step["observation"],
+                })
+            else:
+                step = _execute_tool_call(env, tool_call, len(trajectory["steps"]))
             raw_observation = step["observation"]
-            projector = getattr(client, "project_observation", None)
+            projector = (
+                getattr(client, "project_observation", None)
+                if name != "ask_shopper" else None
+            )
             if projector is not None:
                 visible_observation, projection = projector(
                     step["tool_name"],
@@ -399,10 +449,12 @@ def collect_for_task(
                     step["projection"] = projection
             trajectory["steps"].append(step)
             consecutive_blocked_calls = 0
-            latest_observation = step["observation"]
-            latest_observation_truncated = bool(
-                (step.get("projection") or {}).get("truncated")
-            )
+            if name != "ask_shopper":
+                latest_observation = step["observation"]
+            if name != "ask_shopper":
+                latest_observation_truncated = bool(
+                    (step.get("projection") or {}).get("truncated")
+                )
             messages.append(_tool_message(tool_call, step))
             if step["done"]:
                 trajectory["status"] = "done"
@@ -430,6 +482,10 @@ def collect_for_task(
             "traceback": traceback.format_exc(),
         }
     finally:
+        trajectory["shopper_llm_calls"] = (
+            int(getattr(shopper, "call_count", 0)) - shopper_calls_before
+            if shopper is not None else 0
+        )
         try:
             env.release()
         except Exception as exc:
@@ -502,6 +558,22 @@ def _is_infrastructure_failure(trajectory):
     )
 
 
+def _execute_shopper_call(shopper, context, history, tool_call, step_index):
+    name, arguments = _tool_call_name_args(tool_call)
+    answer = shopper.answer(arguments["question"], context, history)
+    return {
+        "step_index": step_index,
+        "tool_call": tool_call,
+        "tool_name": name,
+        "parameters": arguments,
+        "env_action": None,
+        "observation": answer,
+        "reward": 0.0,
+        "done": False,
+        "result": {"instruction": answer, "reward": 0.0, "done": False},
+    }
+
+
 def _execute_tool_call(env, tool_call, step_index):
     name, arguments = _tool_call_name_args(tool_call)
     action = tool_call_to_action(name, arguments)
@@ -557,14 +629,20 @@ def _enforce_serial_tool_call(assistant):
     return serial_assistant, list(tool_calls[1:])
 
 
-def _initial_messages(task, initial):
+def _initial_messages(task, initial, multiturn=False):
     prompt = task.get("prompt")
     if prompt:
         messages = [dict(message) for message in prompt]
     else:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{
+            "role": "system",
+            "content": MULTITURN_SYSTEM_PROMPT if multiturn else SYSTEM_PROMPT,
+        }]
     if not any(message.get("role") == "system" for message in messages):
-        messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+        messages.insert(0, {
+            "role": "system",
+            "content": MULTITURN_SYSTEM_PROMPT if multiturn else SYSTEM_PROMPT,
+        })
     messages.append({"role": "user", "content": initial.get("instruction", "")})
     return messages
 

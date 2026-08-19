@@ -103,3 +103,11 @@ SHOP_TOOL_SCHEMAS = [
     _FINISH_WITHOUT_PURCHASE_SCHEMA,
     _INTERACTION_TOOL_SCHEMAS[-1],
 ]
+
+ASK_SHOPPER_SCHEMA = _schema(
+    "ask_shopper",
+    "Ask the shopper one concise clarification question when a missing fact could change the product choice. Do not ask for facts already stated.",
+    {"question": {"type": "string"}},
+    ["question"],
+)
+MULTITURN_SHOP_TOOL_SCHEMAS = [ASK_SHOPPER_SCHEMA, *SHOP_TOOL_SCHEMAS]
