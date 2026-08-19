@@ -69,13 +69,19 @@ def main():
                     continue
                 opening = shopper.generate_initial_request(context)
                 row = build_task_row(
-                    task_id, opening, context, args.model, OPENING_PROMPT_HASH
+                    task_id, opening["initial_request"], context,
+                    args.model, OPENING_PROMPT_HASH,
+                    omitted_dimensions=opening["omitted_dimensions"],
+                    omitted_facts=opening["omitted_facts"],
                 )
                 output.write(json.dumps(row, ensure_ascii=False) + "\n")
                 output.flush()
                 existing[task_id] = row
                 generated += 1
-                print(f"task={task_id} opening={opening}")
+                print(
+                    f"task={task_id} opening={opening['initial_request']} "
+                    f"omitted={opening['omitted_dimensions']}"
+                )
     print(json.dumps({"selected": len(tasks), "generated": generated, "shopper_calls": shopper.call_count}, ensure_ascii=False))
     return 0
 

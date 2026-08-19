@@ -6,6 +6,7 @@ from shopping_grpo.evaluation.rollout import collect_for_task
 from shopping_grpo.multiturn.tasks import (
     MULTITURN_TASK_SCHEMA, build_task_row, source_goal_hash,
 )
+from shopping_grpo.multiturn.shopper import ShopperSimulator
 
 
 def tool_message(name, arguments, call_id):
@@ -60,6 +61,7 @@ def test_multiturn_rollout_asks_freely_and_keeps_private_goal_out_of_messages():
     task = {
         "schema_version": MULTITURN_TASK_SCHEMA, "task_id": 7,
         "initial_request": "I need a pillow",
+        "opening_audit": {"omitted_facts": ["private child size"]},
     }
     trajectory = collect_for_task(
         task, client=Actor(), shopper=Shopper(), env_factory=Env, max_steps=3,
@@ -71,6 +73,7 @@ def test_multiturn_rollout_asks_freely_and_keeps_private_goal_out_of_messages():
     assert trajectory["actor_llm_calls"] == 2
     assert trajectory["shopper_llm_calls"] == 1
     assert "full private goal" not in json.dumps(trajectory["messages"])
+    assert "private child size" not in json.dumps(trajectory["messages"])
     sft = build_sft_row(trajectory)
     assert sft["tools"][0]["function"]["name"] == "ask_shopper"
     assert any(m.get("name") == "ask_shopper" for m in sft["messages"])
@@ -100,6 +103,32 @@ def test_frozen_task_row_contains_hash_not_private_goal():
     assert "gold" not in json.dumps(row)
 
 
+def test_opening_generation_returns_audited_gap_in_one_call():
+    class OpeningClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            return {
+                "role": "assistant",
+                "content": json.dumps({
+                    "initial_request": "I need a mirror",
+                    "omitted_dimensions": ["budget"],
+                    "omitted_facts": ["budget 420"],
+                }),
+            }
+
+    client = OpeningClient()
+    result = ShopperSimulator(client).generate_initial_request({
+        "instruction_full": "I need a mirror with budget 420",
+        "goal_options": [],
+    })
+    assert client.calls == 1
+    assert result["initial_request"] == "I need a mirror"
+    assert result["omitted_facts"] == ["budget 420"]
+
+
 def test_question_limit_blocks_without_calling_shopper_again():
     actor = Actor()
     actor.outputs = [
@@ -121,3 +150,28 @@ def test_question_limit_blocks_without_calling_shopper_again():
     assert [item["reason"] for item in trajectory["blocked_tool_calls"]] == [
         "shopper_question_limit", "shopper_question_limit", "shopper_question_limit",
     ]
+
+
+def test_teacher_first_ask_forces_only_the_first_tool_choice():
+    class ForcedActor(Actor):
+        def __init__(self):
+            super().__init__()
+            self.choices = []
+
+        def complete(self, messages, tools, tool_choice="auto"):
+            self.choices.append(tool_choice)
+            return self.outputs.pop(0)
+
+    actor = ForcedActor()
+    task = {
+        "schema_version": MULTITURN_TASK_SCHEMA, "task_id": 7,
+        "initial_request": "I need a pillow",
+    }
+    trajectory = collect_for_task(
+        task, client=actor, shopper=Shopper(), env_factory=Env,
+        max_steps=3, teacher_first_ask=True,
+    )
+    assert trajectory["status"] == "done"
+    assert actor.choices[0]["function"]["name"] == "ask_shopper"
+    assert actor.choices[1] == "auto"
+    assert trajectory["teacher_policy"] == "force-first-ask-v1"

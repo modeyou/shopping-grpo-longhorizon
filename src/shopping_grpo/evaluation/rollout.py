@@ -140,7 +140,7 @@ class OpenAIChatClient:
         self.last_context_tokens = None
         self.transport = transport
 
-    def complete(self, messages, tools):
+    def complete(self, messages, tools, tool_choice="auto"):
         """请求模型下一轮回复，并在上下文超限时按配置压缩历史。"""
         self.last_context_event = None
         self.last_context_tokens = None
@@ -163,11 +163,17 @@ class OpenAIChatClient:
                 if stats.removed_groups:
                     self.last_context_event = stats.to_dict()
         if self.responses_api:
+            responses_tool_choice = tool_choice
+            if isinstance(tool_choice, dict) and isinstance(tool_choice.get("function"), dict):
+                responses_tool_choice = {
+                    "type": "function",
+                    "name": tool_choice["function"]["name"],
+                }
             payload = {
                 "model": self.model,
                 "input": _responses_input(request_messages),
                 "tools": _responses_tools(tools),
-                "tool_choice": "auto",
+                "tool_choice": responses_tool_choice,
                 "max_output_tokens": self.max_tokens,
             }
         else:
@@ -175,7 +181,7 @@ class OpenAIChatClient:
                 "model": self.model,
                 "messages": request_messages,
                 "tools": tools,
-                "tool_choice": "auto",
+                "tool_choice": tool_choice,
                 # 约束单个 assistant 回合的输出；--max-model-len 只限制上下文，
                 # 不能防止模型在未调用工具时持续生成纯文本。
                 "max_tokens": self.max_tokens,
@@ -295,6 +301,7 @@ def collect_for_task(
     attempt_index=0,
     shopper=None,
     max_shopper_questions=2,
+    teacher_first_ask=False,
 ):
     """执行一个任务并返回完整轨迹；所有异常都会被写入轨迹后再释放环境。"""
     trajectory = {
@@ -319,7 +326,14 @@ def collect_for_task(
         "shopper_questions": [],
         "actor_llm_calls": 0,
         "shopper_llm_calls": 0,
+        "teacher_policy": (
+            "force-first-ask-v1" if teacher_first_ask else "autonomous-v1"
+        ),
     }
+    if teacher_first_ask and shopper is None:
+        raise ValueError("teacher_first_ask requires a ShopperSimulator")
+    if teacher_first_ask and int(max_shopper_questions) < 1:
+        raise ValueError("teacher_first_ask requires max_shopper_questions >= 1")
     if shopper is not None:
         validate_task_row(task)
         env = env_factory(base_url=base_url, multiturn=True)
@@ -353,7 +367,16 @@ def collect_for_task(
 
         while len(trajectory["steps"]) < int(max_steps):
             # 先请求模型，再校验动作；工具结果会追加到 messages，成为下一轮上下文。
-            assistant = client.complete(messages, tool_schemas)
+            if teacher_first_ask and trajectory["actor_llm_calls"] == 0:
+                assistant = client.complete(
+                    messages, tool_schemas,
+                    tool_choice={
+                        "type": "function",
+                        "function": {"name": "ask_shopper"},
+                    },
+                )
+            else:
+                assistant = client.complete(messages, tool_schemas)
             trajectory["actor_llm_calls"] += 1
             context_tokens = getattr(client, "last_context_tokens", None)
             if context_tokens is not None:

@@ -5,8 +5,13 @@ import json
 
 OPENING_PROMPT = """You simulate a shopper. Rewrite the private shopping goal as a natural,
 underspecified first request in Chinese. Keep the product category and several useful
-requirements, but omit one or two purchase-critical facts that can be recovered by a
-clarifying question. Do not mention that anything was omitted. Return only the request."""
+requirements, but deliberately omit one or two purchase-critical facts whose values
+could change product selection, such as budget, size, model, compatibility, capacity,
+or a required material. Do not mention the omission in the request. Return one JSON
+object only:
+{"initial_request": "...", "omitted_dimensions": ["..."], "omitted_facts": ["..."]}
+Copy each omitted_facts value verbatim from the private goal. The omitted facts must not
+appear or be paraphrased in initial_request."""
 
 ANSWER_PROMPT = """You simulate a shopper answering a shopping agent in Chinese. Answer only from the
 private full goal and option facts. Never invent a new preference. If the question asks
@@ -22,7 +27,32 @@ class ShopperSimulator:
         self.call_count = 0
 
     def generate_initial_request(self, context):
-        return self._complete(OPENING_PROMPT, context, [])
+        raw = self._complete(OPENING_PROMPT, context, [])
+        result = _parse_json_object(raw)
+        request = str(result.get("initial_request", "")).strip()
+        dimensions = result.get("omitted_dimensions") or []
+        facts = result.get("omitted_facts") or []
+        if (
+            not request
+            or not isinstance(dimensions, list) or not dimensions
+            or not isinstance(facts, list) or not facts
+        ):
+            raise ValueError("opening must contain a request and at least one omitted fact")
+        if not all(isinstance(item, str) and item.strip() for item in dimensions + facts):
+            raise ValueError("opening audit fields must be non-empty strings")
+        private_text = context["instruction_full"] + json.dumps(
+            context.get("goal_options") or [], ensure_ascii=False
+        )
+        for fact in facts:
+            if fact.strip() not in private_text:
+                raise ValueError("omitted fact must be copied from the private goal")
+            if fact.strip().casefold() in request.casefold():
+                raise ValueError("omitted fact leaked into initial_request")
+        return {
+            "initial_request": request,
+            "omitted_dimensions": [item.strip() for item in dimensions],
+            "omitted_facts": [item.strip() for item in facts],
+        }
 
     def answer(self, question, context, history=()):
         turns = []
@@ -52,3 +82,17 @@ class ShopperSimulator:
             raise ValueError("shopper returned an empty response")
         self.call_count += 1
         return content
+
+
+def _parse_json_object(text):
+    content = str(text).strip()
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError:
+        start, end = content.find("{"), content.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("shopper opening is not a JSON object")
+        value = json.loads(content[start:end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("shopper opening must be a JSON object")
+    return value

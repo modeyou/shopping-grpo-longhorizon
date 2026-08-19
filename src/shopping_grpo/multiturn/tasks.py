@@ -17,11 +17,14 @@ def source_goal_hash(context):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def build_task_row(task_id, initial_request, context, model, prompt_hash):
+def build_task_row(
+    task_id, initial_request, context, model, prompt_hash,
+    omitted_dimensions=(), omitted_facts=(),
+):
     request = str(initial_request).strip()
     if not request:
         raise ValueError("initial_request must not be empty")
-    return {
+    row = {
         "schema_version": MULTITURN_TASK_SCHEMA,
         "task_id": int(task_id),
         "initial_request": request,
@@ -29,6 +32,12 @@ def build_task_row(task_id, initial_request, context, model, prompt_hash):
         "opening_model": str(model),
         "opening_prompt_hash": str(prompt_hash),
     }
+    if omitted_dimensions or omitted_facts:
+        row["opening_audit"] = {
+            "omitted_dimensions": list(omitted_dimensions),
+            "omitted_facts": list(omitted_facts),
+        }
+    return row
 
 
 def validate_task_row(task):

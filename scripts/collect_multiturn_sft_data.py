@@ -30,6 +30,10 @@ def parse_args():
     parser.add_argument("--shopper-base-url")
     parser.add_argument("--shopper-api-key")
     parser.add_argument("--max-shopper-questions", type=int, default=2)
+    parser.add_argument(
+        "--teacher-first-ask", action="store_true",
+        help="Force only the first Teacher tool choice to ask_shopper; never use for evaluation.",
+    )
     parser.add_argument("--max-steps", type=int, default=35)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=512)
@@ -49,6 +53,8 @@ def main():
         raise SystemExit("OPENAI_BASE_URL and OPENAI_API_KEY are required")
     if args.max_shopper_questions < 0:
         raise SystemExit("--max-shopper-questions must be non-negative")
+    if args.teacher_first_ask and args.max_shopper_questions < 1:
+        raise SystemExit("--teacher-first-ask requires --max-shopper-questions >= 1")
     shopper_model = args.shopper_model or args.model
     shopper_base = args.shopper_base_url or args.llm_base_url
     shopper_key = args.shopper_api_key or args.api_key
@@ -71,6 +77,7 @@ def main():
                 task, client=actor, base_url=args.base_url, max_steps=args.max_steps,
                 attempt_index=attempt, shopper=shopper,
                 max_shopper_questions=args.max_shopper_questions,
+                teacher_first_ask=args.teacher_first_ask,
             )
             append_jsonl(raw, [trajectory])
             written += 1
@@ -80,6 +87,7 @@ def main():
         "shopper_model": shopper_model, "max_shopper_questions": args.max_shopper_questions,
         "max_steps": args.max_steps, "attempts_per_task": args.attempts_per_task,
         "opening_policy": "frozen-once",
+        "teacher_first_ask": args.teacher_first_ask,
     }
     summary = build_collection_artifacts(
         raw_path=raw, output_dir=args.output_dir, held_out_task_ids=held_out,

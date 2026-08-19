@@ -1,50 +1,59 @@
 # Multi-turn clarification data pipeline
 
 This pipeline adds ShopSimulator-native Shopper dialogue without exposing the
-private full goal to the Actor. It does not use personas, persona masking, forced
-first questions, or an LLM critic.
+private full goal to the Actor. It does not use personas, persona masking, or an
+LLM critic.
 
 ## Runtime contract
 
-- ShopSimulator owns the full instruction and goal_options.
-- generate_multiturn_tasks.py asks a Shopper LLM to create one underspecified
-  opening per task. The opening is frozen and reused across later stages.
-- The Actor sees only that opening and may call sk_shopper(question) zero, one,
-  or two times.
-- Each answer is generated from the private full goal. Missing facts receive an
-  explicit no-preference/uncertain answer rather than a hallucinated preference.
-- Actor and Shopper LLM call counts are stored separately in every trajectory.
+- ShopSimulator owns the full instruction and goal options.
+- The opening generator creates one underspecified request per task and freezes it.
+- The Actor sees only the opening and may call ask_shopper zero, one, or two times.
+- The Shopper answers only from the private full goal and prior dialogue.
+- Missing facts receive a no-preference or uncertain answer, not an invented fact.
+- Actor and Shopper LLM calls are counted separately in each trajectory.
 
-## Produce a small pilot
+New rows contain an opening_audit object with omitted dimensions and verbatim
+omitted facts. This is provenance metadata only. The rollout sends only the
+initial_request to the Actor, and SFT conversion never serializes audit fields into
+training messages.
 
-Start the environment first, then generate frozen openings:
+## Generate frozen openings
 
-`ash
-export PYTHONPATH="D:\shopping-grpo-longhorizon/src"
-python scripts/generate_multiturn_tasks.py \
-  --tasks data/grpo/train.jsonl \
-  --output data/multiturn/pilot_tasks.jsonl \
-  --limit 10 \
-  --model deepseek-v4-flash
-` 
+Run from the repository root with ShopSimulator already running:
 
-Collect autonomous Teacher trajectories and build SFT JSONL artifacts:
+    export PYTHONPATH=./src
+    python scripts/generate_multiturn_tasks.py \
+      --tasks data/grpo/train.jsonl \
+      --output outputs/multiturn/openings-pilot-01.jsonl \
+      --limit 10 \
+      --model deepseek-v4-flash
 
-`ash
-python scripts/collect_multiturn_sft_data.py \
-  --tasks data/multiturn/pilot_tasks.jsonl \
-  --output-dir outputs/multiturn-sft/pilot-01 \
-  --limit 10 \
-  --model deepseek-v4-flash \
-  --shopper-model deepseek-v4-flash \
-  --max-shopper-questions 2 \
-  --max-steps 35
-` 
+Each new task costs one Shopper call. Existing task IDs resume without another call.
+The generator fails if the underlying full-goal hash changed. The audit validator
+requires each omitted fact to be copied from the full goal and absent from the opening.
 
-Both scripts resume by task ID. Re-running opening generation skips matching rows
-and fails if the underlying ShopSimulator full-goal hash changed. The collection
-output uses the existing Reward v3 gate: only valid gold_purchase trajectories
-enter sft.jsonl, 	rain.jsonl, and alidation.jsonl.
+## Collect gap-positive Teacher demonstrations
 
-The private full goal is deliberately absent from the frozen task row, Actor
-messages, public reset result, and SFT row.
+    python scripts/collect_multiturn_sft_data.py \
+      --tasks outputs/multiturn/openings-pilot-01.jsonl \
+      --output-dir outputs/multiturn-sft/pilot-02-forced \
+      --limit 10 \
+      --model deepseek-v4-flash \
+      --shopper-model deepseek-v4-flash \
+      --teacher-first-ask \
+      --max-shopper-questions 2 \
+      --max-steps 35
+
+The first pilot showed that an untrained Teacher did not ask consistently even when
+budget, capacity, or size was absent. For gap-positive SFT collection, the
+teacher-first-ask flag constrains only the first Teacher tool choice. The Teacher
+still writes the question, and every later choice is autonomous.
+
+This flag is data supervision, not an Agent runtime rule. Do not use it for baseline
+evaluation, SFT evaluation, GRPO, or final evaluation. Formal SFT data should mix
+gap-positive demonstrations with successful complete-request trajectories so that
+the model also learns when not to ask.
+
+The existing Reward v3 gate remains unchanged. Only valid gold-purchase trajectories
+enter the SFT, train, and validation JSONL artifacts.
