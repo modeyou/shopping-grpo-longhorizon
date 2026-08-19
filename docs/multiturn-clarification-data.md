@@ -32,6 +32,9 @@ Run from the repository root with ShopSimulator already running:
 Each new task costs one Shopper call. Existing task IDs resume without another call.
 The generator fails if the underlying full-goal hash changed. The audit validator
 requires each omitted fact to be copied from the full goal and absent from the opening.
+Openings generated before `opening_audit` was introduced cannot be used by composite
+collection. Generate them into a new file instead of resuming the legacy file; the
+collector rejects such rows before making any LLM call.
 
 ## Collect replay-verified gap-positive Teacher demonstrations
 
