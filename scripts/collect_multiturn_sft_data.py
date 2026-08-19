@@ -6,11 +6,21 @@ import json
 import os
 from pathlib import Path
 
-from shopping_grpo.collection.sft import build_collection_artifacts, task_ids_from_jsonl
+from shopping_grpo.collection.sft import (
+    acceptance_reasons,
+    build_collection_artifacts,
+    task_ids_from_jsonl,
+)
 from shopping_grpo.evaluation.rollout import (
-    OpenAIChatClient, append_jsonl, collect_for_task, completed_task_attempts, load_tasks,
+    OpenAIChatClient,
+    _is_infrastructure_failure,
+    append_jsonl,
+    collect_for_task,
+    completed_task_attempts,
+    load_tasks,
 )
 from shopping_grpo.multiturn.shopper import ShopperSimulator
+from shopping_grpo.multiturn.teacher import collect_composite_teacher_task
 
 
 def parse_args():
@@ -34,6 +44,11 @@ def parse_args():
         "--teacher-first-ask", action="store_true",
         help="Force only the first Teacher tool choice to ask_shopper; never use for evaluation.",
     )
+    parser.add_argument(
+        "--composite-teacher", action="store_true",
+        help="Collect a controlled clarification prefix plus replayed gold backbone.",
+    )
+    parser.add_argument("--target-accepted", type=int)
     parser.add_argument("--max-steps", type=int, default=35)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=512)
@@ -55,6 +70,10 @@ def main():
         raise SystemExit("--max-shopper-questions must be non-negative")
     if args.teacher_first_ask and args.max_shopper_questions < 1:
         raise SystemExit("--teacher-first-ask requires --max-shopper-questions >= 1")
+    if args.teacher_first_ask and args.composite_teacher:
+        raise SystemExit("--teacher-first-ask and --composite-teacher are mutually exclusive")
+    if args.target_accepted is not None and args.target_accepted < 1:
+        raise SystemExit("--target-accepted must be at least 1")
     shopper_model = args.shopper_model or args.model
     shopper_base = args.shopper_base_url or args.llm_base_url
     shopper_key = args.shopper_api_key or args.api_key
@@ -68,26 +87,56 @@ def main():
     actor = make_client(args.model, args.llm_base_url, args.api_key, args)
     shopper = ShopperSimulator(make_client(shopper_model, shopper_base, shopper_key, args))
     written = 0
+    accepted = _accepted_count(raw)
+    infrastructure_failed = False
     for task in tasks:
+        if infrastructure_failed:
+            break
+        if args.target_accepted is not None and accepted >= args.target_accepted:
+            break
         for attempt in range(args.attempts_per_task):
+            if args.target_accepted is not None and accepted >= args.target_accepted:
+                break
             key = (int(task["task_id"]), attempt)
             if key in completed:
                 continue
-            trajectory = collect_for_task(
-                task, client=actor, base_url=args.base_url, max_steps=args.max_steps,
-                attempt_index=attempt, shopper=shopper,
-                max_shopper_questions=args.max_shopper_questions,
-                teacher_first_ask=args.teacher_first_ask,
-            )
+            if args.composite_teacher:
+                trajectory = collect_composite_teacher_task(
+                    task,
+                    teacher_client=actor,
+                    shopper=shopper,
+                    base_url=args.base_url,
+                    max_steps=args.max_steps,
+                    attempt_index=attempt,
+                )
+            else:
+                trajectory = collect_for_task(
+                    task, client=actor, base_url=args.base_url, max_steps=args.max_steps,
+                    attempt_index=attempt, shopper=shopper,
+                    max_shopper_questions=args.max_shopper_questions,
+                    teacher_first_ask=args.teacher_first_ask,
+                )
             append_jsonl(raw, [trajectory])
             written += 1
-            print(f"task={task['task_id']} status={trajectory['status']} asks={len(trajectory['shopper_questions'])} actor_calls={trajectory['actor_llm_calls']} shopper_calls={trajectory['shopper_llm_calls']}")
+            accepted += int(acceptance_reasons(trajectory)[0])
+            print(
+                f"task={task['task_id']} status={trajectory['status']} "
+                f"asks={len(trajectory['shopper_questions'])} "
+                f"actor_calls={trajectory['actor_llm_calls']} "
+                f"shopper_calls={trajectory['shopper_llm_calls']}"
+            )
+            if _is_infrastructure_failure(trajectory):
+                infrastructure_failed = True
+                print("collection paused after infrastructure failure")
+                break
     config = {
         "tasks": str(args.tasks), "model": args.model,
         "shopper_model": shopper_model, "max_shopper_questions": args.max_shopper_questions,
         "max_steps": args.max_steps, "attempts_per_task": args.attempts_per_task,
         "opening_policy": "frozen-once",
         "teacher_first_ask": args.teacher_first_ask,
+        "composite_teacher": args.composite_teacher,
+        "target_accepted": args.target_accepted,
     }
     summary = build_collection_artifacts(
         raw_path=raw, output_dir=args.output_dir, held_out_task_ids=held_out,
@@ -95,7 +144,18 @@ def main():
     )
     print(f"collected_raw={written}")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-    return 0
+    return 2 if infrastructure_failed else 0
+
+
+def _accepted_count(path):
+    if not path.exists():
+        return 0
+    with path.open(encoding="utf-8") as handle:
+        return sum(
+            int(acceptance_reasons(json.loads(line))[0])
+            for line in handle
+            if line.strip()
+        )
 
 
 if __name__ == "__main__":

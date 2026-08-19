@@ -136,6 +136,20 @@ class SftCollectionTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertIn("reward_v3_invalid", reasons)
 
+    def test_composite_teacher_requires_verified_grounded_replay(self):
+        trajectory = _accepted_trajectory()
+        trajectory.update({
+            "teacher_policy": "composite-replay-v1",
+            "interaction_mode": "multiturn",
+            "composite_stage": "replay_failed",
+            "source_goal_verified": True,
+            "clarification_grounded": True,
+            "shopper_questions": [{"question": "size?", "answer": "child"}],
+        })
+        accepted, reasons = acceptance_reasons(trajectory)
+        self.assertFalse(accepted)
+        self.assertIn("composite_replay_required", reasons)
+
     def test_sft_row_removes_reasoning_and_terminal_reward(self):
         row = build_sft_row(_accepted_trajectory())
         payload = json.dumps(row, ensure_ascii=False)

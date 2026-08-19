@@ -18,6 +18,13 @@ private full goal and option facts. Never invent a new preference. If the questi
 for information absent from those facts, say that you have no additional preference or
 are unsure. Be concise and answer the question directly."""
 
+GAP_ANSWER_PROMPT = """You simulate a shopper answering one controlled clarification
+question in Chinese. Use only the supplied omitted facts and the private full goal.
+Return one JSON object only:
+{"answer": "...", "used_facts": ["..."]}
+Copy every used_facts entry verbatim from the supplied omitted facts. Use at least one
+omitted fact, answer the question directly, and never invent a preference."""
+
 OPENING_PROMPT_HASH = hashlib.sha256(OPENING_PROMPT.encode("utf-8")).hexdigest()
 
 
@@ -63,6 +70,27 @@ class ShopperSimulator:
             ])
         turns.append({"role": "user", "content": str(question)})
         return self._complete(ANSWER_PROMPT, context, turns)
+
+    def answer_gap(self, question, context, omitted_facts):
+        facts = [str(item).strip() for item in omitted_facts if str(item).strip()]
+        if not facts:
+            raise ValueError("controlled clarification requires omitted facts")
+        prompt = GAP_ANSWER_PROMPT + "\nOMITTED FACTS: " + json.dumps(
+            facts, ensure_ascii=False
+        )
+        raw = self._complete(
+            prompt,
+            context,
+            [{"role": "user", "content": str(question)}],
+        )
+        result = _parse_json_object(raw)
+        answer = str(result.get("answer") or "").strip()
+        used = result.get("used_facts") or []
+        if not answer or not isinstance(used, list) or not used:
+            raise ValueError("gap answer must contain answer and used_facts")
+        if not all(isinstance(item, str) and item in facts for item in used):
+            raise ValueError("gap answer used_facts must be copied from omitted facts")
+        return {"answer": answer, "used_facts": used}
 
     def _complete(self, system_prompt, context, turns):
         private = json.dumps({

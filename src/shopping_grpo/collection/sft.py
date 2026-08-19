@@ -41,6 +41,18 @@ def acceptance_reasons(trajectory: dict) -> tuple[bool, list[str]]:
     terminal = trajectory.get("terminal_result") or {}
     reward = terminal.get("reward_detail") or {}
 
+    if trajectory.get("teacher_policy") == "composite-replay-v1":
+        if trajectory.get("composite_stage") != "replay_verified":
+            reasons.append("composite_replay_required")
+        if trajectory.get("source_goal_verified") is not True:
+            reasons.append("source_goal_not_verified")
+        if trajectory.get("clarification_grounded") is not True:
+            reasons.append("clarification_not_grounded")
+        if len(trajectory.get("shopper_questions") or []) != 1:
+            reasons.append("composite_requires_one_question")
+        if trajectory.get("blocked_tool_calls"):
+            reasons.append("composite_blocked_tool_call")
+
     if trajectory.get("error"):
         reasons.append("has_error")
     if trajectory.get("release_error"):

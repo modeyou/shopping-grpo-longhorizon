@@ -1,12 +1,16 @@
 import json
 
-from shopping_grpo.collection.sft import build_sft_row
+from shopping_grpo.collection.sft import acceptance_reasons, build_sft_row
 from shopping_grpo.environment.client import ShopAgentEnv
 from shopping_grpo.evaluation.rollout import collect_for_task
 from shopping_grpo.multiturn.tasks import (
     MULTITURN_TASK_SCHEMA, build_task_row, source_goal_hash,
 )
 from shopping_grpo.multiturn.shopper import ShopperSimulator
+from shopping_grpo.multiturn.teacher import (
+    collect_composite_teacher_task,
+    generate_gap_question,
+)
 
 
 def tool_message(name, arguments, call_id):
@@ -175,3 +179,134 @@ def test_teacher_first_ask_forces_only_the_first_tool_choice():
     assert actor.choices[0]["function"]["name"] == "ask_shopper"
     assert actor.choices[1] == "auto"
     assert trajectory["teacher_policy"] == "force-first-ask-v1"
+
+
+def test_gap_question_is_grounded_in_opening_audit_and_does_not_leak_value():
+    class QuestionClient:
+        def complete(self, messages, tools):
+            return {
+                "role": "assistant",
+                "content": json.dumps({
+                    "question": "What size do you need?",
+                    "covered_dimensions": ["size"],
+                }),
+            }
+
+    task = {
+        "schema_version": MULTITURN_TASK_SCHEMA,
+        "task_id": 9,
+        "initial_request": "I need a pillow",
+        "opening_audit": {
+            "omitted_dimensions": ["size"],
+            "omitted_facts": ["child size"],
+        },
+    }
+    result = generate_gap_question(QuestionClient(), task)
+    assert result["covered_dimensions"] == ["size"]
+    assert "child size" not in result["question"]
+
+
+def test_composite_teacher_replays_question_and_gold_backbone_without_goal_leak():
+    context = {
+        "instruction_full": "I need a child size pillow",
+        "goal_options": [],
+    }
+    task = build_task_row(
+        9,
+        "I need a pillow",
+        context,
+        "teacher",
+        "prompt-hash",
+        omitted_dimensions=["size"],
+        omitted_facts=["child size"],
+    )
+
+    class CompositeClient:
+        def __init__(self):
+            self.outputs = [
+                tool_message("search_products", {"query": "pillow"}, "search-1"),
+                tool_message("open_product", {"asin": "100000000001"}, "open-1"),
+                tool_message("buy_now", {}, "buy-1"),
+                {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "question": "What size do you need?",
+                        "covered_dimensions": ["size"],
+                    }),
+                },
+            ]
+
+        def complete(self, messages, tools, tool_choice="auto"):
+            return self.outputs.pop(0)
+
+    class GapShopper:
+        call_count = 0
+
+        def answer_gap(self, question, private_context, omitted_facts):
+            self.call_count += 1
+            assert private_context == context
+            return {"answer": "child size", "used_facts": ["child size"]}
+
+    class ReplayEnv:
+        def __init__(self, **kwargs):
+            self.multiturn = kwargs.get("multiturn", False)
+            self.shopper_context = None
+
+        def reset(self, task_id, initial_request=None):
+            if self.multiturn:
+                self.shopper_context = dict(context)
+                return {"env_idx": 0, "instruction": initial_request}
+            return {"env_idx": 0, "instruction": context["instruction_full"]}
+
+        def step(self, action):
+            if action == "search[pillow]":
+                return {
+                    "instruction": (
+                        "1|100000000001|99.0|brand|category|attr|pillow\n"
+                        '可点击的按钮: ["100000000001"]'
+                    ),
+                    "reward": 0.0,
+                    "done": False,
+                }
+            if action == "click[100000000001]":
+                return {
+                    "instruction": '详情\n可点击的按钮: ["Buy Now"]',
+                    "reward": 0.0,
+                    "done": False,
+                }
+            assert action == "click[Buy Now]"
+            return {
+                "instruction": "done",
+                "reward": 1.0,
+                "done": True,
+                "over": True,
+                "reward_detail": {
+                    "reward_version": "shopsimulator-reward-v3",
+                    "reward_type": "gold_purchase",
+                    "reward_valid": True,
+                    "purchase_success": True,
+                    "termination_reason": "gold_purchase",
+                },
+            }
+
+        def release(self):
+            pass
+
+    trajectory = collect_composite_teacher_task(
+        task,
+        teacher_client=CompositeClient(),
+        shopper=GapShopper(),
+        env_factory=ReplayEnv,
+        max_steps=5,
+    )
+    assert trajectory["status"] == "done"
+    assert trajectory["composite_stage"] == "replay_verified"
+    assert trajectory["shopper_questions"] == [{
+        "question": "What size do you need?",
+        "answer": "child size",
+    }]
+    assert trajectory["actor_llm_calls"] == 4
+    assert acceptance_reasons(trajectory) == (True, [])
+    payload = json.dumps(build_sft_row(trajectory), ensure_ascii=False)
+    assert "I need a child size pillow" not in payload
+    assert "ask_shopper" in payload
