@@ -20,8 +20,54 @@ from shopping_grpo.personalization.schema import (
 )
 
 
-ARCHITECT_PROMPT_VERSION = "personalized-task-architect-v1"
+ARCHITECT_PROMPT_VERSION = "personalized-task-architect-v2"
 CRITIC_PROMPT_VERSION = "personalized-task-critic-v1"
+
+ARCHITECT_OUTPUT_CONTRACT = r"""
+Follow this exact output shape. Every listed key is required. Do not invent wrapper
+keys such as `preferences` or `target_item`.
+
+{
+  "profile": {
+    "stable_facts": [],
+    "category_preferences": [],
+    "brand_preferences": [],
+    "budget_preferences": [],
+    "attribute_preferences": [],
+    "option_preferences": []
+  },
+  "current_request": "natural Chinese request",
+  "private_goal": {
+    "category": "category copied or grounded from the source facts",
+    "constraints": [
+      {
+        "constraint_id": "c1",
+        "field": "function",
+        "value": "grounded value",
+        "hardness": "hard",
+        "source": "request_explicit",
+        "evidence": {
+          "source_path": "attributes",
+          "source_value": "an exact value or exact substring present at source_path"
+        }
+      }
+    ]
+  },
+  "clarification": {
+    "should_ask": false,
+    "max_questions": 2,
+    "targets": []
+  },
+  "conflicts": []
+}
+
+Exact constraint fields: budget, brand, function, material, color, size,
+capacity, bundle, specification, model, quantity, compatibility.
+Exact evidence source_path values: category, title, shop_name, pricing,
+attributes, required_options, available_options, original_instruction.
+Use only `hard` or `soft` for hardness. Copy evidence text exactly; do not
+paraphrase it. Keep category directly at private_goal.category.
+"""
 
 ARCHITECT_SYSTEM_PROMPT = """你是个性化购物训练数据的 Task Architect。你会收到一条私有的
 ShopSimulator 商品与任务事实，以及指定场景。请生成一条自然、可验证、无答案泄漏的中文任务。
@@ -154,6 +200,22 @@ class OpenAICompatibleJSONClient:
 
 def _profile_with_defaults(value: object, profile_id: str) -> dict:
     profile = dict(value) if isinstance(value, Mapping) else {}
+    generic_preferences = profile.pop("preferences", [])
+    if isinstance(generic_preferences, list):
+        buckets = {
+            "category": "category_preferences",
+            "brand": "brand_preferences",
+            "budget": "budget_preferences",
+            "size": "option_preferences",
+            "capacity": "option_preferences",
+            "bundle": "option_preferences",
+            "specification": "option_preferences",
+        }
+        for preference in generic_preferences:
+            if not isinstance(preference, Mapping):
+                continue
+            bucket = buckets.get(preference.get("field"), "attribute_preferences")
+            profile.setdefault(bucket, []).append(dict(preference))
     profile["profile_id"] = profile_id
     for key in PROFILE_LIST_FIELDS:
         profile.setdefault(key, [])
@@ -176,6 +238,17 @@ def build_architect_task(
     extra = set(candidate) - allowed
     if extra:
         raise GenerationAPIError(f"Architect returned code-owned fields: {sorted(extra)}")
+    private_goal = deepcopy(candidate.get("private_goal"))
+    if not isinstance(private_goal, Mapping):
+        private_goal = {}
+    else:
+        private_goal = dict(private_goal)
+    # Some providers put catalog metadata in a redundant target_item wrapper.
+    # Category is source-owned, so fill it deterministically and discard the
+    # wrapper rather than persisting a copied title/ASIN in generated data.
+    private_goal.pop("target_item", None)
+    private_goal.setdefault("category", source.get("category"))
+
     task = {
         "schema_version": SCHEMA_VERSION,
         "task_id": task_id,
@@ -188,7 +261,7 @@ def build_architect_task(
         "scenario": scenario,
         "profile": _profile_with_defaults(candidate.get("profile"), f"profile-{sequence:06d}"),
         "current_request": candidate.get("current_request"),
-        "private_goal": candidate.get("private_goal"),
+        "private_goal": private_goal,
         "clarification": candidate.get("clarification"),
         "conflicts": candidate.get("conflicts", []),
         "generation": {
@@ -208,7 +281,8 @@ def architect_user_prompt(source: Mapping, scenario: str, question_count: int) -
     return (
         f"指定场景：{scenario}\n"
         f"clarification_required 时目标提问数：{question_count}；其他场景忽略该数字。\n"
-        "私有 ShopSimulator 事实如下：\n"
+        + ARCHITECT_OUTPUT_CONTRACT
+        + "\n私有 ShopSimulator 事实如下：\n"
         + json.dumps(source, ensure_ascii=False, indent=2)
     )
 

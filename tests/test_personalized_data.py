@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from shopping_grpo.personalization.generation import (
+    ARCHITECT_OUTPUT_CONTRACT,
     OpenAICompatibleJSONClient,
     build_architect_task,
     extract_json_object,
@@ -179,6 +180,51 @@ class SourceTaskExportTests(unittest.TestCase):
 
 
 class GenerationBoundaryTests(unittest.TestCase):
+    def test_normalizes_common_provider_shape_without_weakening_evidence(self):
+        generated = {
+            "profile": {
+                "preferences": [
+                    {"field": "budget", "value": "100元以内", "confidence": "high"},
+                    {"field": "color", "value": "黑色", "confidence": "medium"},
+                ]
+            },
+            "current_request": "我想买一双黑色的缓震羽毛球鞋。",
+            "private_goal": {
+                "target_item": {"category": "羽毛球鞋", "title": "do-not-persist"},
+                "constraints": [
+                    {
+                        "constraint_id": "c-function",
+                        "field": "function",
+                        "value": "缓震",
+                        "hardness": "hard",
+                        "source": "request_explicit",
+                        "evidence": {"source_path": "attributes", "source_value": "缓震"},
+                    }
+                ],
+            },
+            "clarification": {"should_ask": False, "max_questions": 2, "targets": []},
+            "conflicts": [],
+        }
+        task = build_architect_task(
+            generated,
+            source={
+                "shopsim_task_id": 10,
+                "target_asin": "100000000010",
+                "source_hash": "source-hash",
+                "category": "羽毛球鞋",
+                "attributes": ["缓震"],
+            },
+            scenario="complete_request",
+            sequence=1,
+            model="test-model",
+        )
+
+        self.assertEqual(task["private_goal"]["category"], "羽毛球鞋")
+        self.assertNotIn("target_item", task["private_goal"])
+        self.assertEqual(task["profile"]["budget_preferences"][0]["field"], "budget")
+        self.assertEqual(task["profile"]["attribute_preferences"][0]["field"], "color")
+        self.assertIn('"category_preferences"', ARCHITECT_OUTPUT_CONTRACT)
+
     def test_api_json_parsing_and_code_owned_identity(self):
         generated = {
             "profile": {},

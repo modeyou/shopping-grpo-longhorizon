@@ -139,8 +139,11 @@ def main() -> int:
         source_task_id = int(source["shopsim_task_id"])
         if source_task_id in processed or len(accepted) >= args.target_accepted:
             continue
-        scenario = scenario_for_index(len(accepted))
-        question_count = question_count_for_index(len(accepted), scenario)
+        # Rotate by attempted sources, not accepted rows. A schema/model problem
+        # in one scenario must not spend the entire source pool on that scenario.
+        attempt_index = len(processed)
+        scenario = scenario_for_index(attempt_index)
+        question_count = question_count_for_index(attempt_index, scenario)
         attempt = {
             "shopsim_task_id": source_task_id,
             "scenario": scenario,
@@ -208,6 +211,7 @@ def main() -> int:
             attempt["status"] = "rejected"
             attempt["reasons"] = getattr(exc, "errors", [str(exc)])
         _append_jsonl(args.output_dir / "attempts.jsonl", attempt)
+        processed.add(source_task_id)
         print(
             f"[{attempt['status']}] source={source_task_id} scenario={scenario} "
             f"accepted={len(accepted)}/{args.target_accepted} calls={client.call_count}"
