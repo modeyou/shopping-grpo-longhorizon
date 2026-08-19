@@ -21,8 +21,8 @@ from shopping_grpo.personalization.schema import (
 )
 
 
-ARCHITECT_PROMPT_VERSION = "personalized-task-architect-v3"
-CRITIC_PROMPT_VERSION = "personalized-task-critic-v1"
+ARCHITECT_PROMPT_VERSION = "personalized-task-architect-v4-source-anchored"
+CRITIC_PROMPT_VERSION = "personalized-task-critic-v2-source-coverage"
 
 ARCHITECT_OUTPUT_CONTRACT = r"""
 Follow this exact output shape. Every listed key is required. Do not invent wrapper
@@ -47,10 +47,7 @@ keys such as `preferences` or `target_item`.
         "value": "grounded value",
         "hardness": "hard",
         "source": "request_explicit",
-        "evidence": {
-          "source_path": "attributes",
-          "source_value": "an exact value or exact substring present at source_path"
-        }
+        "source_quote": "an exact continuous substring of original_instruction"
       }
     ]
   },
@@ -64,10 +61,14 @@ keys such as `preferences` or `target_item`.
 
 Exact constraint fields: budget, brand, function, material, color, size,
 capacity, bundle, specification, model, quantity, compatibility.
-Exact evidence source_path values: category, title, shop_name, pricing,
-attributes, required_options, available_options, original_instruction.
-Use only `hard` or `soft` for hardness. Copy evidence text exactly; do not
-paraphrase it. Keep category directly at private_goal.category.
+Use only `hard` or `soft` for hardness. `source_quote` must be copied exactly
+from original_instruction. Code will turn it into immutable evidence; never
+output an evidence object yourself. The constraint value must occur verbatim
+inside source_quote and also in the view declared by source: current_request, profile, or the
+clarification target answer/answer_facts. Keep category directly at
+private_goal.category. Select 2-8 independent, decision-relevant constraints;
+do not copy generic target-product attributes that the original instruction
+does not request.
 """
 
 SCENARIO_ORDER = (
@@ -105,6 +106,44 @@ CRITIC_SYSTEM_PROMPT = """你是独立的数据质量 Critic。请检查候选�
 一致、符合指定场景，并且没有把 clarification_answer 泄漏到画像或当前请求。特别检查长期偏好
 是否被错误写成硬事实、当前请求是否覆盖画像冲突、问题是否真的有必要、答案是否由源商品事实
 支持。只输出 JSON：{"verdict":"accept|reject","issues":["..."]}。不要改写任务。"""
+
+# V4 deliberately narrows both models to the source instruction. Product
+# metadata remains available to the auditor, but it can no longer become an
+# Agent requirement merely because it describes the target product.
+ARCHITECT_SYSTEM_PROMPT = """You are the Task Architect for personalized Chinese shopping data.
+The input contains one frozen ShopSimulator source and a required scenario.
+The original_instruction is the canonical complete user goal.
+
+Return one JSON object and nothing else. Follow the supplied output contract exactly.
+Every private_goal constraint must contain an exact, continuous source_quote copied
+from original_instruction. Never derive a requirement only from title, attributes,
+required_options, pricing, or other target-product metadata. Code owns provenance and
+will replace source_quote with immutable evidence.
+
+Create a natural Chinese current_request. A constraint's value must appear verbatim in
+the information view declared by its source: request_explicit -> current_request;
+profile_stable_fact/profile_preference -> profile; clarification_answer -> the matching
+target answer or answer_facts. Hidden clarification values must not occur in the initial
+request or profile. Keep only independent, decision-relevant requirements, normally 2-8.
+Do not copy ASIN, full product title, or a unique target-retrieval phrase.
+
+For clarification_required, hide only a fact actually stated in original_instruction;
+never ask about an optional attribute that the source user did not require. For
+profile_conflict, the current explicit request wins over the soft historical preference.
+"""
+
+CRITIC_SYSTEM_PROMPT = """You are an independent data-quality Critic. The source
+original_instruction is the canonical complete user goal. Check that the task covers
+its independent decision-relevant requirements without adding target-product facts;
+every constraint must be semantically supported by its immutable original_instruction
+evidence. Check that each value is assigned to the declared request/profile/answer view,
+that profile facts are plausible and defeasible where appropriate, and that any
+clarification question hides a necessary source requirement rather than inventing a new
+preference. Check conflict override semantics and natural Chinese wording.
+
+Return only {"verdict":"accept|reject","issues":["..."]}. Accept requires an empty
+issues list. Do not rewrite the task.
+"""
 
 
 class GenerationAPIError(RuntimeError):
@@ -230,6 +269,41 @@ def _profile_with_defaults(value: object, profile_id: str) -> dict:
     return profile
 
 
+def _materialize_source_anchored_goal(value: object, source: Mapping) -> dict:
+    """Replace model-authored provenance with exact original-instruction spans."""
+
+    goal = deepcopy(value)
+    if not isinstance(goal, Mapping):
+        return {}
+    goal = dict(goal)
+    constraints = goal.get("constraints")
+    if not isinstance(constraints, list):
+        return goal
+    original = str(source.get("original_instruction") or "")
+    materialized = []
+    for index, raw in enumerate(constraints):
+        if not isinstance(raw, Mapping):
+            materialized.append(raw)
+            continue
+        item = dict(raw)
+        quote = str(item.pop("source_quote", "") or "").strip()
+        evidence = item.pop("evidence", None)
+        if not quote and isinstance(evidence, Mapping):
+            if evidence.get("source_path") == "original_instruction":
+                quote = str(evidence.get("source_value") or "").strip()
+        if not quote or quote not in original:
+            raise GenerationAPIError(
+                f"constraint[{index}] source_quote must be an exact original_instruction span"
+            )
+        item["evidence"] = {
+            "source_path": "original_instruction",
+            "source_value": quote,
+        }
+        materialized.append(item)
+    goal["constraints"] = materialized
+    return goal
+
+
 def build_architect_task(
     generated: object,
     *,
@@ -246,11 +320,7 @@ def build_architect_task(
     extra = set(candidate) - allowed
     if extra:
         raise GenerationAPIError(f"Architect returned code-owned fields: {sorted(extra)}")
-    private_goal = deepcopy(candidate.get("private_goal"))
-    if not isinstance(private_goal, Mapping):
-        private_goal = {}
-    else:
-        private_goal = dict(private_goal)
+    private_goal = _materialize_source_anchored_goal(candidate.get("private_goal"), source)
     # Some providers put catalog metadata in a redundant target_item wrapper.
     # Category is source-owned, so fill it deterministically and discard the
     # wrapper rather than persisting a copied title/ASIN in generated data.
@@ -288,13 +358,14 @@ def build_architect_task(
 def architect_user_prompt(source: Mapping, scenario: str, question_count: int) -> str:
     scenario_contracts = {
         "complete_request": (
-            "All constraints must use source=request_explicit, and every constraint value must "
-            "appear in current_request. Use an empty profile unless a harmless profile is needed. "
+            "Set current_request exactly equal to original_instruction. All constraints must use "
+            "source=request_explicit, and every constraint value must appear verbatim in current_request. "
+            "Use an empty profile unless a harmless profile is needed. "
             "clarification must be {should_ask:false,max_questions:2,targets:[]}."
         ),
         "profile_resolvable": (
             "At least one constraint must use profile_stable_fact or profile_preference, and its "
-            "value must appear in the appropriate profile list. The request must make the profile "
+            "value must appear verbatim in the appropriate profile list. The request must make the profile "
             "applicable. clarification must be {should_ask:false,max_questions:2,targets:[]}."
         ),
         "clarification_required": (
@@ -307,9 +378,10 @@ def architect_user_prompt(source: Mapping, scenario: str, question_count: int) -
             "the actual field in both field and answer_facts."
         ),
         "profile_conflict": (
-            "Create at least one profile preference that conflicts with an explicit current request "
-            "constraint. The explicit request wins. Declare the conflict in conflicts. Constraint "
-            "values must appear in their declared request/profile view. clarification must be "
+            "Keep current_request equal to original_instruction when natural. Create at least one profile "
+            "preference that conflicts with an explicit current request constraint. The explicit request "
+            "wins. Declare the conflict in conflicts. Constraint "
+            "values must appear verbatim in their declared request/profile view. clarification must be "
             "{should_ask:false,max_questions:2,targets:[]}."
         ),
     }

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from shopping_grpo.personalization.generation import (
     ARCHITECT_OUTPUT_CONTRACT,
+    GenerationAPIError,
     OpenAICompatibleJSONClient,
     build_architect_task,
     extract_json_object,
@@ -218,7 +219,7 @@ class GenerationBoundaryTests(unittest.TestCase):
                         "value": "缓震",
                         "hardness": "hard",
                         "source": "request_explicit",
-                        "evidence": {"source_path": "attributes", "source_value": "缓震"},
+                        "source_quote": "缓震",
                     }
                 ],
             },
@@ -233,6 +234,7 @@ class GenerationBoundaryTests(unittest.TestCase):
                 "source_hash": "source-hash",
                 "category": "羽毛球鞋",
                 "attributes": ["缓震"],
+                "original_instruction": "我想买一双黑色的缓震羽毛球鞋。",
             },
             scenario="complete_request",
             sequence=1,
@@ -258,7 +260,7 @@ class GenerationBoundaryTests(unittest.TestCase):
                         "value": "缓震",
                         "hardness": "hard",
                         "source": "request_explicit",
-                        "evidence": {"source_path": "attributes", "source_value": "缓震"},
+                        "source_quote": "缓震",
                     }
                 ],
             },
@@ -292,6 +294,7 @@ class GenerationBoundaryTests(unittest.TestCase):
                 "target_asin": "100000000009",
                 "source_hash": "source-hash",
                 "attributes": ["缓震"],
+                "original_instruction": "我想买一双缓震羽毛球鞋。",
             },
             scenario="complete_request",
             sequence=3,
@@ -306,6 +309,39 @@ class GenerationBoundaryTests(unittest.TestCase):
             validate_critic_response({"verdict": "reject", "issues": ["unnatural"]})["issues"],
             ["unnatural"],
         )
+
+    def test_rejects_model_provenance_not_anchored_in_original_instruction(self):
+        generated = {
+            "profile": {},
+            "current_request": "我想买缓震球鞋。",
+            "private_goal": {
+                "category": "球鞋",
+                "constraints": [{
+                    "constraint_id": "c1",
+                    "field": "function",
+                    "value": "缓震",
+                    "hardness": "hard",
+                    "source": "request_explicit",
+                    "source_quote": "目标商品支持缓震",
+                }],
+            },
+            "clarification": {"should_ask": False, "max_questions": 2, "targets": []},
+            "conflicts": [],
+        }
+        with self.assertRaises(GenerationAPIError) as context:
+            build_architect_task(
+                generated,
+                source={
+                    "shopsim_task_id": 11,
+                    "target_asin": "100000000011",
+                    "category": "球鞋",
+                    "original_instruction": "我想买缓震球鞋。",
+                },
+                scenario="complete_request",
+                sequence=1,
+                model="test-model",
+            )
+        self.assertIn("exact original_instruction span", str(context.exception))
 
 
 if __name__ == "__main__":

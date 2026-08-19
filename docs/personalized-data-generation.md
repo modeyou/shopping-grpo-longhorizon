@@ -76,6 +76,16 @@ hardness、字段枚举、证据和泄漏规则仍保持严格校验。场景调
 在它声明的 request、profile 或 clarification answer 信息视图中，并要求澄清 target 包含非空 question、answer 和
 对应 answer_facts。该规则用于阻止“事实正确但对 Agent 来说属于答案泄漏”的伪合法任务。
 
+V3 四场景 smoke 在 42 次 Architect 后仍为 0 接受，证明“让模型同时从全部商品事实发明约束和信息来源”本身
+不稳定，而不只是提示词问题。V4 将 `original_instruction` 冻结为完整用户目标：Architect 只能提交逐字存在于该
+文本的 `source_quote`，代码再将其物化为不可修改的 evidence；标题、商品属性、售价和完整 SKU 选项不能因为描述
+目标商品就自动变成用户要求。场景只是在这些源锚定原子约束上重新分配信息：保留在 request、迁入 profile、隐藏为
+clarification answer，或构造被当前请求覆盖的软偏好。Critic 负责语义覆盖、自然性和问题必要性，不再负责修补 provenance。
+这使“问什么”必然来自原任务的必要事实，而不是模型临时想到的可选属性。
+
+Smoke 必须设置 `--max-source-attempts` 成本保险；达到上限后脚本写出当前 summary 并停止，不再自动遍历完整 source pool。
+该参数写入 run config，续跑时必须保持一致。
+
 ## 4. 中断续跑
 
 额度耗尽、网络异常或 provider 错误会停止进程，但不会把当前 source 标成数据拒绝。恢复额度后使用

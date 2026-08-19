@@ -194,6 +194,12 @@ request_explicit > clarification_answer > applicable profile_stable_fact
 正式数据采用“生成器 + 确定性检查 + 独立批评器 + 环境验收”的组合，而不是一次 API 调用直接
 落盘：
 
+任务生成器不得从目标商品的标题、属性、价格或完整 SKU 反向发明用户需求。首版以继承的
+`original_instruction` 作为完整源目标；Architect 为每个原子约束返回逐字存在的 `source_quote`，代码将其物化为
+不可修改的 `original_instruction` evidence，再按场景分配到当前请求、画像或冻结澄清回答。LLM 负责原子语义划分、
+自然语言表达和独立审计，但不能自由填写 provenance。这样保留了 LLM 生成质量，同时保证澄清问题确实来自原任务中
+被隐藏的必要事实。
+
 ```text
 ShopSimulator 候选任务事实
   → Task Architect：生成画像、信息分配、当前请求、冻结回答

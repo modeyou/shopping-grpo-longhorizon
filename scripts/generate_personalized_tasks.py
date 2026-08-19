@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument(
+        "--max-source-attempts",
+        type=int,
+        default=0,
+        help="stop after this many source attempts in one process; 0 means unlimited",
+    )
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--skip-critic", action="store_true")
@@ -89,6 +95,7 @@ def _initial_manifest(args: argparse.Namespace, sources: list[dict]) -> dict:
         "api_base": args.base_url,
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
+        "max_source_attempts": args.max_source_attempts,
         "critic_enabled": not args.skip_critic,
         "architect_prompt_version": ARCHITECT_PROMPT_VERSION,
         "architect_prompt_hash": stable_hash(ARCHITECT_SYSTEM_PROMPT),
@@ -122,6 +129,8 @@ def main() -> int:
     args = parse_args()
     if args.target_accepted < 1:
         raise SystemExit("--target-accepted must be positive")
+    if args.max_source_attempts < 0:
+        raise SystemExit("--max-source-attempts must be non-negative")
     if not args.model or not args.base_url or not args.api_key:
         raise SystemExit("set OPENAI_MODEL, OPENAI_BASE_URL and OPENAI_API_KEY")
     sources = _read_jsonl(args.source_tasks)
@@ -135,10 +144,16 @@ def main() -> int:
         timeout=args.timeout,
     )
 
+    attempts_this_process = 0
+    stopped_by_cap = False
     for source in sources:
         source_task_id = int(source["shopsim_task_id"])
         if source_task_id in processed or len(accepted) >= args.target_accepted:
             continue
+        if args.max_source_attempts and attempts_this_process >= args.max_source_attempts:
+            print(f"stopped at --max-source-attempts={args.max_source_attempts}")
+            stopped_by_cap = True
+            break
         # Rotate by attempted sources, not accepted rows. A schema/model problem
         # in one scenario must not spend the entire source pool on that scenario.
         attempt_index = len(processed)
@@ -216,6 +231,7 @@ def main() -> int:
             attempt["reasons"] = getattr(exc, "errors", [str(exc)])
         _append_jsonl(args.output_dir / "attempts.jsonl", attempt)
         processed.add(source_task_id)
+        attempts_this_process += 1
         print(
             f"[{attempt['status']}] source={source_task_id} scenario={scenario} "
             f"accepted={len(accepted)}/{args.target_accepted} calls={client.call_count}"
@@ -226,7 +242,9 @@ def main() -> int:
         "target_accepted": args.target_accepted,
         "processed": len(_load_resume_state(args.output_dir)[0]),
         "api_calls_this_process": client.call_count,
+        "source_attempts_this_process": attempts_this_process,
         "complete": len(accepted) >= args.target_accepted,
+        "stopped_by_attempt_cap": stopped_by_cap,
         "accepted_task_ids": [row["task_id"] for row in accepted],
         "accepted_hash": stable_hash(accepted),
     }
@@ -235,7 +253,10 @@ def main() -> int:
         encoding="utf-8",
     )
     if not summary["complete"]:
-        print("source pool exhausted before target acceptance; export more source tasks and start a new run")
+        if stopped_by_cap:
+            print("attempt cap reached before target acceptance; inspect the run before resuming")
+        else:
+            print("source pool exhausted before target acceptance; export more source tasks and start a new run")
         return 2
     print(f"generated {len(accepted)} accepted tasks -> {args.output_dir}")
     return 0
