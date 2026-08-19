@@ -106,8 +106,6 @@ def action_guard_tool_message(tool_call, reason, observation):
     only_return_buttons = bool(normalized_targets) and normalized_targets <= {"< prev", "back to search"}
     if only_return_buttons:
         correction = f"你处于信息子页，下一步只能调用 {' 或 '.join(return_tools)}。"
-    elif reason == "product_already_inspected":
-        correction = "该商品此前已经核验，重新打开不会增加证据；请选择新候选或结束探索。"
     elif reason == "option_already_selected":
         correction = "该商品规格此前已经选择，不要重复选择；若核验已完成，应购买、返回或结束探索。"
     else:

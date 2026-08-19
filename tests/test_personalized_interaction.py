@@ -85,7 +85,7 @@ class PersonalizedInteractionTest(unittest.TestCase):
         self.assertIn("尽量在首次搜索前问", PERSONALIZED_SYSTEM_PROMPT)
         self.assertIn("不得询问请求或画像已经给出的信息", PERSONALIZED_SYSTEM_PROMPT)
         self.assertIn("及时购买", PERSONALIZED_SYSTEM_PROMPT)
-        self.assertIn("不要离开强候选后重新打开", PERSONALIZED_SYSTEM_PROMPT)
+        self.assertIn("可以重新打开一次", PERSONALIZED_SYSTEM_PROMPT)
 
     def test_http_client_keeps_private_context_out_of_reset_result(self):
         calls = []
@@ -189,7 +189,7 @@ class PersonalizedInteractionTest(unittest.TestCase):
         self.assertEqual(len(client.requests), 1)
         self.assertEqual(client.requests[0]["tools"], [])
 
-    def test_history_guard_blocks_reopening_an_inspected_product(self):
+    def test_history_guard_allows_reopening_an_inspected_product(self):
         steps = [
             {
                 "tool_name": "open_product",
@@ -198,9 +198,8 @@ class PersonalizedInteractionTest(unittest.TestCase):
             {"tool_name": "back_to_search", "parameters": {}},
         ]
 
-        self.assertEqual(
-            _history_reject_reason("open_product", {"asin": "A1"}, steps),
-            "product_already_inspected",
+        self.assertIsNone(
+            _history_reject_reason("open_product", {"asin": "A1"}, steps)
         )
         self.assertIsNone(
             _history_reject_reason("open_product", {"asin": "A2"}, steps)

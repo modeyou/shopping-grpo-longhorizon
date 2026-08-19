@@ -63,7 +63,8 @@ PERSONALIZED_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
     "B. 只有需求清单仍缺少一个会改变品类、预算门槛、关键规格或候选排序的事实时才提问，并尽量在首次搜索前问。"
     "不得询问请求或画像已经给出的信息，不得只确认同义词、颜色叫法或是否愿意放宽明确偏好。\n"
     "C. 对照清单核验候选。当前候选已经满足品类、预算、核心功能和关键规格时，应选择正确 variant 并及时购买；"
-    "不要为了猜测品牌继续搜索，也不要离开强候选后重新打开已经核验过的商品或重复选择同一规格。\n\n"
+    "不要为了猜测品牌继续搜索。比较后确需返回最佳候选时可以重新打开一次，但不要在候选间反复往返，"
+    "也不要在同一商品重复选择相同规格。\n\n"
     "执行规则：",
 )
 
@@ -640,15 +641,6 @@ def _tool_message(tool_call, step):
 
 def _history_reject_reason(name, arguments, steps):
     """Block actions that Environment v2.1 credits as no new evidence."""
-    if name == "open_product":
-        asin = str(arguments.get("asin", ""))
-        if any(
-            step.get("tool_name") == "open_product"
-            and str((step.get("parameters") or {}).get("asin", "")) == asin
-            for step in steps
-        ):
-            return "product_already_inspected"
-        return None
     if name != "select_option":
         return None
 

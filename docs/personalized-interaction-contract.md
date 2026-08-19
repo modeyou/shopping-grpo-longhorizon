@@ -119,3 +119,21 @@ Pilot-02 前只做两项归因明确的修正：个性化 prompt 要求先从当
 需要提问并及时购买强候选；个性化 rollout 守卫拒绝重新打开已核验 ASIN，以及在同一商品重复选择相同
 规格。这些守卫调用不触碰环境，并按既有 blocked-call 规则从 SFT 消息中删除。原 standard rollout 行为
 不变。
+
+## 8. Pilot-02 Teacher 修正验收
+
+同模型、同 task `0/1/3`、temperature 0 的 Pilot-02 使用新的需求清单 prompt 和个性化重复动作保护：
+
+| task | 提问 | Reward v3 终局 | 新守卫触发 | 相对 Pilot-01 |
+|---:|---:|---|---|---|
+| 0 | 0 | `invalid_action_limit` | `product_already_inspected` | 过强守卫引发连续恢复失败 |
+| 1 | 0 | `gold_purchase` | 无 | 从 `repeat_loop` 提升为严格成功 |
+| 3 | 0 | `partial_alternative_purchase` | 无 | 从 `repeat_loop` 提升为有效购买 |
+
+严格成功由 0/3 提升至 1/3，`repeat_loop` 由 2/3 降至 0/3，说明 prompt 对 task 1/3 的生存性和购买
+决策有正向作用；task 1 是本轮唯一可进入 SFT 的轨迹。三条均未提问符合当前信息边界，因为原生画像已
+覆盖简化请求缺失的主要约束。
+
+`product_already_inspected` 对所有重访一刀切，会阻止比较多个候选后返回最佳商品，因此在 Pilot-02 后
+撤回。个性化 prompt 改为允许有目的地返回最佳候选一次，只保留同一商品重复选择相同规格的
+`option_already_selected` 守卫。Pilot-03 仅回归 task 0，不重复运行另外两题。
