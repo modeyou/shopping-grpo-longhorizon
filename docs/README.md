@@ -20,10 +20,7 @@ reproducible personalization and proactive-clarification project.
 The [`reference-project and ShopSimulator review`](research/reference-project-shopsimulator-review.md)
 records the primary-source findings that constrain the implementation plan.
 
-The [`personalized data contract`](personalized-data-contract.md) separates
-Actor-visible context, private shopper state and audit-only task facts for the
-self-generated SFT data pipeline.
-
-[`Personalized data generation`](personalized-data-generation.md) provides the
-resumable 20-task API pilot commands. [`4×RTX 4090 resource budget v0`](resource-budget-v0.md)
+The [`personalized interaction contract`](personalized-interaction-contract.md)
+defines the inherited ShopSimulator persona inputs, private Shopper state and
+the project-owned multi-turn trajectory pipeline. [`4×RTX 4090 resource budget v0`](resource-budget-v0.md)
 records the pre-measurement hardware assumptions and calibration gates.
