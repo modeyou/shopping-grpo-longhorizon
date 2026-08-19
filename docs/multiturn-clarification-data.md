@@ -33,27 +33,40 @@ Each new task costs one Shopper call. Existing task IDs resume without another c
 The generator fails if the underlying full-goal hash changed. The audit validator
 requires each omitted fact to be copied from the full goal and absent from the opening.
 
-## Collect gap-positive Teacher demonstrations
+## Collect replay-verified gap-positive Teacher demonstrations
 
     python scripts/collect_multiturn_sft_data.py \
       --tasks outputs/multiturn/openings-pilot-01.jsonl \
-      --output-dir outputs/multiturn-sft/pilot-02-forced \
+      --output-dir outputs/multiturn-sft/composite-pilot-01 \
       --limit 10 \
       --model deepseek-v4-flash \
       --shopper-model deepseek-v4-flash \
-      --teacher-first-ask \
-      --max-shopper-questions 2 \
+      --composite-teacher \
+      --target-accepted 3 \
       --max-steps 35
 
-The first pilot showed that an untrained Teacher did not ask consistently even when
-budget, capacity, or size was absent. For gap-positive SFT collection, the
-teacher-first-ask flag constrains only the first Teacher tool choice. The Teacher
-still writes the question, and every later choice is autonomous.
+Composite collection follows the upstream project's successful rejection-sampling
+pattern. It first gives the standard shopping Teacher the complete ShopSimulator goal.
+Only after that trajectory passes the unchanged Reward v3 gold gate does it spend one
+call generating a question targeted at `opening_audit` and one grounded Shopper-answer
+call. It then prepends that exchange to the gold action backbone and replays every
+action from a fresh multi-turn reset. A row is accepted only when replay is legal and
+again ends in a valid Reward v3 gold purchase.
 
-This flag is data supervision, not an Agent runtime rule. Do not use it for baseline
-evaluation, SFT evaluation, GRPO, or final evaluation. Formal SFT data should mix
-gap-positive demonstrations with successful complete-request trajectories so that
-the model also learns when not to ask.
+`--target-accepted` stops after the requested number of accepted rows and supports
+resuming from the same `raw.jsonl`. Failed gold backbones do not spend question or
+Shopper calls. Start with three accepted rows; this is an integration pilot, not model
+evaluation.
+
+The earlier `--teacher-first-ask` mode is retained only for diagnosing autonomous
+Teacher behavior. It should not be used to build the formal gap-positive SFT set: it
+forces an ask but does not ensure that the question targets the frozen gap, and the
+same Teacher still has to solve the entire shopping trajectory online.
+
+Neither composite collection nor first-ask constraints are Agent runtime rules. Do not
+use them for baseline evaluation, SFT evaluation, GRPO, or final evaluation. Formal SFT
+data should mix replay-verified gap-positive demonstrations with successful
+complete-request trajectories so that the model also learns when not to ask.
 
 The existing Reward v3 gate remains unchanged. Only valid gold-purchase trajectories
 enter the SFT, train, and validation JSONL artifacts.
