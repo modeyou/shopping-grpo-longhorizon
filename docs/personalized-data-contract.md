@@ -121,7 +121,8 @@ request_explicit > clarification_answer > applicable profile_stable_fact
         "field": "size",
         "value": "40",
         "hardness": "hard",
-        "source": "clarification_answer"
+        "source": "clarification_answer",
+        "evidence": {"source_path": "required_options", "source_value": "40"}
       }
     ]
   },

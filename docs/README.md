@@ -23,3 +23,7 @@ records the primary-source findings that constrain the implementation plan.
 The [`personalized data contract`](personalized-data-contract.md) separates
 Actor-visible context, private shopper state and audit-only task facts for the
 self-generated SFT data pipeline.
+
+[`Personalized data generation`](personalized-data-generation.md) provides the
+resumable 20-task API pilot commands. [`4×RTX 4090 resource budget v0`](resource-budget-v0.md)
+records the pre-measurement hardware assumptions and calibration gates.
