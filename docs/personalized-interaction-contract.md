@@ -99,3 +99,23 @@ python scripts/collect_sft_data.py \
 
 每次 `ask_user` 会比普通购物轨迹多一次 Shopper API 调用。首轮只验收：服务无协议错误、私有字段不进入
 Actor 消息、问答能被后续动作利用、轨迹可恢复保存、Reward v3 正常返回。
+
+## 7. Pilot-01 协议验收
+
+2026-08-19 使用 `deepseek-v4-flash` 对 task `0/1/3` 各采集一条真实轨迹。旧输出目录中残留的
+task 5496 连接失败记录不属于本轮。该轮不是模型效果评测，只验收最小闭环并定位 Teacher 失败模式。
+
+| task | 协议状态 | 提问 | Reward v3 终局 | 主要失败 |
+|---:|---|---:|---|---|
+| 0 | 有效 | 0 | `partial_alternative_purchase` | 核心功能满足，但选择了错误的儿童满天星规格 |
+| 1 | 有效 | 0 | `repeat_loop` | 重访同一 ASIN，并重复选择同一 50W 规格 |
+| 3 | 有效 | 1 | `repeat_loop` | 放弃强候选，迟到地确认已明确颜色，再重访旧商品 |
+
+验收结论：persona reset、私有上下文隔离、Shopper 单次回答、`ask_user` 消息续接、Reward v3 和显式释放
+全部通过，Actor 消息中 `__reasoning__` 泄漏为 0；严格成功为 0/3，三条均不得进入 SFT。task 3 的问题
+没有新增信息，属于询问已知字段。
+
+Pilot-02 前只做两项归因明确的修正：个性化 prompt 要求先从当前请求和画像形成需求清单、尽早判断是否
+需要提问并及时购买强候选；个性化 rollout 守卫拒绝重新打开已核验 ASIN，以及在同一商品重复选择相同
+规格。这些守卫调用不触碰环境，并按既有 blocked-call 规则从 SFT 消息中删除。原 standard rollout 行为
+不变。

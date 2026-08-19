@@ -55,6 +55,16 @@ PERSONALIZED_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
     "才调用 `ask_user` 提出一个简洁、具体、一次只涉及一个主题的问题；整条轨迹最多提问两次。"
     "用户回答后应立即利用新增信息继续购物。画像用于辅助理解偏好，不得覆盖用户在当前请求或回答中"
     "明确表达的要求；信息已足够时不要为了提问而提问。你只能调用提供的工具。",
+).replace(
+    "执行规则：",
+    "个性化前置规则：\n"
+    "A. 在第一次操作前，在内部把当前请求与画像中的近期搜索词、商品属性偏好、功能偏好合并成需求清单；"
+    "当前请求与用户回答优先于画像，人口属性和消费统计不能凭空推导硬约束。不要输出该清单，也不要调用 think。\n"
+    "B. 只有需求清单仍缺少一个会改变品类、预算门槛、关键规格或候选排序的事实时才提问，并尽量在首次搜索前问。"
+    "不得询问请求或画像已经给出的信息，不得只确认同义词、颜色叫法或是否愿意放宽明确偏好。\n"
+    "C. 对照清单核验候选。当前候选已经满足品类、预算、核心功能和关键规格时，应选择正确 variant 并及时购买；"
+    "不要为了猜测品牌继续搜索，也不要离开强候选后重新打开已经核验过的商品或重复选择同一规格。\n\n"
+    "执行规则：",
 )
 
 
@@ -395,6 +405,8 @@ def collect_for_task(
                     and len(trajectory["user_questions"]) >= int(max_user_questions)
                 ):
                     reason = "user_question_limit_reached"
+                if reason is None and persona:
+                    reason = _history_reject_reason(name, arguments, trajectory["steps"])
             except Exception as exc:
                 reason = f"invalid_tool_call:{exc.__class__.__name__}"
             if reason:
@@ -624,6 +636,51 @@ def _tool_message(tool_call, step):
         "name": step["tool_name"],
         "content": step["observation"],
     }
+
+
+def _history_reject_reason(name, arguments, steps):
+    """Block actions that Environment v2.1 credits as no new evidence."""
+    if name == "open_product":
+        asin = str(arguments.get("asin", ""))
+        if any(
+            step.get("tool_name") == "open_product"
+            and str((step.get("parameters") or {}).get("asin", "")) == asin
+            for step in steps
+        ):
+            return "product_already_inspected"
+        return None
+    if name != "select_option":
+        return None
+
+    current_asin = None
+    for step in reversed(steps):
+        tool_name = step.get("tool_name")
+        if tool_name == "open_product":
+            current_asin = str((step.get("parameters") or {}).get("asin", ""))
+            break
+        if tool_name in {"search_products", "back_to_search"}:
+            break
+    value = str(arguments.get("value", ""))
+    if not current_asin or not value:
+        return None
+    if any(
+        step.get("tool_name") == "select_option"
+        and str((step.get("parameters") or {}).get("value", "")) == value
+        and _step_current_asin(steps, index) == current_asin
+        for index, step in enumerate(steps)
+    ):
+        return "option_already_selected"
+    return None
+
+
+def _step_current_asin(steps, end_index):
+    for step in reversed(steps[: end_index + 1]):
+        tool_name = step.get("tool_name")
+        if tool_name == "open_product":
+            return str((step.get("parameters") or {}).get("asin", ""))
+        if tool_name in {"search_products", "back_to_search"}:
+            return None
+    return None
 
 
 def _enforce_serial_tool_call(assistant):

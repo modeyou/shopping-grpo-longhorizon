@@ -4,7 +4,11 @@ import unittest
 from shopping_grpo.collection.sft import build_sft_row
 from shopping_grpo.environment.client import ShopAgentEnv
 from shopping_grpo.environment.tools import PERSONALIZED_SHOP_TOOL_SCHEMAS
-from shopping_grpo.evaluation.rollout import collect_for_task
+from shopping_grpo.evaluation.rollout import (
+    PERSONALIZED_SYSTEM_PROMPT,
+    _history_reject_reason,
+    collect_for_task,
+)
 from shopping_grpo.personalization import LLMShopper
 
 
@@ -76,6 +80,13 @@ class DeterministicShopper:
 
 
 class PersonalizedInteractionTest(unittest.TestCase):
+    def test_personalized_prompt_requires_profile_checklist_and_early_questions(self):
+        self.assertIn("近期搜索词", PERSONALIZED_SYSTEM_PROMPT)
+        self.assertIn("尽量在首次搜索前问", PERSONALIZED_SYSTEM_PROMPT)
+        self.assertIn("不得询问请求或画像已经给出的信息", PERSONALIZED_SYSTEM_PROMPT)
+        self.assertIn("及时购买", PERSONALIZED_SYSTEM_PROMPT)
+        self.assertIn("不要离开强候选后重新打开", PERSONALIZED_SYSTEM_PROMPT)
+
     def test_http_client_keeps_private_context_out_of_reset_result(self):
         calls = []
 
@@ -177,6 +188,37 @@ class PersonalizedInteractionTest(unittest.TestCase):
         self.assertEqual(answer, "我希望控制在70元以内。")
         self.assertEqual(len(client.requests), 1)
         self.assertEqual(client.requests[0]["tools"], [])
+
+    def test_history_guard_blocks_reopening_an_inspected_product(self):
+        steps = [
+            {
+                "tool_name": "open_product",
+                "parameters": {"asin": "A1"},
+            },
+            {"tool_name": "back_to_search", "parameters": {}},
+        ]
+
+        self.assertEqual(
+            _history_reject_reason("open_product", {"asin": "A1"}, steps),
+            "product_already_inspected",
+        )
+        self.assertIsNone(
+            _history_reject_reason("open_product", {"asin": "A2"}, steps)
+        )
+
+    def test_history_guard_blocks_same_option_on_same_product_only(self):
+        steps = [
+            {"tool_name": "open_product", "parameters": {"asin": "A1"}},
+            {"tool_name": "select_option", "parameters": {"value": "50w"}},
+        ]
+
+        self.assertEqual(
+            _history_reject_reason("select_option", {"value": "50w"}, steps),
+            "option_already_selected",
+        )
+        self.assertIsNone(
+            _history_reject_reason("select_option", {"value": "100w"}, steps)
+        )
 
     def test_personalized_sft_row_keeps_ask_user_schema(self):
         trajectory = {
