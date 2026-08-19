@@ -11,6 +11,7 @@ from shopping_grpo.evaluation.rollout import (
 )
 from shopping_grpo.personalization import (
     LLMShopper,
+    MASKED_TEACHER_ACTION_CONSTRAINT,
     MASKED_TEACHER_GUIDANCE_VERSION,
     MASKED_TEACHER_HINT,
     MASK_SCHEMA_VERSION,
@@ -41,8 +42,14 @@ class SequenceClient:
         self.responses = list(responses)
         self.requests = []
 
-    def complete(self, messages, tools):
-        self.requests.append({"messages": [dict(row) for row in messages], "tools": tools})
+    def complete(self, messages, tools, forced_tool_name=None):
+        self.requests.append(
+            {
+                "messages": [dict(row) for row in messages],
+                "tools": tools,
+                "forced_tool_name": forced_tool_name,
+            }
+        )
         return self.responses.pop(0)
 
 
@@ -218,7 +225,14 @@ class PersonalizedInteractionTest(unittest.TestCase):
 
     def test_masked_persona_reaches_actor_while_shopper_keeps_full_context(self):
         actor = SequenceClient(
-            [assistant_tool("ask_user", {"question": "预算偏好是什么？"}, "ask-1")]
+            [
+                assistant_tool("ask_user", {"question": "预算偏好是什么？"}, "ask-1"),
+                assistant_tool(
+                    "search_products",
+                    {"query": "卷发片"},
+                    "search-1",
+                ),
+            ]
         )
         shopper = DeterministicShopper()
         env = FakePersonaEnv()
@@ -235,7 +249,7 @@ class PersonalizedInteractionTest(unittest.TestCase):
             {"task_id": 9, "persona_mask": mask},
             client=actor,
             env_factory=lambda **kwargs: env,
-            max_steps=1,
+            max_steps=2,
             persona=True,
             shopper=shopper,
         )
@@ -249,6 +263,12 @@ class PersonalizedInteractionTest(unittest.TestCase):
             trajectory["teacher_guidance_version"],
             MASKED_TEACHER_GUIDANCE_VERSION,
         )
+        self.assertEqual(
+            trajectory["teacher_action_constraint"],
+            MASKED_TEACHER_ACTION_CONSTRAINT,
+        )
+        self.assertEqual(actor.requests[0]["forced_tool_name"], "ask_user")
+        self.assertIsNone(actor.requests[1]["forced_tool_name"])
         self.assertTrue(
             any(
                 MASKED_TEACHER_HINT in (message.get("content") or "")

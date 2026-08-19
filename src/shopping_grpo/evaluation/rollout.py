@@ -31,6 +31,7 @@ from shopping_grpo.environment.tools import (
 )
 from shopping_grpo.environment.observation import render_structured_observation
 from shopping_grpo.personalization.masking import (
+    MASKED_TEACHER_ACTION_CONSTRAINT,
     MASKED_TEACHER_GUIDANCE_VERSION,
     MASKED_TEACHER_HINT,
     apply_persona_mask,
@@ -157,7 +158,7 @@ class OpenAIChatClient:
         self.last_context_tokens = None
         self.transport = transport
 
-    def complete(self, messages, tools):
+    def complete(self, messages, tools, forced_tool_name=None):
         """请求模型下一轮回复，并在上下文超限时按配置压缩历史。"""
         self.last_context_event = None
         self.last_context_tokens = None
@@ -187,7 +188,14 @@ class OpenAIChatClient:
             }
             if tools:
                 payload.update(
-                    {"tools": _responses_tools(tools), "tool_choice": "auto"}
+                    {
+                        "tools": _responses_tools(tools),
+                        "tool_choice": (
+                            {"type": "function", "name": forced_tool_name}
+                            if forced_tool_name
+                            else "auto"
+                        ),
+                    }
                 )
         else:
             payload = {
@@ -198,7 +206,19 @@ class OpenAIChatClient:
                 "max_tokens": self.max_tokens,
             }
             if tools:
-                payload.update({"tools": tools, "tool_choice": "auto"})
+                payload.update(
+                    {
+                        "tools": tools,
+                        "tool_choice": (
+                            {
+                                "type": "function",
+                                "function": {"name": forced_tool_name},
+                            }
+                            if forced_tool_name
+                            else "auto"
+                        ),
+                    }
+                )
         if self.thinking:
             # DeepSeek tool-call thinking requires reasoning_content in later messages.
             payload.update(
@@ -329,6 +349,9 @@ def collect_for_task(
         "teacher_guidance_version": (
             MASKED_TEACHER_GUIDANCE_VERSION if mask_spec is not None else None
         ),
+        "teacher_action_constraint": (
+            MASKED_TEACHER_ACTION_CONSTRAINT if mask_spec is not None else None
+        ),
         "interaction_protocol": (
             "shopsimulator-persona-ask-v1" if persona else "shopsimulator-standard-v2"
         ),
@@ -383,7 +406,14 @@ def collect_for_task(
 
         while len(trajectory["steps"]) < int(max_steps):
             # 先请求模型，再校验动作；工具结果会追加到 messages，成为下一轮上下文。
-            assistant = client.complete(messages, tool_schemas)
+            if mask_spec is not None and not trajectory["steps"]:
+                assistant = client.complete(
+                    messages,
+                    tool_schemas,
+                    forced_tool_name="ask_user",
+                )
+            else:
+                assistant = client.complete(messages, tool_schemas)
             context_tokens = getattr(client, "last_context_tokens", None)
             if context_tokens is not None:
                 trajectory["context_turn_tokens"].append(

@@ -9,6 +9,7 @@ from copy import deepcopy
 
 MASK_SCHEMA_VERSION = "shopsimulator-persona-mask-v1"
 MASKED_TEACHER_GUIDANCE_VERSION = "masked-gap-teacher-v1"
+MASKED_TEACHER_ACTION_CONSTRAINT = "force-first-ask-v1"
 MASKED_TEACHER_HINT = (
     "数据采集专用提示：Actor 当前可见信息中有且只有一项会影响正确商品或规格选择的具体事实被遮蔽。"
     "请结合当前请求、剩余画像和商品类型，判断最可能缺少的适用对象、兼容型号或关键规格，并在首次搜索前"

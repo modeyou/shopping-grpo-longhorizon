@@ -644,6 +644,30 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(captured["headers"]["Authorization"], "Bearer secret")
         self.assertEqual(captured["headers"]["User-Agent"], "shopping-grpo-longhorizon/0.1")
 
+    def test_openai_client_can_force_one_chat_completion_tool(self):
+        captured = {}
+
+        def transport(url, payload, headers, timeout):
+            captured["payload"] = payload
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+        client = OpenAIChatClient(
+            model="deepseek-v4-flash",
+            base_url="https://api.example.test/v1",
+            api_key="secret",
+            transport=transport,
+        )
+        client.complete(
+            [{"role": "user", "content": "请澄清"}],
+            tools=[{"type": "function"}],
+            forced_tool_name="ask_user",
+        )
+
+        self.assertEqual(
+            captured["payload"]["tool_choice"],
+            {"type": "function", "function": {"name": "ask_user"}},
+        )
+
     def test_openai_client_supports_responses_tool_payload_and_result(self):
         captured = {}
 

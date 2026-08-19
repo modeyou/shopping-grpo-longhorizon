@@ -192,8 +192,28 @@ SFT schema v2 按条件验收：
 accepted 为 0/3，证明 mask 与 schema v2 验收按预期工作，也说明仅靠通用个性化 prompt 不能让当前 Teacher
 稳定产生澄清正样本。task 1 的 Gold 不能证明满足隐藏规格，因此仍必须拒绝。此时不扩大数据采集。
 
-Masked-Pilot-02 增加 `masked-gap-teacher-v1` 采集提示：只告诉 Teacher“Actor 可见信息中恰有一个会影响
+采集策略第二版增加 `masked-gap-teacher-v1` 提示：只告诉 Teacher“Actor 可见信息中恰有一个会影响
 选择的事实被遮蔽”，要求它从请求、剩余画像和商品类型推断应询问的事实。提示不包含 mask ID、属性名、
 答案或预生成问题。它属于生成示范所用的特权 Teacher 信号，完整保存在 raw 轨迹便于审计，但在转换 SFT
 行时按精确内容确定性删除；训练样本仍只包含部署时可见的标准个性化 system prompt、遮蔽后的请求画像、
 工具轨迹和用户回答。这样既避免把“存在一个人为遮蔽”作为模型输入捷径，又能低成本蒸馏正确提问动作。
+
+`masked-pilot-02` 因 ShopSimulator 误以 standard 模式启动而在 reset 前全部失败，只作为基础设施记录，不是
+模型实验。修正环境后，`masked-pilot-03` 才是该策略的有效运行。
+
+## 12. Masked-Pilot-03 与强制首轮澄清
+
+| task | 遮蔽事实 | 提问 | Reward v3 终局 | SFT 判定 |
+|---:|---|---:|---|---|
+| 0 | 儿童年龄 | 0 | `partial_alternative_purchase` | 拒绝 |
+| 1 | 灯泡功率 | 0 | `reward_unverifiable` | 拒绝 |
+| 2 | 机器型号 | 1 | `gold_purchase` | 接收 |
+
+task 2 的问题正确指向豆浆机型号，Shopper 回答“沧州200型号、120目、约30元”，Teacher 随后完成 Gold
+purchase，是第一条完整合格的澄清正样本。accepted 为 1/3，证明自然问题生成、私有回答、后续购物与严格
+验收闭环已经成立；但自由决策 Teacher 的提问召回仍不足，不能直接扩大采集。
+
+下一版使用 `force-first-ask-v1`：仅对 `single_fact_mask` 正样本的第一次 Teacher completion，通过标准
+OpenAI `tool_choice` 强制选择 `ask_user`。Teacher 仍必须依据遮蔽后的请求与画像自行生成问题参数，系统不
+提供属性名、答案或标准问题；回答后所有购物动作恢复自由选择。约束版本写入 raw 轨迹审计，不进入 SFT
+messages，也不用于部署推理。完整画像负样本不启用该约束，用于共同训练“信息充分时不要提问”。
