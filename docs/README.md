@@ -12,3 +12,14 @@ Follow the guides in workflow order:
 
 [Reward v3](reward-v3.md) is the detailed specification shared by collection,
 GRPO and evaluation.
+
+The [`Personalized Agent project contract`](personalized-agent-project-contract.md)
+defines the scope and staged decision boundaries for the independent,
+reproducible personalization and proactive-clarification project.
+
+The [`reference-project and ShopSimulator review`](research/reference-project-shopsimulator-review.md)
+records the primary-source findings that constrain the implementation plan.
+
+The [`personalized data contract`](personalized-data-contract.md) separates
+Actor-visible context, private shopper state and audit-only task facts for the
+self-generated SFT data pipeline.
