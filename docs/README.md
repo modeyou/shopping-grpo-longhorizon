@@ -12,3 +12,6 @@ Follow the guides in workflow order:
 
 [Reward v3](reward-v3.md) is the detailed specification shared by collection,
 GRPO and evaluation.
+
+[Multi-turn clarification](multiturn-clarification-data.md) documents the frozen
+Shopper-opening and autonomous sk_shopper Teacher-data pipeline.

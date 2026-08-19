@@ -19,11 +19,15 @@ from shopping_grpo.environment.actions import (
     RUNTIME_GUARD_FIELD,
     action_reject_reason,
 )
-from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS, tool_call_to_action
+from shopping_grpo.environment.tools import (
+    MULTITURN_SHOP_TOOL_SCHEMAS,
+    SHOP_TOOL_SCHEMAS,
+    tool_call_to_action,
+)
 from shopping_grpo.training.sft.dataset import split_rows_by_task
 
 
-COLLECTION_SCHEMA_VERSION = "shopping-sft-collection-v1"
+COLLECTION_SCHEMA_VERSION = "shopping-sft-collection-v2"
 ALLOWED_MESSAGE_KEYS = {"role", "content", "tool_calls", "tool_call_id", "name"}
 ALLOWED_TOOL_CALL_KEYS = {"id", "type", "function"}
 ALLOWED_FUNCTION_KEYS = {"name", "arguments"}
@@ -97,7 +101,11 @@ def build_sft_row(trajectory: dict) -> dict:
             blocked_call_ids,
             terminal_tool_call_id,
         ),
-        "tools": deepcopy(SHOP_TOOL_SCHEMAS),
+        "tools": deepcopy(
+            MULTITURN_SHOP_TOOL_SCHEMAS
+            if trajectory.get("interaction_mode") == "multiturn"
+            else SHOP_TOOL_SCHEMAS
+        ),
     }
 
 
@@ -265,6 +273,10 @@ def _tool_step_reject_reason(trajectory: dict, step: dict) -> str | None:
         return "arguments_not_object"
     if name != step.get("tool_name"):
         return "tool_name_mismatch"
+    if name == "ask_shopper":
+        if step.get("env_action") is not None:
+            return "env_action_mismatch"
+        return action_reject_reason(name, arguments, "")
     try:
         expected_action = tool_call_to_action(name, arguments)
     except (KeyError, TypeError, ValueError):
@@ -294,6 +306,8 @@ def _previous_observation(trajectory: dict, tool_call_id: str | None) -> str:
             if previous.get(RUNTIME_GUARD_FIELD) is True:
                 continue
             if previous.get("role") == "tool":
+                if previous.get("name") == "ask_shopper":
+                    continue
                 content = previous.get("content")
                 return content if isinstance(content, str) else ""
         return ""
