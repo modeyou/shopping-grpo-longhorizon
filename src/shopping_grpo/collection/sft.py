@@ -27,7 +27,7 @@ from shopping_grpo.environment.tools import (
 from shopping_grpo.training.sft.dataset import split_rows_by_task
 
 
-COLLECTION_SCHEMA_VERSION = "shopping-sft-collection-v1"
+COLLECTION_SCHEMA_VERSION = "shopping-sft-collection-v2"
 ALLOWED_MESSAGE_KEYS = {"role", "content", "tool_calls", "tool_call_id", "name"}
 ALLOWED_TOOL_CALL_KEYS = {"id", "type", "function"}
 ALLOWED_FUNCTION_KEYS = {"name", "arguments"}
@@ -69,6 +69,8 @@ def acceptance_reasons(trajectory: dict) -> tuple[bool, list[str]]:
     if reward.get("termination_reason") != "gold_purchase":
         reasons.append("termination_not_gold_purchase")
 
+    reasons.extend(_personalized_acceptance_reasons(trajectory, steps))
+
     for index, message in enumerate(trajectory.get("messages") or []):
         if (
             message.get("role") == "assistant"
@@ -93,7 +95,7 @@ def build_sft_row(trajectory: dict) -> dict:
         for blocked in trajectory.get("blocked_tool_calls") or []
     }
     blocked_call_ids.discard(None)
-    return {
+    row = {
         "trajectory_id": trajectory.get("trajectory_id"),
         "task_id": int(trajectory["task_id"]),
         "messages": _training_messages(
@@ -107,6 +109,48 @@ def build_sft_row(trajectory: dict) -> dict:
             else SHOP_TOOL_SCHEMAS
         ),
     }
+    if trajectory.get("persona_mode"):
+        row["persona_condition"] = trajectory.get("persona_condition")
+        audit = trajectory.get("persona_mask_audit") or {}
+        row["mask_id"] = audit.get("mask_id")
+    return row
+
+
+def _personalized_acceptance_reasons(trajectory, steps):
+    if not trajectory.get("persona_mode"):
+        return []
+    reasons = []
+    condition = trajectory.get("persona_condition")
+    questions = trajectory.get("user_questions") or []
+    ask_steps = [step for step in steps if step.get("tool_name") == "ask_user"]
+    if len(questions) != len(ask_steps):
+        reasons.append("question_audit_mismatch")
+    if len(questions) > 2:
+        reasons.append("too_many_clarification_questions")
+
+    if condition == "full_persona":
+        if questions:
+            reasons.append("unexpected_question_on_full_persona")
+        return reasons
+    if condition != "single_fact_mask":
+        reasons.append("unknown_persona_condition")
+        return reasons
+
+    audit = trajectory.get("persona_mask_audit") or {}
+    if not audit.get("mask_id") or not audit.get("spec_sha256"):
+        reasons.append("missing_persona_mask_audit")
+    if not questions:
+        reasons.append("missing_clarification_question")
+        return reasons
+    expected_terms = audit.get("expected_answer_terms") or []
+    answers = "\n".join(
+        str(question.get("answer", ""))
+        for question in questions
+        if isinstance(question, dict)
+    ).casefold()
+    if not expected_terms or not any(str(term).casefold() in answers for term in expected_terms):
+        reasons.append("masked_fact_not_recovered")
+    return reasons
 
 
 def build_collection_artifacts(

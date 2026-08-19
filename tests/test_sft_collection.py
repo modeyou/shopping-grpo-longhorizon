@@ -124,6 +124,37 @@ def _write_jsonl(path, rows):
     )
 
 
+def _personalized_trajectory(*, condition, answer=None):
+    trajectory = _accepted_trajectory()
+    trajectory["persona_mode"] = True
+    trajectory["persona_condition"] = condition
+    trajectory["user_questions"] = []
+    trajectory["persona_mask_audit"] = None
+    if answer is not None:
+        ask = _assistant_tool("ask_user", {"question": "给谁使用？"}, "ask-user")
+        reply = _tool_message("ask-user", "ask_user", answer)
+        trajectory["messages"][2:2] = [ask, reply]
+        trajectory["steps"].insert(
+            0,
+            {
+                "tool_name": "ask_user",
+                "tool_call": ask["tool_calls"][0],
+                "env_action": None,
+                "done": False,
+            },
+        )
+        trajectory["user_questions"] = [
+            {"question": "给谁使用？", "answer": answer}
+        ]
+    if condition == "single_fact_mask":
+        trajectory["persona_mask_audit"] = {
+            "mask_id": "child-age",
+            "spec_sha256": "a" * 64,
+            "expected_answer_terms": ["5岁"],
+        }
+    return trajectory
+
+
 class SftCollectionTests(unittest.TestCase):
     def test_accepts_only_strict_reward_v3_gold_purchase(self):
         accepted, reasons = acceptance_reasons(_accepted_trajectory())
@@ -145,6 +176,46 @@ class SftCollectionTests(unittest.TestCase):
         self.assertNotIn("Reward: 1.0", payload)
         self.assertEqual(row["messages"][-1]["content"], "购买已完成。")
         self.assertTrue(row["tools"])
+
+    def test_full_persona_rejects_redundant_question(self):
+        accepted, reasons = acceptance_reasons(
+            _personalized_trajectory(condition="full_persona", answer="5岁")
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("unexpected_question_on_full_persona", reasons)
+
+    def test_masked_persona_requires_question_and_recovered_fact(self):
+        accepted, reasons = acceptance_reasons(
+            _personalized_trajectory(
+                condition="single_fact_mask",
+                answer="是给5岁左右的小孩使用。",
+            )
+        )
+        self.assertTrue(accepted, reasons)
+
+        no_question = _personalized_trajectory(condition="single_fact_mask")
+        accepted, reasons = acceptance_reasons(no_question)
+        self.assertFalse(accepted)
+        self.assertIn("missing_clarification_question", reasons)
+
+        wrong_answer = _personalized_trajectory(
+            condition="single_fact_mask", answer="我没有额外要求。"
+        )
+        accepted, reasons = acceptance_reasons(wrong_answer)
+        self.assertFalse(accepted)
+        self.assertIn("masked_fact_not_recovered", reasons)
+
+    def test_personalized_sft_row_records_condition_without_private_terms(self):
+        trajectory = _personalized_trajectory(
+            condition="single_fact_mask",
+            answer="是给5岁左右的小孩使用。",
+        )
+        row = build_sft_row(trajectory)
+
+        self.assertEqual(row["persona_condition"], "single_fact_mask")
+        self.assertEqual(row["mask_id"], "child-age")
+        self.assertNotIn("expected_answer_terms", row)
 
     def test_build_artifacts_excludes_held_out_tasks_and_splits_by_task(self):
         rejected = deepcopy(_accepted_trajectory(4))
@@ -174,17 +245,24 @@ class SftCollectionTests(unittest.TestCase):
                 collection_config={"model": "teacher-test"},
             )
 
-            train = [json.loads(line) for line in (output / "train.jsonl").read_text().splitlines()]
+            train = [
+                json.loads(line)
+                for line in (output / "train.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
             validation = [
                 json.loads(line)
-                for line in (output / "validation.jsonl").read_text().splitlines()
+                for line in (output / "validation.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
             ]
             rejected_rows = [
                 json.loads(line)
-                for line in (output / "rejected.jsonl").read_text().splitlines()
+                for line in (output / "rejected.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
             ]
             metadata_exists = (output / "metadata.json").exists()
-            metadata = json.loads((output / "metadata.json").read_text())
+            metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
 
         train_ids = {row["task_id"] for row in train}
         validation_ids = {row["task_id"] for row in validation}

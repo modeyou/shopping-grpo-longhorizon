@@ -9,7 +9,12 @@ from shopping_grpo.evaluation.rollout import (
     _history_reject_reason,
     collect_for_task,
 )
-from shopping_grpo.personalization import LLMShopper
+from shopping_grpo.personalization import (
+    LLMShopper,
+    MASK_SCHEMA_VERSION,
+    PersonaMaskError,
+    apply_persona_mask,
+)
 
 
 def assistant_tool(name, arguments, call_id):
@@ -80,6 +85,39 @@ class DeterministicShopper:
 
 
 class PersonalizedInteractionTest(unittest.TestCase):
+    def test_persona_mask_is_exact_deterministic_and_non_mutating(self):
+        persona = {"history": {"queries": ["适合5岁小孩的乳胶枕"]}}
+        spec = {
+            "schema_version": MASK_SCHEMA_VERSION,
+            "mask_id": "child-age",
+            "redactions": [
+                {
+                    "path": ["history", "queries", 0],
+                    "old": "适合5岁小孩的",
+                    "replacement": "",
+                }
+            ],
+            "expected_answer_terms": ["5岁"],
+        }
+
+        masked, audit = apply_persona_mask(persona, spec)
+
+        self.assertEqual(masked["history"]["queries"], ["乳胶枕"])
+        self.assertEqual(persona["history"]["queries"], ["适合5岁小孩的乳胶枕"])
+        self.assertEqual(audit["mask_id"], "child-age")
+        self.assertEqual(len(audit["spec_sha256"]), 64)
+
+    def test_persona_mask_fails_closed_when_frozen_text_changes(self):
+        spec = {
+            "schema_version": MASK_SCHEMA_VERSION,
+            "mask_id": "child-age",
+            "redactions": [{"path": ["query"], "old": "5岁"}],
+            "expected_answer_terms": ["5岁"],
+        }
+
+        with self.assertRaises(PersonaMaskError):
+            apply_persona_mask({"query": "成人乳胶枕"}, spec)
+
     def test_personalized_prompt_requires_profile_checklist_and_early_questions(self):
         self.assertIn("近期搜索词", PERSONALIZED_SYSTEM_PROMPT)
         self.assertIn("尽量在首次搜索前问", PERSONALIZED_SYSTEM_PROMPT)
@@ -175,6 +213,36 @@ class PersonalizedInteractionTest(unittest.TestCase):
             trajectory["blocked_tool_calls"][0]["reason"],
             "user_question_limit_reached",
         )
+
+    def test_masked_persona_reaches_actor_while_shopper_keeps_full_context(self):
+        actor = SequenceClient(
+            [assistant_tool("ask_user", {"question": "预算偏好是什么？"}, "ask-1")]
+        )
+        shopper = DeterministicShopper()
+        env = FakePersonaEnv()
+        mask = {
+            "schema_version": MASK_SCHEMA_VERSION,
+            "mask_id": "budget-style",
+            "redactions": [
+                {"path": ["budget"], "old": "节俭", "replacement": ""}
+            ],
+            "expected_answer_terms": ["70元"],
+        }
+
+        trajectory = collect_for_task(
+            {"task_id": 9, "persona_mask": mask},
+            client=actor,
+            env_factory=lambda **kwargs: env,
+            max_steps=1,
+            persona=True,
+            shopper=shopper,
+        )
+
+        actor_trace = json.dumps(trajectory["messages"], ensure_ascii=False)
+        self.assertNotIn("节俭", actor_trace)
+        self.assertEqual(shopper.calls[0]["context"]["user_persona"]["budget"], "节俭")
+        self.assertEqual(trajectory["persona_condition"], "single_fact_mask")
+        self.assertEqual(trajectory["persona_mask_audit"]["mask_id"], "budget-style")
 
     def test_llm_shopper_uses_exactly_one_completion_and_no_tools(self):
         client = SequenceClient([{"role": "assistant", "content": "我希望控制在70元以内。"}])

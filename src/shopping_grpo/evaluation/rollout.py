@@ -30,6 +30,7 @@ from shopping_grpo.environment.tools import (
     tool_call_to_action,
 )
 from shopping_grpo.environment.observation import render_structured_observation
+from shopping_grpo.personalization.masking import apply_persona_mask
 
 
 SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用户完成一次单轮购物任务。
@@ -309,11 +310,18 @@ def collect_for_task(
     max_user_questions=2,
 ):
     """执行一个任务并返回完整轨迹；所有异常都会被写入轨迹后再释放环境。"""
+    mask_spec = task.get("persona_mask")
+    if mask_spec is not None and not persona:
+        raise ValueError("persona_mask requires persona=True")
     trajectory = {
         "trajectory_id": str(uuid4()),
         "task_id": int(task["task_id"]),
         "attempt_index": int(attempt_index),
         "persona_mode": bool(persona),
+        "persona_condition": (
+            "single_fact_mask" if mask_spec is not None else ("full_persona" if persona else None)
+        ),
+        "persona_mask_audit": None,
         "interaction_protocol": (
             "shopsimulator-persona-ask-v1" if persona else "shopsimulator-standard-v2"
         ),
@@ -342,6 +350,13 @@ def collect_for_task(
     try:
         # reset 建立任务状态；后续每一轮只允许一个工具调用。
         initial = env.reset(task["task_id"])
+        if mask_spec is not None:
+            initial = dict(initial)
+            masked_persona, mask_audit = apply_persona_mask(
+                initial.get("user_persona"), mask_spec
+            )
+            initial["user_persona"] = masked_persona
+            trajectory["persona_mask_audit"] = mask_audit
         if initial.get("observation_state") is not None:
             latest_observation = render_structured_observation(
                 initial["observation_state"]

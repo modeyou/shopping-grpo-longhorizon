@@ -136,4 +136,45 @@ Pilot-02 前只做两项归因明确的修正：个性化 prompt 要求先从当
 
 `product_already_inspected` 对所有重访一刀切，会阻止比较多个候选后返回最佳商品，因此在 Pilot-02 后
 撤回。个性化 prompt 改为允许有目的地返回最佳候选一次，只保留同一商品重复选择相同规格的
-`option_already_selected` 守卫。Pilot-03 仅回归 task 0，不重复运行另外两题。
+`option_already_selected` 守卫。原计划 Pilot-03 仅回归 task 0，实际运行时为降低偶然性仍采集了前三题。
+
+## 9. Pilot-03 回归结果与数据判定
+
+实际 Pilot-03 仍按 `--limit 3` 回归 task `0/1/3`，避免只观察单条轨迹：
+
+| task | 提问 | Reward v3 终局 | SFT 判定 |
+|---:|---:|---|---|
+| 0 | 1 | `gold_purchase` | 拒绝：问题询问的 5 岁信息原本已在 Actor 可见画像中 |
+| 1 | 0 | `partial_alternative_purchase` | 拒绝：非严格成功 |
+| 3 | 0 | `partial_alternative_purchase` | 拒绝：非严格成功 |
+
+task 0 证明重访保护撤回后，Teacher 能完成有效提问和严格购买闭环；但这条问题没有产生新信息，不能作为
+澄清正样本。旧版收集器只检查 Reward，曾将它计为 1 条 accepted；从 SFT schema v2 起，完整画像条件下
+出现任意 `ask_user` 都会以 `unexpected_question_on_full_persona` 拒绝。
+
+Pilot-02 的 task 1 为 Gold，Pilot-03 同题为 Partial，尽管 temperature 为 0。这说明远端服务或策略执行仍
+存在不可完全消除的运行方差；开发冒烟结果只用于协议和失败模式诊断，不作为正式显著性结论。到这里停止
+继续调 prompt。
+
+## 10. 确定性单事实遮蔽协议
+
+原生完整画像适合训练“读取画像并直接购物”，但多数任务没有真实信息缺口，不能稳定产生有价值的
+`ask_user`。为构造澄清正样本，增加 `shopsimulator-persona-mask-v1`：
+
+1. 完整目标、原始画像、目标商品和 Reward 始终保留在 ShopSimulator/Shopper 私有侧；
+2. reset 后仅对 Actor 可见的画像副本执行预登记的精确字符串遮蔽；
+3. 遮蔽规则按 task ID、JSON 路径和原字符串冻结，路径或文本不完全匹配时立即失败；
+4. 不调用 LLM 生成任务或 Critic，确保同一提交和 task ID 可完全复现；
+5. raw 轨迹保存 mask ID、规则哈希和私有验收词，Actor 消息与 SFT 行不包含验收词。
+
+首个低成本清单为 `data/personalized/masked_pilot_tasks.jsonl`，固定 task `0/1/2`，分别遮蔽儿童年龄、灯泡
+功率和机器型号。三条都不与 Final-200 Clean 重叠。
+
+SFT schema v2 按条件验收：
+
+- `full_persona`：要求 Reward v3 Gold，且不得提问；
+- `single_fact_mask`：要求 Reward v3 Gold、至少一次提问，并且 Shopper 回答命中该 mask 的预登记事实；
+- 其余协议、隐私、终局和去重规则保持不变。
+
+这套规则验证“模型发现缺口并通过用户回答恢复了事实”，严格成功则验证最终购物结果。3 条 masked pilot
+仍只是数据管线冒烟，不用来报告模型能力；正式阶段再冻结更大任务集以及 matched no-ask 对照。

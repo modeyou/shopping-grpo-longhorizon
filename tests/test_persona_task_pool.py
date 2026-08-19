@@ -10,6 +10,7 @@ SHOP_ENV = ROOT / "environments" / "ShopSimulator" / "shop_env"
 sys.path.append(str(SHOP_ENV))
 
 from web_agent_site.engine.persona import actor_instruction, has_persona_request  # noqa: E402
+from shopping_grpo.personalization.masking import apply_persona_mask  # noqa: E402
 
 
 class PersonaTaskPoolTest(unittest.TestCase):
@@ -56,6 +57,40 @@ class PersonaTaskPoolTest(unittest.TestCase):
                 instruction["instruction_simple"],
             )
             self.assertNotIn("instruction_sample", instruction)
+
+    def test_masked_pilot_manifest_matches_frozen_personas(self):
+        specs = [
+            json.loads(line)
+            for line in (ROOT / "data" / "personalized" / "masked_pilot_tasks.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        held_out = {
+            json.loads(line)["task_id"]
+            for line in (ROOT / "data" / "evaluation" / "tasks.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        }
+
+        self.assertEqual(len(specs), 3)
+        self.assertFalse({row["task_id"] for row in specs} & held_out)
+        for row in specs:
+            item = self.items[row["task_id"]]
+            original = dict(item["user_persona"])
+            original.pop("__reasoning__", None)
+            original_json = json.dumps(original, ensure_ascii=False, sort_keys=True)
+            masked, audit = apply_persona_mask(original, row["persona_mask"])
+            self.assertEqual(audit["mask_id"], row["persona_mask"]["mask_id"])
+            self.assertNotEqual(masked, original)
+            masked_text = json.dumps(masked, ensure_ascii=False).casefold()
+            self.assertFalse(
+                any(term.casefold() in masked_text for term in audit["expected_answer_terms"])
+            )
+            self.assertEqual(
+                json.dumps(original, ensure_ascii=False, sort_keys=True), original_json
+            )
 
 
 if __name__ == "__main__":
