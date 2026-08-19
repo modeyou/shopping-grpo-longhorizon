@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -18,6 +19,8 @@ from shopping_grpo.collection.sft import (
 from shopping_grpo.evaluation.rollout import (
     CollectionInfrastructureError,
     OpenAIChatClient,
+    PERSONALIZED_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
     _is_infrastructure_failure,
     append_jsonl,
     collect_for_task,
@@ -26,6 +29,8 @@ from shopping_grpo.evaluation.rollout import (
     load_tasks,
     rollout_interrupted,
 )
+from shopping_grpo.personalization import LLMShopper
+from shopping_grpo.personalization.shopper import SHOPPER_SYSTEM_PROMPT
 
 
 def batch_paths(output_dir: Path) -> dict[str, Path]:
@@ -79,6 +84,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--max-steps", type=int, default=35)
+    parser.add_argument(
+        "--personalized",
+        action="store_true",
+        help="Use ShopSimulator persona mode and expose ask_user to the Teacher.",
+    )
+    parser.add_argument("--max-user-questions", type=int, default=2)
+    parser.add_argument("--shopper-model", default=os.environ.get("SHOPPER_MODEL"))
+    parser.add_argument("--shopper-base-url", default=os.environ.get("SHOPPER_BASE_URL"))
+    parser.add_argument("--shopper-api-key", default=os.environ.get("SHOPPER_API_KEY"))
+    parser.add_argument("--shopper-max-tokens", type=int, default=160)
     parser.add_argument("--thinking", action="store_true")
     parser.add_argument("--reasoning-effort", choices=("high", "max"), default="high")
     parser.add_argument("--context-window", type=int, default=0)
@@ -97,12 +112,15 @@ def collect_until_target(
     target_accepted,
     client,
     client_factory=None,
+    shopper_factory=None,
     output_path,
     base_url,
     max_steps,
     attempts_per_task,
     workers=1,
     excluded_task_ids=(),
+    persona=False,
+    max_user_questions=2,
 ):
     """Collect concurrently without scheduling more possible successes than needed."""
 
@@ -137,6 +155,9 @@ def collect_until_target(
                 base_url=base_url,
                 max_steps=max_steps,
                 attempt_index=attempt_index,
+                persona=persona,
+                shopper=shopper_factory() if shopper_factory else None,
+                max_user_questions=max_user_questions,
             )
             pending[future] = (task, attempt_index)
 
@@ -189,6 +210,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--workers must be at least 1")
     if args.workers > 1 and args.target_accepted is None:
         raise SystemExit("--workers > 1 requires --target-accepted")
+    if args.max_user_questions < 0:
+        raise SystemExit("--max-user-questions must be non-negative")
     if not 0 <= args.validation_ratio < 1:
         raise SystemExit("--validation-ratio must be in [0, 1)")
     if not args.build_only and not args.llm_base_url:
@@ -220,9 +243,26 @@ def _make_client(args: argparse.Namespace) -> OpenAIChatClient:
     )
 
 
+def _make_shopper(args: argparse.Namespace) -> LLMShopper | None:
+    if not args.personalized:
+        return None
+    client = OpenAIChatClient(
+        model=args.shopper_model or args.model,
+        base_url=args.shopper_base_url or args.llm_base_url,
+        api_key=args.shopper_api_key or args.api_key,
+        temperature=0.0,
+        top_p=1.0,
+        timeout=args.timeout,
+        max_tokens=args.shopper_max_tokens,
+        thinking=False,
+    )
+    return LLMShopper(client)
+
+
 def _collection_config(args: argparse.Namespace) -> dict:
     """Record reproducibility settings without ever serializing the API key."""
 
+    actor_prompt = PERSONALIZED_SYSTEM_PROMPT if args.personalized else SYSTEM_PROMPT
     return {
         "tasks": str(args.tasks),
         "held_out_tasks": str(args.held_out_tasks),
@@ -238,6 +278,19 @@ def _collection_config(args: argparse.Namespace) -> dict:
         "timeout": args.timeout,
         "max_tokens": args.max_tokens,
         "max_steps": args.max_steps,
+        "personalized": args.personalized,
+        "max_user_questions": args.max_user_questions,
+        "shopper_model": args.shopper_model or args.model,
+        "shopper_base_url": args.shopper_base_url or args.llm_base_url,
+        "shopper_max_tokens": args.shopper_max_tokens,
+        "actor_system_prompt_sha256": hashlib.sha256(
+            actor_prompt.encode("utf-8")
+        ).hexdigest(),
+        "shopper_system_prompt_sha256": (
+            hashlib.sha256(SHOPPER_SYSTEM_PROMPT.encode("utf-8")).hexdigest()
+            if args.personalized
+            else None
+        ),
         "thinking": args.thinking,
         "reasoning_effort": args.reasoning_effort,
         "context_window": args.context_window,
@@ -279,6 +332,9 @@ def main() -> int:
                     base_url=args.base_url,
                     max_steps=args.max_steps,
                     attempts_per_task=args.attempts_per_task,
+                    persona=args.personalized,
+                    shopper=_make_shopper(args),
+                    max_user_questions=args.max_user_questions,
                 )
                 print(f"collected_raw={len(written)}")
             else:
@@ -287,12 +343,15 @@ def main() -> int:
                     target_accepted=args.target_accepted,
                     client=None,
                     client_factory=lambda: _make_client(args),
+                    shopper_factory=(lambda: _make_shopper(args)),
                     output_path=paths["raw"],
                     base_url=args.base_url,
                     max_steps=args.max_steps,
                     attempts_per_task=args.attempts_per_task,
                     workers=args.workers,
                     excluded_task_ids=held_out_ids,
+                    persona=args.personalized,
+                    max_user_questions=args.max_user_questions,
                 )
                 print(f"collected_raw={len(written)} accepted_total={accepted}")
         except CollectionInfrastructureError as exc:

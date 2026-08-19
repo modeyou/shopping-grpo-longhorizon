@@ -19,7 +19,11 @@ from shopping_grpo.environment.actions import (
     RUNTIME_GUARD_FIELD,
     action_reject_reason,
 )
-from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS, tool_call_to_action
+from shopping_grpo.environment.tools import (
+    PERSONALIZED_SHOP_TOOL_SCHEMAS,
+    SHOP_TOOL_SCHEMAS,
+    tool_call_to_action,
+)
 from shopping_grpo.training.sft.dataset import split_rows_by_task
 
 
@@ -97,7 +101,11 @@ def build_sft_row(trajectory: dict) -> dict:
             blocked_call_ids,
             terminal_tool_call_id,
         ),
-        "tools": deepcopy(SHOP_TOOL_SCHEMAS),
+        "tools": deepcopy(
+            PERSONALIZED_SHOP_TOOL_SCHEMAS
+            if trajectory.get("persona_mode")
+            else SHOP_TOOL_SCHEMAS
+        ),
     }
 
 
@@ -294,6 +302,11 @@ def _previous_observation(trajectory: dict, tool_call_id: str | None) -> str:
             if previous.get(RUNTIME_GUARD_FIELD) is True:
                 continue
             if previous.get("role") == "tool":
+                # A clarification answer changes the information available to
+                # the Actor, not the current ShopSimulator page.  Continue to
+                # the most recent shopping observation for action validation.
+                if previous.get("name") == "ask_user":
+                    continue
                 content = previous.get("content")
                 return content if isinstance(content, str) else ""
         return ""

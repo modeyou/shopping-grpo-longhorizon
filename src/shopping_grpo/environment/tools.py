@@ -21,7 +21,7 @@ CLICK_TOOL_ACTIONS = {
 def tool_call_to_action(name, parameters):
     """把一个标准 tool call 转成 ShopSimulator 能执行的字符串动作。"""
     parameters = parameters or {}
-    if name == "think":
+    if name in {"think", "ask_user"}:
         return None
     if name == "search_products":
         return f"search[{parameters['query']}]"
@@ -98,8 +98,21 @@ _FINISH_WITHOUT_PURCHASE_SCHEMA = _schema(
     },
     ["reason"],
 )
+ASK_USER_TOOL_SCHEMA = _schema(
+    "ask_user",
+    "当当前请求和用户画像不足以确定会显著影响购买选择的约束时，向用户提出一个简洁、具体且可直接回答的问题。每次只问一个主题，不得询问环境操作、商品搜索结果或已经明确的信息；整条轨迹最多调用两次。",
+    {
+        "question": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 160,
+        }
+    },
+    ["question"],
+)
 SHOP_TOOL_SCHEMAS = [
     *_INTERACTION_TOOL_SCHEMAS[:-1],
     _FINISH_WITHOUT_PURCHASE_SCHEMA,
     _INTERACTION_TOOL_SCHEMAS[-1],
 ]
+PERSONALIZED_SHOP_TOOL_SCHEMAS = [ASK_USER_TOOL_SCHEMA, *SHOP_TOOL_SCHEMAS]

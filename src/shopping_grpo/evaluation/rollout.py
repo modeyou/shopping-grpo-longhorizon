@@ -25,6 +25,7 @@ from shopping_grpo.environment.context import (
 from shopping_grpo.environment.projection import project_observation
 from shopping_grpo.environment.client import ShopAgentEnv, ShopEnvironmentError, ShopHttpError
 from shopping_grpo.environment.tools import (
+    PERSONALIZED_SHOP_TOOL_SCHEMAS,
     SHOP_TOOL_SCHEMAS,
     tool_call_to_action,
 )
@@ -44,6 +45,17 @@ SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用�
 6. 主动结束。经过多次有实质差异的搜索和多个候选核验，仍没有可接受商品，并且当前没有明显值得继续核验的候选时，调用 `finish_without_purchase`。不得过早结束，也不要为了增加搜索次数继续无效探索；是否达到结束资格由环境判断。
 7. 防止循环和非法动作。不要连续重复同一动作，也不要在相同结果、商品或子页之间无目的往返；后续操作应带来新候选、新商品信息、新规格选择或新的需求证据。不要调用 `think` 工具。若 tool 返回“本地动作守卫拒绝，未执行”，依据错误消息和最新 observation 改为一个合法动作，不要重复被拒绝的调用。不要在任务结束前输出最终答复或推荐总结；只有环境报告任务结束后才停止。
 """
+
+PERSONALIZED_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
+    "你是一个购物 Agent，负责在 ShopSimulator 中替用户完成一次单轮购物任务。\n\n"
+    "用户的完整需求只会在开头给出。不得向用户追问、确认、告别，也不要假设存在用户对话工具。"
+    "你只能调用提供的标准工具与商店交互。",
+    "你是一个个性化购物 Agent，负责在 ShopSimulator 中结合当前请求和用户画像完成购物任务。\n\n"
+    "当前请求可能省略会显著影响选择的信息。只有在缺失信息确实会改变搜索、预算门槛或候选选择时，"
+    "才调用 `ask_user` 提出一个简洁、具体、一次只涉及一个主题的问题；整条轨迹最多提问两次。"
+    "用户回答后应立即利用新增信息继续购物。画像用于辅助理解偏好，不得覆盖用户在当前请求或回答中"
+    "明确表达的要求；信息已足够时不要为了提问而提问。你只能调用提供的工具。",
+)
 
 
 MAX_BLOCKED_TOOL_CALLS = 3
@@ -155,20 +167,22 @@ class OpenAIChatClient:
             payload = {
                 "model": self.model,
                 "input": _responses_input(request_messages),
-                "tools": _responses_tools(tools),
-                "tool_choice": "auto",
                 "max_output_tokens": self.max_tokens,
             }
+            if tools:
+                payload.update(
+                    {"tools": _responses_tools(tools), "tool_choice": "auto"}
+                )
         else:
             payload = {
                 "model": self.model,
                 "messages": request_messages,
-                "tools": tools,
-                "tool_choice": "auto",
                 # 约束单个 assistant 回合的输出；--max-model-len 只限制上下文，
                 # 不能防止模型在未调用工具时持续生成纯文本。
                 "max_tokens": self.max_tokens,
             }
+            if tools:
+                payload.update({"tools": tools, "tool_choice": "auto"})
         if self.thinking:
             # DeepSeek tool-call thinking requires reasoning_content in later messages.
             payload.update(
@@ -279,12 +293,19 @@ def collect_for_task(
     max_steps=30,
     tools=None,
     attempt_index=0,
+    persona=False,
+    shopper=None,
+    max_user_questions=2,
 ):
     """执行一个任务并返回完整轨迹；所有异常都会被写入轨迹后再释放环境。"""
     trajectory = {
         "trajectory_id": str(uuid4()),
         "task_id": int(task["task_id"]),
         "attempt_index": int(attempt_index),
+        "persona_mode": bool(persona),
+        "interaction_protocol": (
+            "shopsimulator-persona-ask-v1" if persona else "shopsimulator-standard-v2"
+        ),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "running",
         "messages": [],
@@ -293,6 +314,7 @@ def collect_for_task(
         "tool_call_truncations": [],
         "context_compactions": [],
         "context_turn_tokens": [],
+        "user_questions": [],
         "initial_result": {},
         "terminal_result": {},
         "final_reward": 0.0,
@@ -300,7 +322,12 @@ def collect_for_task(
         "error": None,
         "release_error": None,
     }
-    env = env_factory(base_url=base_url)
+    if int(max_user_questions) < 0:
+        raise ValueError("max_user_questions must be non-negative")
+    env_kwargs = {"base_url": base_url}
+    if persona:
+        env_kwargs["persona"] = True
+    env = env_factory(**env_kwargs)
     try:
         # reset 建立任务状态；后续每一轮只允许一个工具调用。
         initial = env.reset(task["task_id"])
@@ -315,7 +342,9 @@ def collect_for_task(
         trajectory["initial_result"] = initial
         messages = _initial_messages(task, initial)
         trajectory["messages"] = messages
-        tool_schemas = tools or SHOP_TOOL_SCHEMAS
+        tool_schemas = tools or (
+            PERSONALIZED_SHOP_TOOL_SCHEMAS if persona else SHOP_TOOL_SCHEMAS
+        )
         consecutive_blocked_calls = 0
         latest_observation_truncated = False
 
@@ -360,6 +389,12 @@ def collect_for_task(
                     arguments,
                     latest_observation,
                 )
+                if (
+                    reason is None
+                    and name == "ask_user"
+                    and len(trajectory["user_questions"]) >= int(max_user_questions)
+                ):
+                    reason = "user_question_limit_reached"
             except Exception as exc:
                 reason = f"invalid_tool_call:{exc.__class__.__name__}"
             if reason:
@@ -384,10 +419,17 @@ def collect_for_task(
                 return trajectory
             messages.append(assistant)
             # 只有通过当前 observation 守卫的调用才会触碰环境并消耗一个执行步骤。
-            step = _execute_tool_call(env, tool_call, len(trajectory["steps"]))
+            step = _execute_tool_call(
+                env,
+                tool_call,
+                len(trajectory["steps"]),
+                shopper=shopper,
+                shopper_context=getattr(env, "shopper_context", None),
+                shopper_history=trajectory["user_questions"],
+            )
             raw_observation = step["observation"]
             projector = getattr(client, "project_observation", None)
-            if projector is not None:
+            if projector is not None and step["tool_name"] != "ask_user":
                 visible_observation, projection = projector(
                     step["tool_name"],
                     raw_observation,
@@ -398,11 +440,19 @@ def collect_for_task(
                     step["observation"] = visible_observation
                     step["projection"] = projection
             trajectory["steps"].append(step)
+            if step["tool_name"] == "ask_user":
+                trajectory["user_questions"].append(
+                    {
+                        "question": step["parameters"]["question"],
+                        "answer": step["observation"],
+                    }
+                )
             consecutive_blocked_calls = 0
-            latest_observation = step["observation"]
-            latest_observation_truncated = bool(
-                (step.get("projection") or {}).get("truncated")
-            )
+            if step["tool_name"] != "ask_user":
+                latest_observation = step["observation"]
+                latest_observation_truncated = bool(
+                    (step.get("projection") or {}).get("truncated")
+                )
             messages.append(_tool_message(tool_call, step))
             if step["done"]:
                 trajectory["status"] = "done"
@@ -458,6 +508,9 @@ def collect_tasks(
     max_steps=30,
     env_factory=ShopAgentEnv,
     attempts_per_task=1,
+    persona=False,
+    shopper=None,
+    max_user_questions=2,
 ):
     attempts_per_task = int(attempts_per_task)
     if attempts_per_task < 1:
@@ -476,6 +529,9 @@ def collect_tasks(
                 base_url=base_url,
                 max_steps=max_steps,
                 attempt_index=attempt_index,
+                persona=persona,
+                shopper=shopper,
+                max_user_questions=max_user_questions,
             )
             append_jsonl(output_path, [trajectory])
             written.append(trajectory)
@@ -502,7 +558,15 @@ def _is_infrastructure_failure(trajectory):
     )
 
 
-def _execute_tool_call(env, tool_call, step_index):
+def _execute_tool_call(
+    env,
+    tool_call,
+    step_index,
+    *,
+    shopper=None,
+    shopper_context=None,
+    shopper_history=(),
+):
     name, arguments = _tool_call_name_args(tool_call)
     action = tool_call_to_action(name, arguments)
     result = {"instruction": arguments.get("note", ""), "reward": 0.0, "done": False}
@@ -517,7 +581,22 @@ def _execute_tool_call(env, tool_call, step_index):
         "done": False,
         "result": {},
     }
-    if action is not None:
+    if name == "ask_user":
+        if shopper is None:
+            raise ToolExecutionError(
+                step,
+                RuntimeError("ask_user requires a configured Shopper"),
+            )
+        try:
+            result["instruction"] = shopper.answer(
+                question=arguments["question"],
+                context=shopper_context,
+                history=shopper_history,
+            )
+        except Exception as exc:
+            step["error"] = {"type": exc.__class__.__name__, "message": str(exc)}
+            raise ToolExecutionError(step, exc) from exc
+    elif action is not None:
         try:
             result = env.step(action)
         except Exception as exc:
@@ -559,13 +638,27 @@ def _enforce_serial_tool_call(assistant):
 
 def _initial_messages(task, initial):
     prompt = task.get("prompt")
-    if prompt:
+    if initial.get("persona_mode"):
+        # Persona tasks are identified only by task ID.  Never reuse a legacy
+        # task prompt that may contain the environment's complete request.
+        messages = [{"role": "system", "content": PERSONALIZED_SYSTEM_PROMPT}]
+    elif prompt:
         messages = [dict(message) for message in prompt]
     else:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if not any(message.get("role") == "system" for message in messages):
-        messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
-    messages.append({"role": "user", "content": initial.get("instruction", "")})
+        prompt_text = (
+            PERSONALIZED_SYSTEM_PROMPT
+            if initial.get("persona_mode")
+            else SYSTEM_PROMPT
+        )
+        messages.insert(0, {"role": "system", "content": prompt_text})
+    user_content = initial.get("instruction", "")
+    if initial.get("persona_mode"):
+        user_content += "\n\n用户画像：" + json.dumps(
+            initial.get("user_persona") or {}, ensure_ascii=False
+        )
+    messages.append({"role": "user", "content": user_content})
     return messages
 
 
