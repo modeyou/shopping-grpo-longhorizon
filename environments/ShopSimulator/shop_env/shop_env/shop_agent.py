@@ -19,6 +19,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _public_persona(persona: Any) -> Dict[str, Any]:
+    """Remove environment-only derivation fields before Actor exposure."""
+    if not isinstance(persona, dict):
+        return {}
+    return {key: value for key, value in persona.items() if key != '__reasoning__'}
+
+
 def _handle_reset_action(env: Any, env_idx: int, task_idx: Optional[int]) -> Dict[str, Any]:
     """
     Handle reset action
@@ -48,9 +55,17 @@ def _handle_reset_action(env: Any, env_idx: int, task_idx: Optional[int]) -> Dic
         ),
         "observation_state": env.structured_observation(),
     }
-    if hasattr(env, 'user_persona') and env.user_persona is not None:
-        return_info['user_persona'] = env.user_persona
-        return_info['reason_key'] = env.reason_key
+    if getattr(env, 'if_persona', False):
+        goal = env.server.goals[int(task_idx)]
+        return_info['persona_mode'] = True
+        return_info['user_persona'] = _public_persona(goal.get('user_persona'))
+        # The HTTP client removes this field immediately and keeps it outside
+        # Actor-visible messages and serialized trajectory metadata.
+        return_info['_shopper_context'] = {
+            'instruction_full': goal.get('instruction_full', ''),
+            'instruction_simple': goal.get('instruction_simple', ''),
+            'user_persona': goal.get('user_persona') or {},
+        }
     return return_info
 
 

@@ -114,6 +114,10 @@ def get_existed_goals(all_products, product_prices, if_persona=False):
                 'query': item['query'],
                 'name': item['title'],
                 'instruction_text': instruction_text,
+                # Keep the complete request inside the environment.  In persona
+                # mode ``instruction_text`` is the partial user utterance shown
+                # to the Actor; the Shopper alone receives this private field.
+                'instruction_full': product['instruction'],
                 'instruction_simple': product['instruction_simple'],
                 'attributes': attributes,
                 'price_upper': price_upper,

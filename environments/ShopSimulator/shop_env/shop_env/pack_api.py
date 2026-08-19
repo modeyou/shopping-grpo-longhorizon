@@ -17,6 +17,9 @@ LOG_FILE = "shop_agent.log"
 MAX_RETRIES = 5
 RETRY_DELAY_SECONDS = 5
 DEFAULT_ENV_MAX_NUM = int(os.environ.get("SHOPSIM_ENV_SLOTS", "20"))
+PERSONA_MODE = os.environ.get("SHOPSIM_PERSONA_MODE", "0").strip().casefold() in {
+    "1", "true", "yes", "on",
+}
 SERVER_HOST = '0.0.0.0'
 SERVER_PORT = int(os.environ.get("SHOPSIM_PORT", "5000"))
 
@@ -61,6 +64,7 @@ def api_some_function() -> Response:
     env_idx = data.get('env_idx', None)
     response = data.get('response', None)
     idx = data.get('idx', None)
+    requested_persona = bool(data.get('if_persona', False))
     try:
         # Release all environments
         if action == 'release_all':
@@ -81,6 +85,18 @@ def api_some_function() -> Response:
             else:
                 logger.error("[Error] No valid environment index provided")
                 return jsonify({'result': {"error": "No valid environment index provided"}})
+
+        if action == 'reset' and requested_persona != PERSONA_MODE:
+            configured = "persona" if PERSONA_MODE else "standard"
+            requested = "persona" if requested_persona else "standard"
+            return jsonify({
+                'result': {
+                    'error': (
+                        f'ShopSimulator is configured for {configured} mode but '
+                        f'the reset requested {requested} mode'
+                    )
+                }
+            })
 
         # If env_idx is not provided, assign an available env_idx
         if env_idx is None:
@@ -134,6 +150,7 @@ def initialize_environments() -> None:
             num_products=DEBUG_PROD_SIZE,
             server=shared_server,
             session_prefix=f"slot-{i}",
+            if_persona=PERSONA_MODE,
         )
         if shared_server is None:
             shared_server = env.server
