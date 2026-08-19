@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from urllib.error import HTTPError, URLError
@@ -20,7 +21,7 @@ from shopping_grpo.personalization.schema import (
 )
 
 
-ARCHITECT_PROMPT_VERSION = "personalized-task-architect-v2"
+ARCHITECT_PROMPT_VERSION = "personalized-task-architect-v3"
 CRITIC_PROMPT_VERSION = "personalized-task-critic-v1"
 
 ARCHITECT_OUTPUT_CONTRACT = r"""
@@ -68,6 +69,13 @@ attributes, required_options, available_options, original_instruction.
 Use only `hard` or `soft` for hardness. Copy evidence text exactly; do not
 paraphrase it. Keep category directly at private_goal.category.
 """
+
+SCENARIO_ORDER = (
+    "complete_request",
+    "profile_resolvable",
+    "clarification_required",
+    "profile_conflict",
+)
 
 ARCHITECT_SYSTEM_PROMPT = """你是个性化购物训练数据的 Task Architect。你会收到一条私有的
 ShopSimulator 商品与任务事实，以及指定场景。请生成一条自然、可验证、无答案泄漏的中文任务。
@@ -278,10 +286,39 @@ def build_architect_task(
 
 
 def architect_user_prompt(source: Mapping, scenario: str, question_count: int) -> str:
+    scenario_contracts = {
+        "complete_request": (
+            "All constraints must use source=request_explicit, and every constraint value must "
+            "appear in current_request. Use an empty profile unless a harmless profile is needed. "
+            "clarification must be {should_ask:false,max_questions:2,targets:[]}."
+        ),
+        "profile_resolvable": (
+            "At least one constraint must use profile_stable_fact or profile_preference, and its "
+            "value must appear in the appropriate profile list. The request must make the profile "
+            "applicable. clarification must be {should_ask:false,max_questions:2,targets:[]}."
+        ),
+        "clarification_required": (
+            f"Create exactly {question_count} constraint(s) with source=clarification_answer and "
+            "exactly the same number of targets. Each target must be "
+            '{"constraint_id":"cX","field":"budget","question":"自然的单属性问题",'
+            '"answer":"由源事实支持且未在请求或画像出现的回答",'
+            '"answer_facts":{"budget":"与 constraint value 相同的值"}}. '
+            "Set should_ask=true. Each target uses a distinct allowed field; replace budget with "
+            "the actual field in both field and answer_facts."
+        ),
+        "profile_conflict": (
+            "Create at least one profile preference that conflicts with an explicit current request "
+            "constraint. The explicit request wins. Declare the conflict in conflicts. Constraint "
+            "values must appear in their declared request/profile view. clarification must be "
+            "{should_ask:false,max_questions:2,targets:[]}."
+        ),
+    }
     return (
         f"指定场景：{scenario}\n"
         f"clarification_required 时目标提问数：{question_count}；其他场景忽略该数字。\n"
         + ARCHITECT_OUTPUT_CONTRACT
+        + "\nScenario-specific contract:\n"
+        + scenario_contracts[scenario]
         + "\n私有 ShopSimulator 事实如下：\n"
         + json.dumps(source, ensure_ascii=False, indent=2)
     )
@@ -309,13 +346,23 @@ def validate_critic_response(value: object) -> dict:
 
 
 def scenario_for_index(index: int) -> str:
-    scenarios = (
-        "complete_request",
-        "profile_resolvable",
-        "clarification_required",
-        "profile_conflict",
-    )
-    return scenarios[index % len(scenarios)]
+    return SCENARIO_ORDER[index % len(SCENARIO_ORDER)]
+
+
+def scenario_for_run(index: int, accepted_scenarios: list[str], target: int) -> str:
+    """Rotate attempts while enforcing deterministic final scenario quotas."""
+
+    base, remainder = divmod(target, len(SCENARIO_ORDER))
+    quotas = {
+        scenario: base + (position < remainder)
+        for position, scenario in enumerate(SCENARIO_ORDER)
+    }
+    counts = Counter(accepted_scenarios)
+    for offset in range(len(SCENARIO_ORDER)):
+        scenario = scenario_for_index(index + offset)
+        if counts[scenario] < quotas[scenario]:
+            return scenario
+    raise ValueError("all scenario quotas are already satisfied")
 
 
 def question_count_for_index(index: int, scenario: str) -> int:

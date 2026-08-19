@@ -9,6 +9,7 @@ from shopping_grpo.personalization.generation import (
     OpenAICompatibleJSONClient,
     build_architect_task,
     extract_json_object,
+    scenario_for_run,
     validate_critic_response,
 )
 from shopping_grpo.personalization.schema import (
@@ -64,6 +65,7 @@ def _clarification_task():
                 {
                     "constraint_id": "c-size",
                     "field": "size",
+                    "question": "请问需要什么尺码？",
                     "answer": "这次需要40码。",
                     "answer_facts": {"size": "40"},
                 }
@@ -117,6 +119,15 @@ class PersonalizedTaskSchemaTests(unittest.TestCase):
         self.assertTrue(
             any("duplicate clarification field" in error for error in context.exception.errors)
         )
+
+    def test_rejects_constraint_claimed_explicit_but_absent_from_request(self):
+        task = _clarification_task()
+        task["scenario"] = "complete_request"
+        task["private_goal"]["constraints"][0]["source"] = "request_explicit"
+        task["clarification"] = {"should_ask": False, "max_questions": 2, "targets": []}
+        with self.assertRaises(TaskValidationError) as context:
+            validate_task(task)
+        self.assertTrue(any("not grounded in current_request" in e for e in context.exception.errors))
 
 
 class SourceTaskExportTests(unittest.TestCase):
@@ -180,6 +191,15 @@ class SourceTaskExportTests(unittest.TestCase):
 
 
 class GenerationBoundaryTests(unittest.TestCase):
+    def test_scenario_quotas_are_balanced_and_skip_completed_groups(self):
+        accepted = ["complete_request"] * 5
+        self.assertEqual(scenario_for_run(0, accepted, 20), "profile_resolvable")
+        quotas = [scenario_for_run(i, [], 20) for i in range(4)]
+        self.assertEqual(
+            quotas,
+            ["complete_request", "profile_resolvable", "clarification_required", "profile_conflict"],
+        )
+
     def test_normalizes_common_provider_shape_without_weakening_evidence(self):
         generated = {
             "profile": {

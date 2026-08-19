@@ -59,8 +59,9 @@ python scripts/generate_personalized_tasks.py \
 代码固定 source ID、目标 ASIN、schema、场景和 provenance。LLM 生成的数据必须先通过 schema、
 隐藏信息、问题数量、source evidence 和场景语义检查，才会交给 Critic。
 
-四种场景按已尝试 source 轮转，避免某一场景的系统性拒绝耗尽全部候选；`clarification_required` 任务轮流要求
-1 个和 2 个缺失字段，每次 `ask_user` 仍只询问一个规范字段。
+四种场景按已尝试 source 轮转，避免某一场景的系统性拒绝耗尽全部候选，同时按目标总量设置固定配额；
+20 条 Pilot 最终必须为四类各 5 条。`clarification_required` 任务轮流要求 1 个和 2 个缺失字段，
+每次 `ask_user` 仍只询问一个规范字段。
 
 实现复盘（2026-08-19）：首次 `deepseek-v4-flash` Pilot 的 80 条 Architect 输出全部在本地校验阶段被拒绝，
 没有进入 Critic。主要原因是 provider 稳定地产生通用的 `profile.preferences` 和
@@ -68,6 +69,12 @@ python scripts/generate_personalized_tasks.py \
 `private_goal.category`。V2 提示词加入完整输出模板，并仅对这两种语义无歧义的常见结构做确定性归一化；
 hardness、字段枚举、证据和泄漏规则仍保持严格校验。场景调度同时改为按尝试轮转，避免单一场景的系统性错误
 耗尽整个 source pool。失败目录 `pilot-tasks-01` 保留用于审计，不与修复后的运行混合。
+
+第二次 2 条真实 smoke 证明结构归一化有效（4 次 Architect、2 次 Critic，接受 2 条），同时暴露出更深的
+语义来源问题：provider 可能把仅存在于目标商品中的完整规格标成 `request_explicit`，而当前请求只表达了近似描述；
+通用模板也不足以稳定生成完整澄清问答。V3 因此为四种场景增加专用契约，要求每个 constraint value 必须实际出现
+在它声明的 request、profile 或 clarification answer 信息视图中，并要求澄清 target 包含非空 question、answer 和
+对应 answer_facts。该规则用于阻止“事实正确但对 Agent 来说属于答案泄漏”的伪合法任务。
 
 ## 4. 中断续跑
 

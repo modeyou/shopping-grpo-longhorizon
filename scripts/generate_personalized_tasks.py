@@ -20,7 +20,7 @@ from shopping_grpo.personalization.generation import (
     build_architect_task,
     critic_user_prompt,
     question_count_for_index,
-    scenario_for_index,
+    scenario_for_run,
     validate_critic_response,
 )
 from shopping_grpo.personalization.schema import TaskValidationError, finalize_task, stable_hash
@@ -142,7 +142,11 @@ def main() -> int:
         # Rotate by attempted sources, not accepted rows. A schema/model problem
         # in one scenario must not spend the entire source pool on that scenario.
         attempt_index = len(processed)
-        scenario = scenario_for_index(attempt_index)
+        scenario = scenario_for_run(
+            attempt_index,
+            [row["scenario"] for row in accepted],
+            args.target_accepted,
+        )
         question_count = question_count_for_index(attempt_index, scenario)
         attempt = {
             "shopsim_task_id": source_task_id,

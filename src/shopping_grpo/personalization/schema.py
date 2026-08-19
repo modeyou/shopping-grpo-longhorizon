@@ -88,6 +88,20 @@ def _normalized_text(value: object) -> str:
     return re.sub(r"[\W_]+", "", str(value or "").casefold())
 
 
+def _is_grounded_in(value: object, visible: object) -> bool:
+    """Conservatively check that a claimed value is represented in its declared view."""
+
+    value_text = _normalized_text(canonical_json(value))
+    visible_text = _normalized_text(canonical_json(visible))
+    if value_text and value_text in visible_text:
+        return True
+    # Formatting words around ranges differ naturally (for example 300-350 vs
+    # 300到350). Accept only when every numeric atom is present; text-only
+    # paraphrases stay rejected for auditability.
+    numbers = re.findall(r"\d+(?:\.\d+)?", str(value))
+    return bool(numbers) and all(_normalized_text(number) in visible_text for number in numbers)
+
+
 def _mapping(value: object) -> Mapping:
     return value if isinstance(value, Mapping) else {}
 
@@ -223,6 +237,9 @@ def _validate_clarification(
         if constraint_id in constraints and constraints[constraint_id].get("field") != field:
             errors.append(f"{prefix}.field disagrees with private_goal")
         answer = _text(item.get("answer"))
+        question = _text(item.get("question"))
+        if not question:
+            errors.append(f"{prefix}.question must be non-empty")
         if not answer:
             errors.append(f"{prefix}.answer must be non-empty")
         facts = item.get("answer_facts")
@@ -248,6 +265,28 @@ def _validate_scenario_semantics(task: Mapping, constraints: dict, errors: list[
         errors.append("profile_resolvable needs a profile-sourced constraint")
     if scenario == "profile_conflict" and not _list(task.get("conflicts")):
         errors.append("profile_conflict needs at least one declared conflict")
+
+    request = task.get("current_request")
+    profile = task.get("profile")
+    targets = {
+        item.get("constraint_id"): item
+        for item in _list(_mapping(task.get("clarification")).get("targets"))
+        if isinstance(item, Mapping)
+    }
+    for constraint_id, constraint in constraints.items():
+        source = constraint.get("source")
+        value = constraint.get("value")
+        if source == "request_explicit" and not _is_grounded_in(value, request):
+            errors.append(f"constraint {constraint_id} is not grounded in current_request")
+        elif source in {"profile_stable_fact", "profile_preference"} and not _is_grounded_in(
+            value, profile
+        ):
+            errors.append(f"constraint {constraint_id} is not grounded in profile")
+        elif source == "clarification_answer":
+            target = targets.get(constraint_id, {})
+            answer_view = {"answer": target.get("answer"), "answer_facts": target.get("answer_facts")}
+            if not _is_grounded_in(value, answer_view):
+                errors.append(f"constraint {constraint_id} is not grounded in clarification answer")
 
 
 def validate_task(task: object) -> dict:
