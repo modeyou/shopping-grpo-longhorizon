@@ -27,12 +27,7 @@ Every covered dimension must be copied exactly from OMITTED DIMENSIONS."""
 def generate_gap_question(client, task):
     """Generate one auditable question targeted at the frozen opening gap."""
 
-    validate_task_row(task)
-    audit = task.get("opening_audit") or {}
-    dimensions = [str(item).strip() for item in audit.get("omitted_dimensions") or []]
-    facts = [str(item).strip() for item in audit.get("omitted_facts") or []]
-    if not dimensions or not facts:
-        raise ValueError("composite Teacher requires an opening_audit with a gap")
+    dimensions, facts = validate_gap_task(task)
     payload = {
         "public_opening": task["initial_request"],
         "omitted_dimensions": dimensions,
@@ -77,6 +72,8 @@ def collect_composite_teacher_task(
     backbone = None
     question_llm_calls = 0
     try:
+        # Reject legacy frozen openings before spending any Teacher or Shopper call.
+        validate_gap_task(task)
         backbone = collect_for_task(
             task,
             client=teacher_client,
@@ -254,6 +251,9 @@ def _rejected(
         "source_goal_verified": stage != "setup_failed",
         "clarification_grounded": bool(question_audit and answer_audit),
         "shopper_questions": [],
+        "backbone_actor_llm_calls": (
+            int(source.get("actor_llm_calls", 0)) if source else None
+        ),
         "question_llm_calls": int(question_llm_calls),
         "actor_llm_calls": (
             int(source.get("actor_llm_calls", 0)) + int(question_llm_calls)
@@ -277,6 +277,20 @@ def _rejected(
                 "answer": answer_audit["answer"],
             }]
     return result
+
+
+def validate_gap_task(task):
+    """Return a normalized frozen gap or fail without contacting an LLM."""
+
+    validate_task_row(task)
+    audit = task.get("opening_audit") or {}
+    dimensions = [str(item).strip() for item in audit.get("omitted_dimensions") or []]
+    facts = [str(item).strip() for item in audit.get("omitted_facts") or []]
+    if not dimensions or not facts:
+        raise ValueError("composite Teacher requires an opening_audit with a gap")
+    if not all(dimensions) or not all(facts):
+        raise ValueError("opening_audit gap fields must be non-empty strings")
+    return dimensions, facts
 
 
 def _parse_json_object(content):

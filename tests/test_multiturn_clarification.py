@@ -206,6 +206,29 @@ def test_gap_question_is_grounded_in_opening_audit_and_does_not_leak_value():
     assert "child size" not in result["question"]
 
 
+def test_composite_teacher_rejects_legacy_opening_before_any_llm_call():
+    class NoCallClient:
+        calls = 0
+
+        def complete(self, messages, tools, tool_choice="auto"):
+            self.calls += 1
+            raise AssertionError("legacy opening must fail before an LLM call")
+
+    client = NoCallClient()
+    trajectory = collect_composite_teacher_task(
+        {
+            "schema_version": MULTITURN_TASK_SCHEMA,
+            "task_id": 9,
+            "initial_request": "legacy opening without audit",
+        },
+        teacher_client=client,
+        shopper=object(),
+    )
+    assert trajectory["composite_stage"] == "setup_failed"
+    assert trajectory["actor_llm_calls"] == 0
+    assert client.calls == 0
+
+
 def test_composite_teacher_replays_question_and_gold_backbone_without_goal_leak():
     context = {
         "instruction_full": "I need a child size pillow",
