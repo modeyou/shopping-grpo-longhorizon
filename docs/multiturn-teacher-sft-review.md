@@ -132,6 +132,8 @@ SFT 转换只保留公开对话和工具轨迹，移除教师私有 reasoning、
 出现在消息序列开头，因此 Shopper 规则和私有事实必须合并到同一个 system message。两者都是服务协议
 适配，不是 Reward 或购物能力失败。长度截断应记录为 `model_output_truncated`，HTTP 4xx 不应自动重试。
 开场生成还必须包含显式 user turn，不能只发送 system-only 请求。
+结构化 opening 生成建议关闭 thinking，避免 reasoning 用尽单回合预算后留下空 `content`；购物 Actor
+仍可保留 thinking，以维持长程候选分析能力。
 
 ## 5. Reward v3 是否需要修改
 

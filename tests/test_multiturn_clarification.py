@@ -211,6 +211,26 @@ def test_shopper_combines_rules_and_private_facts_into_one_system_message():
     assert "full goal" in client.messages[0]["content"]
 
 
+def test_shopper_empty_response_reports_truncation_diagnostics():
+    class EmptyClient:
+        def complete(self, messages, tools):
+            return {
+                "role": "assistant",
+                "content": None,
+                "reasoning": "x" * 17,
+                "_finish_reason": "length",
+            }
+
+    with pytest.raises(ValueError) as exc_info:
+        ShopperSimulator(EmptyClient()).generate_initial_request({
+            "instruction_full": "full goal",
+            "goal_options": [],
+        })
+
+    assert "finish_reason='length'" in str(exc_info.value)
+    assert "reasoning_chars=17" in str(exc_info.value)
+
+
 def test_composite_backbone_failure_retains_diagnostics():
     class FinalOnlyClient:
         def complete(self, messages, tools):

@@ -153,7 +153,16 @@ class ShopperSimulator:
             raise ValueError("shopper must return text, not tool calls")
         content = str(response.get("content") or "").strip()
         if not content:
-            raise ValueError("shopper returned an empty response")
+            reasoning = str(
+                response.get("reasoning")
+                or response.get("reasoning_content")
+                or ""
+            )
+            raise ValueError(
+                "shopper returned an empty response "
+                f"(finish_reason={response.get('_finish_reason')!r}, "
+                f"reasoning_chars={len(reasoning)})"
+            )
         self.call_count += 1
         return content
 

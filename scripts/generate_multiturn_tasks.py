@@ -25,6 +25,10 @@ def parse_args():
     parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument(
+        "--disable-model-thinking", action="store_true",
+        help="Disable chat-template thinking for structured opening generation.",
+    )
     return parser.parse_args()
 
 
@@ -52,6 +56,9 @@ def main():
     client = OpenAIChatClient(
         model=args.model, base_url=args.llm_base_url, api_key=args.api_key,
         temperature=0.0, timeout=args.timeout, max_tokens=args.max_tokens,
+        chat_template_kwargs=(
+            {"enable_thinking": False} if args.disable_model_thinking else None
+        ),
     )
     shopper = ShopperSimulator(client)
     generated = 0
