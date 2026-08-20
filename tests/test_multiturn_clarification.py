@@ -142,9 +142,11 @@ def test_opening_generation_returns_audited_gap_in_one_call():
     class OpeningClient:
         def __init__(self):
             self.calls = 0
+            self.messages = None
 
         def complete(self, messages, tools):
             self.calls += 1
+            self.messages = messages
             return {
                 "role": "assistant",
                 "content": json.dumps({
@@ -160,6 +162,8 @@ def test_opening_generation_returns_audited_gap_in_one_call():
         "goal_options": [],
     })
     assert client.calls == 1
+    assert [message["role"] for message in client.messages] == ["system", "user"]
+    assert "PRIVATE FACTS:" in client.messages[0]["content"]
     assert result["initial_request"] == "I need a mirror"
     assert result["omitted_facts"] == ["budget 420"]
 

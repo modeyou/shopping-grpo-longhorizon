@@ -48,7 +48,14 @@ class ShopperSimulator:
         self.call_count = 0
 
     def generate_initial_request(self, context):
-        raw = self._complete(OPENING_PROMPT, context, [])
+        raw = self._complete(
+            OPENING_PROMPT,
+            context,
+            [{
+                "role": "user",
+                "content": "Generate the public underspecified shopping request now.",
+            }],
+        )
         result = _parse_json_object(raw)
         request = str(result.get("initial_request", "")).strip()
         dimensions = result.get("omitted_dimensions") or []
