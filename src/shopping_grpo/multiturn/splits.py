@@ -29,6 +29,13 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_text_file(path: str | Path) -> str:
+    """Hash UTF-8 text with platform-specific newlines normalized to LF."""
+
+    text = Path(path).read_text(encoding="utf-8")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def decompressed_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
     with gzip.open(Path(path), "rb") as handle:
@@ -198,7 +205,7 @@ def freeze_task_splits(
         excluded.update(ids)
         exclusion_sources.append({
             "path": _portable_path(path, repository_root),
-            "sha256": sha256_file(path),
+            "sha256": sha256_text_file(path),
             "unique_task_ids": len(ids),
         })
 
@@ -231,7 +238,7 @@ def freeze_task_splits(
             "manifest_path": _portable_path(
                 environment_manifest_path, repository_root
             ),
-            "manifest_sha256": sha256_file(environment_manifest_path),
+            "manifest_sha256": sha256_text_file(environment_manifest_path),
             "environment_version": environment_manifest.get(
                 "environment_version", "shopsimulator-environment-v2.1"
             ),

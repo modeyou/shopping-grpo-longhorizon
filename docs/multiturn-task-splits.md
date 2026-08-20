@@ -27,6 +27,9 @@ ShopSimulator v2.1 的 task ID 是运行时 goal 列表的索引，不是随机�
 - gzip 解压后产品 JSON 的 SHA-256；
 - 所有 exclusion ID 都位于合法 goal 范围内。
 
+文本清单的审计 SHA 会先把 checkout 的 CRLF/LF 换行差异归一化为 LF，因此 Windows 生成的冻结
+元数据可以在 Linux 服务器上重复验证；gzip 产品数据仍按原始压缩字节和解压后 JSON 分别记录 hash。
+
 环境源码固定 goal 顺序的 seed 为 `223`。该值与产品 hash、ShopSimulator commit 一起写入 metadata，
 共同定义 task ID 到私有目标的映射。
 

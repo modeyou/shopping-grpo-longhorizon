@@ -11,6 +11,7 @@ from shopping_grpo.multiturn.splits import (
     count_shop_goals,
     decompressed_sha256,
     freeze_task_splits,
+    sha256_text_file,
     validate_disjoint_splits,
 )
 
@@ -113,6 +114,14 @@ def test_count_and_hash_shop_goals_from_compressed_product_data(tmp_path):
     expected_hash = _product_fixture(products)
     assert decompressed_sha256(products) == expected_hash
     assert count_shop_goals(products) == 3
+
+
+def test_text_hash_is_independent_of_checkout_newlines(tmp_path):
+    lf = tmp_path / "lf.jsonl"
+    crlf = tmp_path / "crlf.jsonl"
+    lf.write_bytes(b'{"task_id":1}\n{"task_id":2}\n')
+    crlf.write_bytes(b'{"task_id":1}\r\n{"task_id":2}\r\n')
+    assert sha256_text_file(lf) == sha256_text_file(crlf)
 
 
 def test_freeze_task_splits_is_idempotent_and_refuses_changes(tmp_path):

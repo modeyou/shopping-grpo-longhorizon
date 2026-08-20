@@ -2,7 +2,7 @@
   "schema_version": "shopping-multiturn-task-splits-v1",
   "environment": {
     "manifest_path": "data/environment.json",
-    "manifest_sha256": "1bb61d9d7a8106a516cd9d5e6fe297d9126b487ae6409520dd37076ed77c8379",
+    "manifest_sha256": "1229eed3019b2b47cc9ce46f45891df8faf70f6146e8ab76e44648e120e8f98b",
     "environment_version": "shopsimulator-environment-v2.1",
     "shopsimulator_commit": "9ecba272963960ab4a10e1a781bd05cd7634ce20",
     "product_data_path": "environments/ShopSimulator/shop_env/data/fine_items_eval_train_all.json.gz",
@@ -27,37 +27,37 @@
     "sources": [
       {
         "path": "data/sft/train.jsonl",
-        "sha256": "e19ed2024c83140774ccd4990fbac5d095599d957e2771db66954b80566c0e34",
+        "sha256": "8c3a6ff0033f6ea672af609891e747d60652ddc17e8d3c8eacb19e9d96dd9477",
         "unique_task_ids": 800
       },
       {
         "path": "data/sft/validation.jsonl",
-        "sha256": "d48741dae1d4efddc714e4cef2875b2a4b4677044875930e7cd50ea02e615a73",
+        "sha256": "9525cc2fb04a1d8d38ae2db959397da908dde3fea766f580fdcf77d1239533cc",
         "unique_task_ids": 200
       },
       {
         "path": "data/sft_pure_v4/all.jsonl",
-        "sha256": "60916712f989639debc93e5e04e88b0eb756d965b048ad82c12fa7a8e90821e5",
+        "sha256": "7b70db7174daf7660209800441c06b2502d602969881b524ff0d2a3be5fb981e",
         "unique_task_ids": 1192
       },
       {
         "path": "data/grpo/train.jsonl",
-        "sha256": "0935a695e6c0fec2cba0de98cf1d4c4aba95e71561b733048f8a72e73a36227a",
+        "sha256": "4e6d441e1a432223741b2968d1622d1e77ab855a7d8fe9275cd7df2bbf5565bf",
         "unique_task_ids": 1000
       },
       {
         "path": "data/grpo/validation.jsonl",
-        "sha256": "14e439ce56aeab273e3d7270affe631f35f0f2d4a4533f01ccddd75299f6226f",
+        "sha256": "11e0e15ec9fe6911c7c5b8e8525ad06a0b020367e58461e6ab1baa3cdbe73d61",
         "unique_task_ids": 50
       },
       {
         "path": "data/evaluation/tasks.jsonl",
-        "sha256": "345ee03df8be15a964f219677347fda7ccd9a10302f0896e04b0ee4e91ab13a1",
+        "sha256": "d99112a20ef47534c27a32e4b38229bf048dcc6b06fef2e3e919aac3093662f5",
         "unique_task_ids": 200
       },
       {
         "path": "src/shopping_grpo/resources/blind_final_task_ids.json",
-        "sha256": "aaeb295ac036e566fbde2eea6d39a3f6cd644fe277139295e3e09ac664d1dcc2",
+        "sha256": "eec8d5b93984219957aad1bb624f8a066ddd8d3a7c8a28226dbafb3c9a2f555d",
         "unique_task_ids": 200
       }
     ],
