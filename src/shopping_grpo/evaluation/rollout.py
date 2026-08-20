@@ -48,6 +48,17 @@ SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用�
 7. 防止循环和非法动作。不要连续重复同一动作，也不要在相同结果、商品或子页之间无目的往返；后续操作应带来新候选、新商品信息、新规格选择或新的需求证据。不要调用 `think` 工具。若 tool 返回“本地动作守卫拒绝，未执行”，依据错误消息和最新 observation 改为一个合法动作，不要重复被拒绝的调用。不要在任务结束前输出最终答复或推荐总结；只有环境报告任务结束后才停止。
 """
 
+SYSTEM_PROMPT += """
+
+Efficiency rules for reasoning models:
+- Keep each turn's analysis concise and issue the next tool call before exhausting
+  the response token budget. Do not spend a full response narrating a plan.
+- After two consecutive pagination actions without useful new evidence, reformulate
+  the search or finish instead of paging again.
+- Do not revisit the same information subpages unless the latest observation provides
+  a concrete reason to do so.
+"""
+
 
 MULTITURN_SYSTEM_PROMPT = """You are a shopping agent in ShopSimulator. The shopper's first request may omit
 purchase-critical facts. Use ask_shopper for one concise question only when the answer

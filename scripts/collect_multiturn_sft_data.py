@@ -52,6 +52,12 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=35)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--context-window", type=int)
+    parser.add_argument("--context-safety-margin", type=int, default=1024)
+    parser.add_argument(
+        "--context-compaction-enable", action="store_true",
+        help="Drop the oldest complete tool groups before the Actor exceeds its context window.",
+    )
     parser.add_argument(
         "--disable-model-thinking", action="store_true",
         help="Disable chat-template thinking for the Actor only (for example local Qwen).",
@@ -59,11 +65,24 @@ def parse_args():
     return parser.parse_args()
 
 
-def make_client(model, base_url, api_key, args, *, chat_template_kwargs=None):
+def make_client(
+    model,
+    base_url,
+    api_key,
+    args,
+    *,
+    chat_template_kwargs=None,
+    context_window=None,
+    context_safety_margin=1024,
+    context_compaction_enable=False,
+):
     return OpenAIChatClient(
         model=model, base_url=base_url, api_key=api_key, temperature=0.0,
         timeout=args.timeout, max_tokens=args.max_tokens,
         chat_template_kwargs=chat_template_kwargs,
+        context_window=context_window,
+        context_safety_margin=context_safety_margin,
+        context_compaction_enable=context_compaction_enable,
     )
 
 
@@ -79,6 +98,8 @@ def main():
         raise SystemExit("--teacher-first-ask and --composite-teacher are mutually exclusive")
     if args.target_accepted is not None and args.target_accepted < 1:
         raise SystemExit("--target-accepted must be at least 1")
+    if args.context_compaction_enable and args.context_window is None:
+        raise SystemExit("--context-compaction-enable requires --context-window")
     shopper_model = args.shopper_model or args.model
     shopper_base = args.shopper_base_url or args.llm_base_url
     shopper_key = args.shopper_api_key or args.api_key
@@ -94,6 +115,9 @@ def main():
         chat_template_kwargs=(
             {"enable_thinking": False} if args.disable_model_thinking else None
         ),
+        context_window=args.context_window,
+        context_safety_margin=args.context_safety_margin,
+        context_compaction_enable=args.context_compaction_enable,
     )
     shopper = ShopperSimulator(make_client(shopper_model, shopper_base, shopper_key, args))
     written = 0
@@ -148,6 +172,9 @@ def main():
         "composite_teacher": args.composite_teacher,
         "target_accepted": args.target_accepted,
         "disable_model_thinking": args.disable_model_thinking,
+        "context_window": args.context_window,
+        "context_safety_margin": args.context_safety_margin,
+        "context_compaction_enable": args.context_compaction_enable,
     }
     summary = build_collection_artifacts(
         raw_path=raw, output_dir=args.output_dir, held_out_task_ids=held_out,

@@ -298,6 +298,18 @@ def _rejected(
         "backbone_actor_llm_calls": (
             int(source.get("actor_llm_calls", 0)) if source else None
         ),
+        "backbone_context_turn_tokens": deepcopy(
+            source.get("context_turn_tokens") or []
+        ),
+        "backbone_context_compactions": deepcopy(
+            source.get("context_compactions") or []
+        ),
+        "backbone_model_output_truncations": deepcopy(
+            source.get("model_output_truncations") or []
+        ),
+        "backbone_tool_call_truncations": deepcopy(
+            source.get("tool_call_truncations") or []
+        ),
         "question_llm_calls": int(question_llm_calls),
         "actor_llm_calls": (
             int(source.get("actor_llm_calls", 0)) + int(question_llm_calls)

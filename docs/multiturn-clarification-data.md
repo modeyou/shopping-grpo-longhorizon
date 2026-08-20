@@ -61,6 +61,9 @@ collector rejects such rows before making any LLM call.
       --shopper-model deepseek-v4-flash \
       --composite-teacher \
       --target-accepted 3 \
+      --context-window 32768 \
+      --context-safety-margin 1024 \
+      --context-compaction-enable \
       --max-steps 35
 
 Composite collection follows the upstream project's successful rejection-sampling
@@ -75,6 +78,13 @@ again ends in a valid Reward v3 gold purchase.
 resuming from the same `raw.jsonl`. Failed gold backbones do not spend question or
 Shopper calls. Start with three accepted rows; this is an integration pilot, not model
 evaluation.
+
+For a local model served with a finite context window, set `--context-window` to the
+same value as the server and enable compaction. The client counts the rendered prompt
+through vLLM's `/tokenize` endpoint and, when necessary, removes only the oldest
+complete assistant/tool groups. It preserves the fixed task prompt and the most recent
+tool observation. The safety margin reserves room beyond `--max-tokens`; 1024 is the
+current local-Qwen pilot setting.
 
 The earlier `--teacher-first-ask` mode is retained only for diagnosing autonomous
 Teacher behavior. It should not be used to build the formal gap-positive SFT set: it

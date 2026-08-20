@@ -293,6 +293,9 @@ def test_shopper_empty_response_reports_truncation_diagnostics():
 
 def test_composite_backbone_failure_retains_diagnostics():
     class FinalOnlyClient:
+        last_context_tokens = 123
+        last_context_event = {"removed_groups": 2}
+
         def complete(self, messages, tools):
             return {"role": "assistant", "content": "I am done.", "tool_calls": []}
 
@@ -329,6 +332,12 @@ def test_composite_backbone_failure_retains_diagnostics():
     assert trajectory["backbone_done"] is False
     assert trajectory["backbone_steps"] == []
     assert trajectory["backbone_last_assistant"]["content"] == "I am done."
+    assert trajectory["backbone_context_turn_tokens"] == [{
+        "step_index": 0, "input_tokens": 123,
+    }]
+    assert trajectory["backbone_context_compactions"] == [{
+        "step_index": 0, "removed_groups": 2,
+    }]
 
 
 def test_question_limit_blocks_without_calling_shopper_again():
