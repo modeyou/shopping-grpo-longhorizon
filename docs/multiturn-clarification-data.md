@@ -33,7 +33,8 @@ Run from the repository root with ShopSimulator already running:
 
     export PYTHONPATH=./src
     python scripts/generate_multiturn_tasks.py \
-      --tasks data/grpo/train.jsonl \
+      --tasks data/multiturn/tasks/sft_candidates.jsonl \
+      --held-out-tasks data/multiturn/tasks/evaluation.jsonl \
       --output outputs/multiturn/openings-pilot-01.jsonl \
       --limit 10 \
       --model deepseek-v4-flash

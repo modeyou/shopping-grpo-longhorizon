@@ -1,0 +1,99 @@
+{
+  "schema_version": "shopping-multiturn-task-splits-v1",
+  "environment": {
+    "manifest_path": "data/environment.json",
+    "manifest_sha256": "1bb61d9d7a8106a516cd9d5e6fe297d9126b487ae6409520dd37076ed77c8379",
+    "environment_version": "shopsimulator-environment-v2.1",
+    "shopsimulator_commit": "9ecba272963960ab4a10e1a781bd05cd7634ce20",
+    "product_data_path": "environments/ShopSimulator/shop_env/data/fine_items_eval_train_all.json.gz",
+    "product_data_compressed_sha256": "f51c33217061479f9c95a1068621fcd38e4883ae3d2f6a1627037bea934f2125",
+    "product_data_decompressed_sha256": "57b10950a0064d16c81535a1d764a75879a508d250dde8a2a1787c5e6045559f",
+    "goal_order_seed": 223,
+    "goal_count": 23421
+  },
+  "selection": {
+    "seed": 20260821,
+    "method": "sha256(seed:task_id) ascending",
+    "split_order": [
+      "evaluation",
+      "sft_candidates",
+      "grpo_validation",
+      "grpo_train"
+    ],
+    "assignment_boundary": "candidate-pool-before-any-llm-call"
+  },
+  "exclusions": {
+    "policy": "exclude all reference SFT/GRPO/evaluation task IDs",
+    "sources": [
+      {
+        "path": "data/sft/train.jsonl",
+        "sha256": "e19ed2024c83140774ccd4990fbac5d095599d957e2771db66954b80566c0e34",
+        "unique_task_ids": 800
+      },
+      {
+        "path": "data/sft/validation.jsonl",
+        "sha256": "d48741dae1d4efddc714e4cef2875b2a4b4677044875930e7cd50ea02e615a73",
+        "unique_task_ids": 200
+      },
+      {
+        "path": "data/sft_pure_v4/all.jsonl",
+        "sha256": "60916712f989639debc93e5e04e88b0eb756d965b048ad82c12fa7a8e90821e5",
+        "unique_task_ids": 1192
+      },
+      {
+        "path": "data/grpo/train.jsonl",
+        "sha256": "0935a695e6c0fec2cba0de98cf1d4c4aba95e71561b733048f8a72e73a36227a",
+        "unique_task_ids": 1000
+      },
+      {
+        "path": "data/grpo/validation.jsonl",
+        "sha256": "14e439ce56aeab273e3d7270affe631f35f0f2d4a4533f01ccddd75299f6226f",
+        "unique_task_ids": 50
+      },
+      {
+        "path": "data/evaluation/tasks.jsonl",
+        "sha256": "345ee03df8be15a964f219677347fda7ccd9a10302f0896e04b0ee4e91ab13a1",
+        "unique_task_ids": 200
+      },
+      {
+        "path": "src/shopping_grpo/resources/blind_final_task_ids.json",
+        "sha256": "aaeb295ac036e566fbde2eea6d39a3f6cd644fe277139295e3e09ac664d1dcc2",
+        "unique_task_ids": 200
+      }
+    ],
+    "unique_task_ids": 2436
+  },
+  "splits": {
+    "evaluation": {
+      "path": "data/multiturn/tasks/evaluation.jsonl",
+      "tasks": 500,
+      "sha256": "d77f31bf1e23f18b70e130c8c9f116756cf85d50fe164a9b90022499d4414227"
+    },
+    "sft_candidates": {
+      "path": "data/multiturn/tasks/sft_candidates.jsonl",
+      "tasks": 3000,
+      "sha256": "9a411adbaa534af52eec7fb9b4295c00f0740273a11c44aa344f239e8a3d5707"
+    },
+    "grpo_validation": {
+      "path": "data/multiturn/tasks/grpo_validation.jsonl",
+      "tasks": 500,
+      "sha256": "cbfd79ce601ed09907ffd491688a786a5989fb293cb6f086d603f4976498396f"
+    },
+    "grpo_train": {
+      "path": "data/multiturn/tasks/grpo_train.jsonl",
+      "tasks": 5000,
+      "sha256": "c5aecc973fb15bd6e37b90c7fa0c4c292573f3fe14aff5d1f27ce9eb3c446c5b"
+    },
+    "reserve": {
+      "path": "data/multiturn/tasks/reserve.jsonl",
+      "tasks": 11985,
+      "sha256": "6670b41087f34be5d3c3a24f03e5e64f796d8578300ef9a5266271e4a9069646"
+    }
+  },
+  "validation": {
+    "all_splits_pairwise_disjoint": true,
+    "all_splits_disjoint_from_exclusions": true,
+    "task_id_min": 0,
+    "task_id_max": 23420
+  }
+}

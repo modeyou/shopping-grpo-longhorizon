@@ -16,6 +16,10 @@ GRPO and evaluation.
 [Multi-turn clarification](multiturn-clarification-data.md) documents the frozen
 Shopper-opening and autonomous `ask_shopper` Teacher-data pipeline.
 
+[Multi-turn task splits](multiturn-task-splits.md) defines the project-owned,
+task-disjoint SFT candidate, GRPO, evaluation, and reserve pools frozen directly
+from ShopSimulator.
+
 [Multi-turn Teacher/SFT review](multiturn-teacher-sft-review.md) is the Chinese
 study note for Actor/Shopper/environment roles, three Teacher-data types,
 policy-specific SFT acceptance, Reward boundaries, and Qwen3.8 scaling.
