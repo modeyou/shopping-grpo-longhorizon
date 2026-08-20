@@ -61,9 +61,7 @@ collector rejects such rows before making any LLM call.
       --shopper-model deepseek-v4-flash \
       --composite-teacher \
       --target-accepted 3 \
-      --context-window 32768 \
-      --context-safety-margin 1024 \
-      --context-compaction-enable \
+      --workers 4 \
       --max-steps 35
 
 Composite collection follows the upstream project's successful rejection-sampling
@@ -85,6 +83,15 @@ through vLLM's `/tokenize` endpoint and, when necessary, removes only the oldest
 complete assistant/tool groups. It preserves the fixed task prompt and the most recent
 tool observation. The safety margin reserves room beyond `--max-tokens`; 1024 is the
 current local-Qwen pilot setting.
+
+When the Teacher endpoint and ShopSimulator have concurrent capacity,
+`--workers 4` follows the same bounded scheduling policy as the original single-turn
+Teacher collector. Every trajectory receives independent Actor and Shopper clients.
+The scheduler never keeps more possible successes in flight than the remaining
+`--target-accepted` count, appends results only in the main thread, and resumes by
+task-attempt key from `raw.jsonl`. For a local vLLM launched with
+`--max-num-seqs 1`, extra workers only queue requests; increase vLLM concurrency or
+use a concurrent remote Teacher before expecting a throughput gain.
 
 The earlier `--teacher-first-ask` mode is retained only for diagnosing autonomous
 Teacher behavior. It should not be used to build the formal gap-positive SFT set: it

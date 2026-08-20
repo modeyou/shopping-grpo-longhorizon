@@ -958,6 +958,36 @@ class RolloutTest(unittest.TestCase):
             client.complete([{"role": "user", "content": "继续"}], tools=[])
         self.assertEqual(len(attempts), 1)
 
+    def test_openai_client_retries_rate_limit(self):
+        attempts = []
+
+        def transport(url, payload, headers, timeout):
+            attempts.append(payload)
+            if len(attempts) == 1:
+                raise HTTPError(url, 429, "Too Many Requests", {}, None)
+            return {
+                "choices": [{
+                    "message": {"role": "assistant", "content": "ok"}
+                }]
+            }
+
+        client = OpenAIChatClient(
+            model="deepseek-v4-flash",
+            base_url="https://api.example.test/v1",
+            api_key="secret",
+            transport=transport,
+        )
+
+        with patch("shopping_grpo.evaluation.rollout.time.sleep") as sleep:
+            message = client.complete(
+                [{"role": "user", "content": "continue"}],
+                tools=[],
+            )
+
+        self.assertEqual(message["content"], "ok")
+        self.assertEqual(len(attempts), 2)
+        sleep.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

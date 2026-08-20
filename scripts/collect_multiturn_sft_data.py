@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 from shopping_grpo.collection.sft import (
@@ -30,6 +31,7 @@ def parse_args():
     parser.add_argument("--held-out-tasks", type=Path, default=Path("data/evaluation/tasks.jsonl"))
     parser.add_argument("--limit", type=int)
     parser.add_argument("--attempts-per-task", type=int, default=1)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--validation-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--base-url", default=os.environ.get("SHOPSIM_BASE_URL", "http://127.0.0.1:5700"))
@@ -86,6 +88,70 @@ def make_client(
     )
 
 
+def collect_until_target(
+    *,
+    tasks,
+    target_accepted,
+    output_path,
+    attempts_per_task,
+    workers,
+    collect_one,
+):
+    """Collect independent multi-turn trajectories until enough are accepted."""
+
+    accepted = _accepted_count(output_path)
+    completed = completed_task_attempts(output_path)
+    candidates = [
+        (task, attempt_index)
+        for task in tasks
+        for attempt_index in range(int(attempts_per_task))
+        if (int(task["task_id"]), attempt_index) not in completed
+    ]
+    candidate_iter = iter(candidates)
+    pending = {}
+    written = []
+    infrastructure_failed = False
+
+    def submit_available(executor):
+        remaining = int(target_accepted) - accepted
+        max_pending = min(int(workers), max(remaining, 0))
+        while len(pending) < max_pending:
+            try:
+                task, attempt_index = next(candidate_iter)
+            except StopIteration:
+                return
+            future = executor.submit(collect_one, task, attempt_index)
+            pending[future] = (task, attempt_index)
+
+    with ThreadPoolExecutor(max_workers=int(workers)) as executor:
+        submit_available(executor)
+        while pending:
+            completed_futures, _ = wait(
+                pending, return_when=FIRST_COMPLETED
+            )
+            for future in completed_futures:
+                pending.pop(future)
+                trajectory = future.result()
+                append_jsonl(output_path, [trajectory])
+                written.append(trajectory)
+                accepted += int(acceptance_reasons(trajectory)[0])
+                infrastructure_failed |= _is_infrastructure_failure(trajectory)
+                _print_trajectory(trajectory)
+            if not infrastructure_failed:
+                submit_available(executor)
+
+    return written, accepted, infrastructure_failed
+
+
+def _print_trajectory(trajectory):
+    print(
+        f"task={trajectory['task_id']} status={trajectory['status']} "
+        f"asks={len(trajectory['shopper_questions'])} "
+        f"actor_calls={trajectory['actor_llm_calls']} "
+        f"shopper_calls={trajectory['shopper_llm_calls']}"
+    )
+
+
 def main():
     args = parse_args()
     if not args.llm_base_url or not args.api_key:
@@ -98,6 +164,10 @@ def main():
         raise SystemExit("--teacher-first-ask and --composite-teacher are mutually exclusive")
     if args.target_accepted is not None and args.target_accepted < 1:
         raise SystemExit("--target-accepted must be at least 1")
+    if args.workers < 1:
+        raise SystemExit("--workers must be at least 1")
+    if args.workers > 1 and args.target_accepted is None:
+        raise SystemExit("--workers > 1 requires --target-accepted")
     if args.context_compaction_enable and args.context_window is None:
         raise SystemExit("--context-compaction-enable requires --context-window")
     shopper_model = args.shopper_model or args.model
@@ -109,64 +179,73 @@ def main():
         tasks = tasks[:args.limit]
     args.output_dir.mkdir(parents=True, exist_ok=True)
     raw = args.output_dir / "raw.jsonl"
-    completed = completed_task_attempts(raw)
-    actor = make_client(
-        args.model, args.llm_base_url, args.api_key, args,
-        chat_template_kwargs=(
-            {"enable_thinking": False} if args.disable_model_thinking else None
-        ),
-        context_window=args.context_window,
-        context_safety_margin=args.context_safety_margin,
-        context_compaction_enable=args.context_compaction_enable,
-    )
-    shopper = ShopperSimulator(make_client(shopper_model, shopper_base, shopper_key, args))
-    written = 0
-    accepted = _accepted_count(raw)
-    infrastructure_failed = False
-    for task in tasks:
-        if infrastructure_failed:
-            break
-        if args.target_accepted is not None and accepted >= args.target_accepted:
-            break
-        for attempt in range(args.attempts_per_task):
-            if args.target_accepted is not None and accepted >= args.target_accepted:
-                break
-            key = (int(task["task_id"]), attempt)
-            if key in completed:
-                continue
-            if args.composite_teacher:
-                trajectory = collect_composite_teacher_task(
-                    task,
-                    teacher_client=actor,
-                    shopper=shopper,
-                    base_url=args.base_url,
-                    max_steps=args.max_steps,
-                    attempt_index=attempt,
-                )
-            else:
-                trajectory = collect_for_task(
-                    task, client=actor, base_url=args.base_url, max_steps=args.max_steps,
-                    attempt_index=attempt, shopper=shopper,
-                    max_shopper_questions=args.max_shopper_questions,
-                    teacher_first_ask=args.teacher_first_ask,
-                )
-            append_jsonl(raw, [trajectory])
-            written += 1
-            accepted += int(acceptance_reasons(trajectory)[0])
-            print(
-                f"task={task['task_id']} status={trajectory['status']} "
-                f"asks={len(trajectory['shopper_questions'])} "
-                f"actor_calls={trajectory['actor_llm_calls']} "
-                f"shopper_calls={trajectory['shopper_llm_calls']}"
+    def collect_one(task, attempt):
+        actor = make_client(
+            args.model, args.llm_base_url, args.api_key, args,
+            chat_template_kwargs=(
+                {"enable_thinking": False}
+                if args.disable_model_thinking else None
+            ),
+            context_window=args.context_window,
+            context_safety_margin=args.context_safety_margin,
+            context_compaction_enable=args.context_compaction_enable,
+        )
+        shopper = ShopperSimulator(
+            make_client(shopper_model, shopper_base, shopper_key, args)
+        )
+        if args.composite_teacher:
+            return collect_composite_teacher_task(
+                task,
+                teacher_client=actor,
+                shopper=shopper,
+                base_url=args.base_url,
+                max_steps=args.max_steps,
+                attempt_index=attempt,
             )
-            if _is_infrastructure_failure(trajectory):
-                infrastructure_failed = True
-                print("collection paused after infrastructure failure")
+        return collect_for_task(
+            task,
+            client=actor,
+            base_url=args.base_url,
+            max_steps=args.max_steps,
+            attempt_index=attempt,
+            shopper=shopper,
+            max_shopper_questions=args.max_shopper_questions,
+            teacher_first_ask=args.teacher_first_ask,
+        )
+
+    infrastructure_failed = False
+    written_rows = []
+    if args.target_accepted is not None:
+        written_rows, _, infrastructure_failed = collect_until_target(
+            tasks=tasks,
+            target_accepted=args.target_accepted,
+            output_path=raw,
+            attempts_per_task=args.attempts_per_task,
+            workers=args.workers,
+            collect_one=collect_one,
+        )
+    else:
+        completed = completed_task_attempts(raw)
+        for task in tasks:
+            if infrastructure_failed:
                 break
+            for attempt in range(args.attempts_per_task):
+                if (int(task["task_id"]), attempt) in completed:
+                    continue
+                trajectory = collect_one(task, attempt)
+                append_jsonl(raw, [trajectory])
+                written_rows.append(trajectory)
+                _print_trajectory(trajectory)
+                if _is_infrastructure_failure(trajectory):
+                    infrastructure_failed = True
+                    break
+    if infrastructure_failed:
+        print("collection paused after infrastructure failure")
     config = {
         "tasks": str(args.tasks), "model": args.model,
         "shopper_model": shopper_model, "max_shopper_questions": args.max_shopper_questions,
         "max_steps": args.max_steps, "attempts_per_task": args.attempts_per_task,
+        "workers": args.workers,
         "opening_policy": "frozen-once",
         "teacher_first_ask": args.teacher_first_ask,
         "composite_teacher": args.composite_teacher,
@@ -180,7 +259,7 @@ def main():
         raw_path=raw, output_dir=args.output_dir, held_out_task_ids=held_out,
         validation_ratio=args.validation_ratio, seed=args.seed, collection_config=config,
     )
-    print(f"collected_raw={written}")
+    print(f"collected_raw={len(written_rows)}")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 2 if infrastructure_failed else 0
 

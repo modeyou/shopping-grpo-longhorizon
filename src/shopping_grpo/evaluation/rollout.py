@@ -246,7 +246,11 @@ class OpenAIChatClient:
             except HTTPError as exc:
                 # Invalid model payloads are deterministic. Retrying a 4xx
                 # repeats the same request and hides the real integration bug.
-                if exc.code < 500 or attempt >= MODEL_COMPLETION_RETRIES:
+                # Rate limits are transient and should follow the bounded retry path.
+                if (
+                    exc.code != 429
+                    and exc.code < 500
+                ) or attempt >= MODEL_COMPLETION_RETRIES:
                     raise
                 time.sleep(MODEL_RETRY_DELAY_SECONDS * (attempt + 1))
             except (RemoteDisconnected, TimeoutError, URLError):
@@ -621,6 +625,8 @@ def _is_infrastructure_failure(trajectory):
     if error_type in {URLError.__name__, RemoteDisconnected.__name__, TimeoutError.__name__}:
         return True
     if error_type == ShopHttpError.__name__:
+        return True
+    if error_type == HTTPError.__name__ and "429" in error.get("message", ""):
         return True
     return (
         error_type == ShopEnvironmentError.__name__
