@@ -4,7 +4,11 @@ import pytest
 
 from shopping_grpo.collection.sft import acceptance_reasons, build_sft_row
 from shopping_grpo.environment.client import ShopAgentEnv
-from shopping_grpo.evaluation.rollout import collect_for_task
+from shopping_grpo.environment.tools import ASK_SHOPPER_SCHEMA
+from shopping_grpo.evaluation.rollout import (
+    MULTITURN_SYSTEM_PROMPT,
+    collect_for_task,
+)
 from shopping_grpo.multiturn.tasks import (
     MULTITURN_TASK_SCHEMA, build_task_row, source_goal_hash,
 )
@@ -23,6 +27,21 @@ def tool_message(name, arguments, call_id):
             "function": {"name": name, "arguments": json.dumps(arguments)},
         }],
     }
+
+
+def test_autonomous_prompt_requires_a_pre_search_clarification_gate():
+    assert "Before using any shop tool" in MULTITURN_SYSTEM_PROMPT
+    assert "you MUST call ask_shopper first" in MULTITURN_SYSTEM_PROMPT
+    assert "shopper-owned" in MULTITURN_SYSTEM_PROMPT
+    assert "Never ask the shopper to report catalog facts" in MULTITURN_SYSTEM_PROMPT
+
+
+def test_ask_shopper_schema_names_decision_critical_private_dimensions():
+    description = ASK_SHOPPER_SCHEMA["function"]["description"]
+    assert "Before shopping" in description
+    assert "shopper-owned" in description
+    assert "budget" in description
+    assert "catalog facts" in description
 
 
 class Actor:

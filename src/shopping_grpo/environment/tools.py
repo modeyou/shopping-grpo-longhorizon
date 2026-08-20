@@ -106,7 +106,7 @@ SHOP_TOOL_SCHEMAS = [
 
 ASK_SHOPPER_SCHEMA = _schema(
     "ask_shopper",
-    "Ask the shopper one concise clarification question when a missing fact could change the product choice. Do not ask for facts already stated.",
+    "Before shopping, ask one concise clarification question when an unstated shopper-owned constraint or preference (for example budget, size, quantity, compatibility, model, material, or color) could change the product or variant choice. Combine related missing facts when natural. Do not ask for facts already stated or catalog facts that should be learned from product pages.",
     {"question": {"type": "string"}},
     ["question"],
 )
