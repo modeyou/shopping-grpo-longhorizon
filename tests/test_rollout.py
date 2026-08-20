@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from http.client import RemoteDisconnected
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 
 from shopping_grpo.environment.actions import action_guard_tool_message
@@ -874,6 +874,48 @@ class RolloutTest(unittest.TestCase):
         self.assertNotIn("thinking", captured["payload"])
         self.assertNotIn("reasoning_effort", captured["payload"])
 
+    def test_openai_client_sends_chat_template_kwargs_and_retains_finish_reason(self):
+        captured = {}
+
+        def transport(url, payload, headers, timeout):
+            captured["payload"] = payload
+            return {
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "reasoning": "unfinished",
+                    },
+                }]
+            }
+
+        client = OpenAIChatClient(
+            model="qwen3.8-27b",
+            base_url="http://127.0.0.1:8001/v1",
+            api_key="EMPTY",
+            chat_template_kwargs={"enable_thinking": False},
+            transport=transport,
+        )
+        message = client.complete(
+            [
+                {
+                    "role": "assistant",
+                    "content": "previous",
+                    "_finish_reason": "stop",
+                },
+                {"role": "user", "content": "继续"},
+            ],
+            tools=[],
+        )
+
+        self.assertEqual(
+            captured["payload"]["chat_template_kwargs"],
+            {"enable_thinking": False},
+        )
+        self.assertEqual(message["_finish_reason"], "length")
+        self.assertNotIn("_finish_reason", captured["payload"]["messages"][0])
+
     def test_openai_client_retries_transient_disconnect_without_replaying_tools(self):
         attempts = []
 
@@ -897,6 +939,24 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(len(attempts), 2)
         self.assertEqual(attempts[0], attempts[1])
         sleep.assert_called_once()
+
+    def test_openai_client_does_not_retry_bad_request(self):
+        attempts = []
+
+        def transport(url, payload, headers, timeout):
+            attempts.append(payload)
+            raise HTTPError(url, 400, "Bad Request", {}, None)
+
+        client = OpenAIChatClient(
+            model="qwen3.8-27b",
+            base_url="http://127.0.0.1:8001/v1",
+            api_key="EMPTY",
+            transport=transport,
+        )
+
+        with self.assertRaises(HTTPError):
+            client.complete([{"role": "user", "content": "继续"}], tools=[])
+        self.assertEqual(len(attempts), 1)
 
 
 if __name__ == "__main__":

@@ -8,9 +8,10 @@ import json
 import os
 import time
 import traceback
+from copy import deepcopy
 from datetime import datetime, timezone
 from http.client import RemoteDisconnected
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -30,7 +31,7 @@ from shopping_grpo.environment.tools import (
     tool_call_to_action,
 )
 from shopping_grpo.environment.observation import render_structured_observation
-from shopping_grpo.multiturn.tasks import validate_task_row
+from shopping_grpo.multiturn.tasks import source_goal_hash, validate_task_row
 
 
 SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用户完成一次单轮购物任务。
@@ -86,6 +87,7 @@ class OpenAIChatClient:
         observation_detail_token_budget=4096,
         observation_generic_token_budget=768,
         observation_search_top_k=20,
+        chat_template_kwargs=None,
         token_counter=None,
         observation_token_counter=None,
         transport=None,
@@ -111,6 +113,9 @@ class OpenAIChatClient:
         self.observation_search_top_k = int(observation_search_top_k)
         self.observation_detail_token_budget = int(observation_detail_token_budget)
         self.observation_generic_token_budget = int(observation_generic_token_budget)
+        self.chat_template_kwargs = (
+            dict(chat_template_kwargs) if chat_template_kwargs else None
+        )
         if self.context_window is not None:
             if self.context_window <= self.max_tokens + self.context_safety_margin:
                 raise ValueError("context_window must exceed max_tokens plus context_safety_margin")
@@ -144,7 +149,7 @@ class OpenAIChatClient:
         """请求模型下一轮回复，并在上下文超限时按配置压缩历史。"""
         self.last_context_event = None
         self.last_context_tokens = None
-        request_messages = messages
+        request_messages = _provider_messages(messages)
         if self.context_window is not None:
             input_budget = self.context_window - self.max_tokens - self.context_safety_margin
             original_tokens = int(self.token_counter(messages, tools))
@@ -189,6 +194,8 @@ class OpenAIChatClient:
         if not tools:
             payload.pop("tools", None)
             payload.pop("tool_choice", None)
+        if self.chat_template_kwargs is not None and not self.responses_api:
+            payload["chat_template_kwargs"] = self.chat_template_kwargs
         if self.thinking:
             # DeepSeek tool-call thinking requires reasoning_content in later messages.
             payload.update(
@@ -225,6 +232,12 @@ class OpenAIChatClient:
                     with urlopen(request, timeout=self.timeout) as raw:
                         response = json.loads(raw.read().decode("utf-8"))
                 return _response_message(response, responses_api=self.responses_api)
+            except HTTPError as exc:
+                # Invalid model payloads are deterministic. Retrying a 4xx
+                # repeats the same request and hides the real integration bug.
+                if exc.code < 500 or attempt >= MODEL_COMPLETION_RETRIES:
+                    raise
+                time.sleep(MODEL_RETRY_DELAY_SECONDS * (attempt + 1))
             except (RemoteDisconnected, TimeoutError, URLError):
                 if attempt >= MODEL_COMPLETION_RETRIES:
                     raise
@@ -314,6 +327,7 @@ def collect_for_task(
         "steps": [],
         "blocked_tool_calls": [],
         "tool_call_truncations": [],
+        "model_output_truncations": [],
         "context_compactions": [],
         "context_turn_tokens": [],
         "initial_result": {},
@@ -327,7 +341,9 @@ def collect_for_task(
         "actor_llm_calls": 0,
         "shopper_llm_calls": 0,
         "teacher_policy": (
-            "force-first-ask-v1" if teacher_first_ask else "autonomous-v1"
+            "force-first-ask-v1" if teacher_first_ask
+            else "autonomous-gap-v1" if shopper is not None
+            else "complete-no-ask-v1"
         ),
     }
     if teacher_first_ask and shopper is None:
@@ -348,6 +364,13 @@ def collect_for_task(
             if shopper is not None
             else env.reset(task["task_id"])
         )
+        if shopper is not None:
+            expected_hash = task.get("source_goal_hash")
+            trajectory["source_goal_verified"] = bool(
+                expected_hash
+                and source_goal_hash(env.shopper_context) == expected_hash
+            )
+            trajectory["opening_audit"] = deepcopy(task.get("opening_audit") or {})
         if initial.get("observation_state") is not None:
             latest_observation = render_structured_observation(
                 initial["observation_state"]
@@ -406,7 +429,14 @@ def collect_for_task(
             tool_calls = assistant.get("tool_calls") or []
             if not tool_calls:
                 messages.append(assistant)
-                trajectory["status"] = "assistant_final"
+                if assistant.get("_finish_reason") in {"length", "max_tokens"}:
+                    trajectory["status"] = "model_output_truncated"
+                    trajectory["model_output_truncations"].append({
+                        "message_index": len(messages) - 1,
+                        "finish_reason": assistant.get("_finish_reason"),
+                    })
+                else:
+                    trajectory["status"] = "assistant_final"
                 break
             tool_call = tool_calls[0]
             try:
@@ -448,11 +478,17 @@ def collect_for_task(
                 step = _execute_shopper_call(
                     shopper, env.shopper_context, trajectory["shopper_questions"],
                     tool_call, len(trajectory["steps"]),
+                    omitted_facts=(task.get("opening_audit") or {}).get(
+                        "omitted_facts"
+                    ) or [],
                 )
-                trajectory["shopper_questions"].append({
+                question_record = {
                     "question": arguments["question"],
                     "answer": step["observation"],
-                })
+                }
+                if "used_facts" in step:
+                    question_record["used_facts"] = step["used_facts"]
+                trajectory["shopper_questions"].append(question_record)
             else:
                 step = _execute_tool_call(env, tool_call, len(trajectory["steps"]))
             raw_observation = step["observation"]
@@ -581,10 +617,19 @@ def _is_infrastructure_failure(trajectory):
     )
 
 
-def _execute_shopper_call(shopper, context, history, tool_call, step_index):
+def _execute_shopper_call(
+    shopper, context, history, tool_call, step_index, omitted_facts=(),
+):
     name, arguments = _tool_call_name_args(tool_call)
-    answer = shopper.answer(arguments["question"], context, history)
-    return {
+    if hasattr(shopper, "answer_audited"):
+        audited = shopper.answer_audited(
+            arguments["question"], context, omitted_facts, history
+        )
+        answer = audited["answer"]
+    else:
+        audited = None
+        answer = shopper.answer(arguments["question"], context, history)
+    step = {
         "step_index": step_index,
         "tool_call": tool_call,
         "tool_name": name,
@@ -595,6 +640,9 @@ def _execute_shopper_call(shopper, context, history, tool_call, step_index):
         "done": False,
         "result": {"instruction": answer, "reward": 0.0, "done": False},
     }
+    if audited is not None:
+        step["used_facts"] = list(audited.get("used_facts") or [])
+    return step
 
 
 def _execute_tool_call(env, tool_call, step_index):
@@ -692,8 +740,19 @@ def _response_message(response, responses_api=False):
     if responses_api:
         return _responses_message(response)
     choice = response["choices"][0]
-    message = choice["message"]
-    return _plain(message)
+    message = _plain(choice["message"])
+    if choice.get("finish_reason") is not None:
+        message["_finish_reason"] = choice["finish_reason"]
+    return message
+
+
+def _provider_messages(messages):
+    """Remove rollout-only metadata before sending messages back to a provider."""
+
+    return [
+        {key: value for key, value in message.items() if key != "_finish_reason"}
+        for message in messages
+    ]
 
 
 def _responses_tools(tools):
@@ -805,6 +864,7 @@ def client_from_env(
     observation_detail_token_budget=4096,
     observation_generic_token_budget=768,
     observation_search_top_k=20,
+    chat_template_kwargs=None,
 ):
     api_key = api_key or os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -826,4 +886,5 @@ def client_from_env(
         observation_detail_token_budget=observation_detail_token_budget,
         observation_generic_token_budget=observation_generic_token_budget,
         observation_search_top_k=observation_search_top_k,
+        chat_template_kwargs=chat_template_kwargs,
     )

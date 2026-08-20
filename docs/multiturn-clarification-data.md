@@ -1,5 +1,9 @@
 # Multi-turn clarification data pipeline
 
+For a Chinese review of the runtime roles, all three Teacher-data types, SFT
+acceptance, and Qwen3.8 scaling policy, see
+[`multiturn-teacher-sft-review.md`](multiturn-teacher-sft-review.md).
+
 This pipeline adds ShopSimulator-native Shopper dialogue without exposing the
 private full goal to the Actor. It does not use personas, persona masking, or an
 LLM critic.
@@ -76,5 +80,8 @@ use them for baseline evaluation, SFT evaluation, GRPO, or final evaluation. For
 data should mix replay-verified gap-positive demonstrations with successful
 complete-request trajectories so that the model also learns when not to ask.
 
-The existing Reward v3 gate remains unchanged. Only valid gold-purchase trajectories
-enter the SFT, train, and validation JSONL artifacts.
+The common Reward v3 gate remains unchanged, but it is no longer the only gate.
+Policy-specific acceptance additionally requires: grounded audited asks for
+`autonomous-gap-v1`; one grounded replay-verified ask for `composite-replay-v1`; and
+zero asks in standard mode for `complete-no-ask-v1`. Only rows passing both the common
+and type-specific gates enter the SFT, train, and validation JSONL artifacts.

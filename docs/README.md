@@ -14,4 +14,8 @@ Follow the guides in workflow order:
 GRPO and evaluation.
 
 [Multi-turn clarification](multiturn-clarification-data.md) documents the frozen
-Shopper-opening and autonomous sk_shopper Teacher-data pipeline.
+Shopper-opening and autonomous `ask_shopper` Teacher-data pipeline.
+
+[Multi-turn Teacher/SFT review](multiturn-teacher-sft-review.md) is the Chinese
+study note for Actor/Shopper/environment roles, three Teacher-data types,
+policy-specific SFT acceptance, Reward boundaries, and Qwen3.8 scaling.

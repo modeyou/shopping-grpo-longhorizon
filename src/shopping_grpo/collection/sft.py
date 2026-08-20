@@ -41,7 +41,8 @@ def acceptance_reasons(trajectory: dict) -> tuple[bool, list[str]]:
     terminal = trajectory.get("terminal_result") or {}
     reward = terminal.get("reward_detail") or {}
 
-    if trajectory.get("teacher_policy") == "composite-replay-v1":
+    teacher_policy = trajectory.get("teacher_policy")
+    if teacher_policy == "composite-replay-v1":
         if trajectory.get("composite_stage") != "replay_verified":
             reasons.append("composite_replay_required")
         if trajectory.get("source_goal_verified") is not True:
@@ -52,6 +53,34 @@ def acceptance_reasons(trajectory: dict) -> tuple[bool, list[str]]:
             reasons.append("composite_requires_one_question")
         if trajectory.get("blocked_tool_calls"):
             reasons.append("composite_blocked_tool_call")
+
+    if teacher_policy == "autonomous-gap-v1":
+        audit = trajectory.get("opening_audit") or {}
+        omitted_facts = set(audit.get("omitted_facts") or [])
+        questions = trajectory.get("shopper_questions") or []
+        if trajectory.get("source_goal_verified") is not True:
+            reasons.append("source_goal_not_verified")
+        if not omitted_facts:
+            reasons.append("autonomous_gap_audit_required")
+        if not questions:
+            reasons.append("autonomous_clarification_required")
+        elif not all(
+            set(item.get("used_facts") or [])
+            and set(item.get("used_facts") or []).issubset(omitted_facts)
+            for item in questions
+        ):
+            reasons.append("autonomous_clarification_not_grounded")
+        if trajectory.get("blocked_tool_calls"):
+            reasons.append("autonomous_blocked_tool_call")
+
+    if teacher_policy == "complete-no-ask-v1":
+        has_ask_step = any(
+            step.get("tool_name") == "ask_shopper" for step in steps
+        )
+        if trajectory.get("interaction_mode") != "standard":
+            reasons.append("complete_request_standard_mode_required")
+        if trajectory.get("shopper_questions") or has_ask_step:
+            reasons.append("complete_request_requires_zero_questions")
 
     if trajectory.get("error"):
         reasons.append("has_error")

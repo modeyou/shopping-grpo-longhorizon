@@ -52,13 +52,18 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=35)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument(
+        "--disable-model-thinking", action="store_true",
+        help="Disable chat-template thinking for the Actor only (for example local Qwen).",
+    )
     return parser.parse_args()
 
 
-def make_client(model, base_url, api_key, args):
+def make_client(model, base_url, api_key, args, *, chat_template_kwargs=None):
     return OpenAIChatClient(
         model=model, base_url=base_url, api_key=api_key, temperature=0.0,
         timeout=args.timeout, max_tokens=args.max_tokens,
+        chat_template_kwargs=chat_template_kwargs,
     )
 
 
@@ -84,7 +89,12 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     raw = args.output_dir / "raw.jsonl"
     completed = completed_task_attempts(raw)
-    actor = make_client(args.model, args.llm_base_url, args.api_key, args)
+    actor = make_client(
+        args.model, args.llm_base_url, args.api_key, args,
+        chat_template_kwargs=(
+            {"enable_thinking": False} if args.disable_model_thinking else None
+        ),
+    )
     shopper = ShopperSimulator(make_client(shopper_model, shopper_base, shopper_key, args))
     written = 0
     accepted = _accepted_count(raw)
@@ -137,6 +147,7 @@ def main():
         "teacher_first_ask": args.teacher_first_ask,
         "composite_teacher": args.composite_teacher,
         "target_accepted": args.target_accepted,
+        "disable_model_thinking": args.disable_model_thinking,
     }
     summary = build_collection_artifacts(
         raw_path=raw, output_dir=args.output_dir, held_out_task_ids=held_out,

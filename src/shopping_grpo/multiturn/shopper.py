@@ -18,6 +18,15 @@ private full goal and option facts. Never invent a new preference. If the questi
 for information absent from those facts, say that you have no additional preference or
 are unsure. Be concise and answer the question directly."""
 
+AUDITED_ANSWER_PROMPT = """You simulate a shopper answering a shopping agent in Chinese.
+Answer only from the private full goal and option facts. Return one JSON object only:
+{"answer": "...", "used_facts": ["..."]}
+Answer the question directly and never invent a preference. Copy into used_facts every
+supplied omitted fact that materially supports the answer, verbatim. If the question
+does not ask about any supplied omitted fact, use an empty used_facts list and say that
+you have no additional preference or are unsure. The natural Chinese answer may
+paraphrase the facts; only used_facts must be verbatim."""
+
 GAP_ANSWER_PROMPT = """You simulate a shopper answering one controlled clarification
 question in Chinese. Use only the supplied omitted facts and the private full goal.
 Return one JSON object only:
@@ -76,6 +85,29 @@ class ShopperSimulator:
         turns.append({"role": "user", "content": str(question)})
         return self._complete(ANSWER_PROMPT, context, turns)
 
+    def answer_audited(self, question, context, omitted_facts, history=()):
+        """Answer a live autonomous question and retain private fact provenance."""
+
+        facts = [str(item).strip() for item in omitted_facts if str(item).strip()]
+        turns = []
+        for item in history:
+            turns.extend([
+                {"role": "user", "content": str(item["question"])},
+                {"role": "assistant", "content": str(item["answer"])},
+            ])
+        turns.append({"role": "user", "content": str(question)})
+        prompt = AUDITED_ANSWER_PROMPT + "\nOMITTED FACTS: " + json.dumps(
+            facts, ensure_ascii=False
+        )
+        result = _parse_json_object(self._complete(prompt, context, turns))
+        answer = str(result.get("answer") or "").strip()
+        used = result.get("used_facts") or []
+        if not answer or not isinstance(used, list):
+            raise ValueError("audited answer must contain answer and used_facts")
+        if not all(isinstance(item, str) and item in facts for item in used):
+            raise ValueError("audited answer used_facts must come from omitted facts")
+        return {"answer": answer, "used_facts": used}
+
     def answer_gap(self, question, context, omitted_facts):
         facts = [str(item).strip() for item in omitted_facts if str(item).strip()]
         if not facts:
@@ -103,8 +135,10 @@ class ShopperSimulator:
             "goal_options": context.get("goal_options") or [],
         }, ensure_ascii=False)
         messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "system", "content": "PRIVATE FACTS: " + private},
+            {
+                "role": "system",
+                "content": system_prompt + "\nPRIVATE FACTS: " + private,
+            },
             *turns,
         ]
         response = self.client.complete(messages, [])

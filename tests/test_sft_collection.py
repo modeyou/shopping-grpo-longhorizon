@@ -150,6 +150,40 @@ class SftCollectionTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertIn("composite_replay_required", reasons)
 
+    def test_autonomous_gap_requires_a_grounded_question(self):
+        trajectory = _accepted_trajectory()
+        trajectory.update({
+            "teacher_policy": "autonomous-gap-v1",
+            "interaction_mode": "multiturn",
+            "source_goal_verified": True,
+            "opening_audit": {"omitted_facts": ["预算为100元"]},
+            "shopper_questions": [{
+                "question": "预算是多少？",
+                "answer": "大约100元。",
+                "used_facts": ["预算为100元"],
+            }],
+        })
+        self.assertEqual(acceptance_reasons(trajectory), (True, []))
+
+        trajectory["shopper_questions"][0]["used_facts"] = []
+        accepted, reasons = acceptance_reasons(trajectory)
+        self.assertFalse(accepted)
+        self.assertIn("autonomous_clarification_not_grounded", reasons)
+
+    def test_complete_request_policy_requires_zero_questions(self):
+        trajectory = _accepted_trajectory()
+        trajectory.update({
+            "teacher_policy": "complete-no-ask-v1",
+            "interaction_mode": "standard",
+            "shopper_questions": [],
+        })
+        self.assertEqual(acceptance_reasons(trajectory), (True, []))
+
+        trajectory["shopper_questions"] = [{"question": "size?", "answer": "M"}]
+        accepted, reasons = acceptance_reasons(trajectory)
+        self.assertFalse(accepted)
+        self.assertIn("complete_request_requires_zero_questions", reasons)
+
     def test_sft_row_removes_reasoning_and_terminal_reward(self):
         row = build_sft_row(_accepted_trajectory())
         payload = json.dumps(row, ensure_ascii=False)

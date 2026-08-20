@@ -85,10 +85,15 @@ def collect_composite_teacher_task(
     """Create a clarification prefix, collect a gold backbone, and replay both."""
 
     backbone = None
+    question_audit = None
+    answer_audit = None
     question_llm_calls = 0
+    source_goal_verified = False
+    setup_failure_point = "preflight"
     try:
         # Reject legacy frozen openings before spending any Teacher or Shopper call.
         validate_gap_task(task)
+        setup_failure_point = "backbone"
         backbone = collect_for_task(
             task,
             client=teacher_client,
@@ -109,9 +114,13 @@ def collect_composite_teacher_task(
 
         # Only spend clarification calls after the standard upstream-style Teacher
         # has produced a reusable gold shopping backbone.
+        setup_failure_point = "private_context"
         context = _load_private_context(task, env_factory, base_url)
+        source_goal_verified = True
+        setup_failure_point = "question_generation"
         question_llm_calls = 1
         question_audit = generate_gap_question(teacher_client, task)
+        setup_failure_point = "shopper_answer"
         answer_audit = shopper.answer_gap(
             question_audit["question"], context, question_audit["omitted_facts"]
         )
@@ -132,6 +141,7 @@ def collect_composite_teacher_task(
                 for step in backbone.get("steps") or []
             ],
         ]
+        setup_failure_point = "replay"
         replay = collect_for_task(
             task,
             client=_ReplayClient(scripted),
@@ -180,7 +190,11 @@ def collect_composite_teacher_task(
             "setup_failed",
             [f"{exc.__class__.__name__}:{exc}"],
             source=backbone,
+            question_audit=question_audit,
+            answer_audit=answer_audit,
             question_llm_calls=question_llm_calls,
+            source_goal_verified=source_goal_verified,
+            setup_failure_point=setup_failure_point,
             error=exc,
         )
 
@@ -241,6 +255,8 @@ def _rejected(
     question_audit=None,
     answer_audit=None,
     question_llm_calls=0,
+    source_goal_verified=None,
+    setup_failure_point=None,
     error=None,
 ):
     source = source or {}
@@ -263,9 +279,22 @@ def _rejected(
         "teacher_policy": COMPOSITE_TEACHER_POLICY,
         "composite_stage": stage,
         "composite_rejection_reasons": list(reasons),
-        "source_goal_verified": stage != "setup_failed",
+        "source_goal_verified": (
+            stage != "setup_failed"
+            if source_goal_verified is None
+            else bool(source_goal_verified)
+        ),
         "clarification_grounded": bool(question_audit and answer_audit),
         "shopper_questions": [],
+        "backbone_status": source.get("status"),
+        "backbone_done": source.get("done"),
+        "backbone_steps": deepcopy(source.get("steps") or []),
+        "backbone_blocked_tool_calls": deepcopy(
+            source.get("blocked_tool_calls") or []
+        ),
+        "backbone_last_assistant": _last_assistant_message(
+            source.get("messages") or []
+        ),
         "backbone_actor_llm_calls": (
             int(source.get("actor_llm_calls", 0)) if source else None
         ),
@@ -281,6 +310,8 @@ def _rejected(
             "message": str(error),
             "traceback": "".join(traceback.format_exception(error)),
         }
+    if setup_failure_point is not None:
+        result["setup_failure_point"] = str(setup_failure_point)
     if question_audit:
         result["clarification_audit"] = {
             **question_audit,
@@ -292,6 +323,13 @@ def _rejected(
                 "answer": answer_audit["answer"],
             }]
     return result
+
+
+def _last_assistant_message(messages):
+    for message in reversed(messages):
+        if message.get("role") == "assistant":
+            return deepcopy(message)
+    return None
 
 
 def validate_gap_task(task):

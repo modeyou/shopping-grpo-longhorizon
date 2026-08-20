@@ -85,6 +85,35 @@ def test_multiturn_rollout_asks_freely_and_keeps_private_goal_out_of_messages():
     assert any(m.get("name") == "ask_shopper" for m in sft["messages"])
 
 
+def test_length_limited_actor_output_is_not_mislabeled_as_final():
+    class TruncatedActor:
+        def complete(self, messages, tools):
+            return {
+                "role": "assistant",
+                "content": None,
+                "reasoning": "unfinished",
+                "_finish_reason": "length",
+            }
+
+    task = {
+        "schema_version": MULTITURN_TASK_SCHEMA,
+        "task_id": 7,
+        "initial_request": "I need a pillow",
+    }
+    trajectory = collect_for_task(
+        task,
+        client=TruncatedActor(),
+        shopper=Shopper(),
+        env_factory=Env,
+        max_steps=3,
+    )
+    assert trajectory["status"] == "model_output_truncated"
+    assert trajectory["model_output_truncations"] == [{
+        "message_index": 2,
+        "finish_reason": "length",
+    }]
+
+
 def test_multiturn_client_removes_private_context_from_public_reset_result():
     private = {"instruction_full": "gold", "goal_options": ["option"]}
 
@@ -133,6 +162,89 @@ def test_opening_generation_returns_audited_gap_in_one_call():
     assert client.calls == 1
     assert result["initial_request"] == "I need a mirror"
     assert result["omitted_facts"] == ["budget 420"]
+
+
+def test_live_shopper_answer_retains_private_gap_provenance():
+    class AnswerClient:
+        def complete(self, messages, tools):
+            return {
+                "role": "assistant",
+                "content": json.dumps({
+                    "answer": "预算大约420元。",
+                    "used_facts": ["budget 420"],
+                }),
+            }
+
+    result = ShopperSimulator(AnswerClient()).answer_audited(
+        "预算是多少？",
+        {"instruction_full": "I need a mirror with budget 420", "goal_options": []},
+        ["budget 420"],
+    )
+    assert result == {
+        "answer": "预算大约420元。",
+        "used_facts": ["budget 420"],
+    }
+
+
+def test_shopper_combines_rules_and_private_facts_into_one_system_message():
+    class CapturingClient:
+        def __init__(self):
+            self.messages = None
+
+        def complete(self, messages, tools):
+            self.messages = messages
+            return {"role": "assistant", "content": "没有额外要求。"}
+
+    client = CapturingClient()
+    answer = ShopperSimulator(client).answer(
+        "还有其他要求吗？",
+        {"instruction_full": "full goal", "goal_options": ["option"]},
+    )
+
+    assert answer == "没有额外要求。"
+    assert [message["role"] for message in client.messages].count("system") == 1
+    assert "PRIVATE FACTS:" in client.messages[0]["content"]
+    assert "full goal" in client.messages[0]["content"]
+
+
+def test_composite_backbone_failure_retains_diagnostics():
+    class FinalOnlyClient:
+        def complete(self, messages, tools):
+            return {"role": "assistant", "content": "I am done.", "tool_calls": []}
+
+    class BackboneEnv:
+        def __init__(self, **kwargs):
+            self.shopper_context = {
+                "instruction_full": "full private goal",
+                "goal_options": ["child size"],
+            }
+
+        def reset(self, task_id, initial_request=None):
+            return {"env_idx": 0, "instruction": "full private goal"}
+
+        def release(self):
+            pass
+
+    context = {
+        "instruction_full": "full private goal",
+        "goal_options": ["child size"],
+    }
+    task = build_task_row(
+        7, "I need a pillow", context, "model", "prompt",
+        omitted_dimensions=["size"], omitted_facts=["child size"],
+    )
+    trajectory = collect_composite_teacher_task(
+        task,
+        teacher_client=FinalOnlyClient(),
+        shopper=Shopper(),
+        env_factory=BackboneEnv,
+        max_steps=3,
+    )
+    assert trajectory["composite_stage"] == "backbone_failed"
+    assert trajectory["backbone_status"] == "assistant_final"
+    assert trajectory["backbone_done"] is False
+    assert trajectory["backbone_steps"] == []
+    assert trajectory["backbone_last_assistant"]["content"] == "I am done."
 
 
 def test_question_limit_blocks_without_calling_shopper_again():
