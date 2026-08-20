@@ -17,11 +17,22 @@ from shopping_grpo.multiturn.tasks import source_goal_hash, validate_task_row
 COMPOSITE_TEACHER_POLICY = "composite-replay-v1"
 QUESTION_PROMPT = """You write one concise Chinese clarification question for a
 shopping agent. The public opening deliberately omitted the listed dimensions and
-facts. Ask only for one or more listed dimensions whose answer can affect product
-choice. Do not ask about disclosed information and do not reveal the omitted values in
-the question. Return one JSON object only:
+facts. Ask only for shopper-owned goal information whose answer can affect product
+choice: a desired or required attribute, budget, compatibility, use context, or other
+constraint that only the shopper can provide. Frame the question as asking what the
+shopper needs, requires, prefers, uses, or can accept. Never ask the shopper to report
+catalog facts about an unspecified or candidate product, such as what "this product"
+costs or what material it actually has; the shopping agent must learn those facts from
+shop tools. Do not ask about disclosed information and do not reveal the omitted values
+in the question. Return one JSON object only:
 {"question": "...", "covered_dimensions": ["..."]}
-Every covered dimension must be copied exactly from OMITTED DIMENSIONS."""
+Every covered dimension must be copied exactly from OMITTED DIMENSIONS.
+Good: '您对电磁阀材质有硬性要求吗？预算大约是多少？'
+Bad: '这款自动浇水器的材质和价格分别是多少？'"""
+
+UNSPECIFIED_PRODUCT_PREFIXES = (
+    "这款", "该款", "这个商品", "该商品", "这个产品", "该产品",
+)
 
 
 def generate_gap_question(client, task):
@@ -49,6 +60,10 @@ def generate_gap_question(client, task):
         raise ValueError("question covered_dimensions must come from opening_audit")
     if any(fact.casefold() in question.casefold() for fact in facts):
         raise ValueError("question leaked an omitted fact")
+    if question.lstrip().startswith(UNSPECIFIED_PRODUCT_PREFIXES):
+        raise ValueError(
+            "question asked the shopper for facts about an unspecified product"
+        )
     return {
         "question": question,
         "covered_dimensions": list(covered),

@@ -12,6 +12,11 @@ LLM critic.
 - The Shopper answers only from the private full goal and prior dialogue.
 - Missing facts receive a no-preference or uncertain answer, not an invented fact.
 - Actor and Shopper LLM calls are counted separately in each trajectory.
+- Clarification asks for shopper-owned goal information: requirements, constraints,
+  preferences, compatibility, use context, or budget. It must not ask the shopper to
+  report catalog facts about an unspecified product; those come from shop tools.
+- Shopper answers are natural first-person paraphrases. The separate `used_facts`
+  audit retains verbatim source facts, so natural wording does not weaken provenance.
 
 New rows contain an opening_audit object with omitted dimensions and verbatim
 omitted facts. This is provenance metadata only. The rollout sends only the

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from shopping_grpo.collection.sft import acceptance_reasons, build_sft_row
 from shopping_grpo.environment.client import ShopAgentEnv
 from shopping_grpo.evaluation.rollout import collect_for_task
@@ -184,10 +186,13 @@ def test_teacher_first_ask_forces_only_the_first_tool_choice():
 def test_gap_question_is_grounded_in_opening_audit_and_does_not_leak_value():
     class QuestionClient:
         def complete(self, messages, tools):
+            prompt = " ".join(messages[0]["content"].split())
+            assert "shopper-owned goal information" in prompt
+            assert "Never ask the shopper to report catalog facts" in prompt
             return {
                 "role": "assistant",
                 "content": json.dumps({
-                    "question": "What size do you need?",
+                    "question": "您需要什么尺寸？",
                     "covered_dimensions": ["size"],
                 }),
             }
@@ -204,6 +209,60 @@ def test_gap_question_is_grounded_in_opening_audit_and_does_not_leak_value():
     result = generate_gap_question(QuestionClient(), task)
     assert result["covered_dimensions"] == ["size"]
     assert "child size" not in result["question"]
+
+
+def test_gap_question_rejects_unspecified_product_attribute_question():
+    class QuestionClient:
+        def complete(self, messages, tools):
+            return {
+                "role": "assistant",
+                "content": json.dumps({
+                    "question": "这款自动浇水器的材质和价格分别是多少？",
+                    "covered_dimensions": ["材质", "价格"],
+                }, ensure_ascii=False),
+            }
+
+    task = {
+        "schema_version": MULTITURN_TASK_SCHEMA,
+        "task_id": 53,
+        "initial_request": "我想买自动浇水器",
+        "opening_audit": {
+            "omitted_dimensions": ["材质", "价格"],
+            "omitted_facts": ["必须是铜芯电磁阀", "预算230元左右"],
+        },
+    }
+    with pytest.raises(ValueError, match="unspecified product"):
+        generate_gap_question(QuestionClient(), task)
+
+
+def test_gap_answer_uses_natural_paraphrase_but_keeps_verbatim_audit_facts():
+    facts = ["浇水器必须是铜芯电磁阀的", "价格在230元左右"]
+
+    class AnswerClient:
+        def complete(self, messages, tools):
+            prompt = " ".join(messages[0]["content"].split())
+            assert "natural first-person statement" in prompt
+            assert "Only used_facts, not answer" in prompt
+            return {
+                "role": "assistant",
+                "content": json.dumps({
+                    "answer": "需要铜芯电磁阀，预算大约230元。",
+                    "used_facts": facts,
+                }, ensure_ascii=False),
+            }
+
+    result = ShopperSimulator(AnswerClient()).answer_gap(
+        "您对电磁阀材质有硬性要求吗？预算大约是多少？",
+        {
+            "instruction_full": "我需要铜芯电磁阀，价格在230元左右",
+            "goal_options": [],
+        },
+        facts,
+    )
+    assert result == {
+        "answer": "需要铜芯电磁阀，预算大约230元。",
+        "used_facts": facts,
+    }
 
 
 def test_composite_teacher_rejects_legacy_opening_before_any_llm_call():

@@ -23,7 +23,12 @@ question in Chinese. Use only the supplied omitted facts and the private full go
 Return one JSON object only:
 {"answer": "...", "used_facts": ["..."]}
 Copy every used_facts entry verbatim from the supplied omitted facts. Use at least one
-omitted fact, answer the question directly, and never invent a preference."""
+omitted fact and never invent a preference. Write answer as a concise, natural
+first-person statement of the shopper's requirement, preference, situation, or budget.
+Paraphrase naturally instead of mechanically pasting source sentences or repeating the
+product category. Only used_facts, not answer, must preserve the verbatim audit text.
+For example, turn facts like '浇水器必须是铜芯电磁阀的' and '价格在230元左右' into
+an answer like '需要铜芯电磁阀，预算大约230元。'"""
 
 OPENING_PROMPT_HASH = hashlib.sha256(OPENING_PROMPT.encode("utf-8")).hexdigest()
 
