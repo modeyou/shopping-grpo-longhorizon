@@ -50,6 +50,10 @@ def parse_args():
         "--composite-teacher", action="store_true",
         help="Collect a controlled clarification prefix plus replayed gold backbone.",
     )
+    parser.add_argument(
+        "--complete-no-ask", action="store_true",
+        help="Use complete ShopSimulator requests without Shopper or ask_shopper.",
+    )
     parser.add_argument("--target-accepted", type=int)
     parser.add_argument("--max-steps", type=int, default=35)
     parser.add_argument("--timeout", type=int, default=180)
@@ -162,6 +166,12 @@ def main():
         raise SystemExit("--teacher-first-ask requires --max-shopper-questions >= 1")
     if args.teacher_first_ask and args.composite_teacher:
         raise SystemExit("--teacher-first-ask and --composite-teacher are mutually exclusive")
+    if args.complete_no_ask and (
+        args.teacher_first_ask or args.composite_teacher
+    ):
+        raise SystemExit(
+            "--complete-no-ask is mutually exclusive with clarification modes"
+        )
     if args.target_accepted is not None and args.target_accepted < 1:
         raise SystemExit("--target-accepted must be at least 1")
     if args.workers < 1:
@@ -190,9 +200,11 @@ def main():
             context_safety_margin=args.context_safety_margin,
             context_compaction_enable=args.context_compaction_enable,
         )
-        shopper = ShopperSimulator(
-            make_client(shopper_model, shopper_base, shopper_key, args)
-        )
+        shopper = None
+        if not args.complete_no_ask:
+            shopper = ShopperSimulator(
+                make_client(shopper_model, shopper_base, shopper_key, args)
+            )
         if args.composite_teacher:
             return collect_composite_teacher_task(
                 task,
@@ -249,6 +261,7 @@ def main():
         "opening_policy": "frozen-once",
         "teacher_first_ask": args.teacher_first_ask,
         "composite_teacher": args.composite_teacher,
+        "complete_no_ask": args.complete_no_ask,
         "target_accepted": args.target_accepted,
         "disable_model_thinking": args.disable_model_thinking,
         "context_window": args.context_window,

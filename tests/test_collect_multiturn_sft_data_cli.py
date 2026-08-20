@@ -1,10 +1,14 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.collect_multiturn_sft_data import collect_until_target
+from scripts.collect_multiturn_sft_data import (
+    collect_until_target,
+    parse_args,
+)
 
 
 def trajectory(task_id):
@@ -20,6 +24,25 @@ def trajectory(task_id):
 
 
 class CollectMultiturnSftDataCliTests(unittest.TestCase):
+    def test_complete_no_ask_mode_is_explicit(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "collect_multiturn_sft_data.py",
+                "--tasks",
+                "data/grpo/train.jsonl",
+                "--output-dir",
+                "outputs/complete",
+                "--complete-no-ask",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertTrue(args.complete_no_ask)
+        self.assertFalse(args.composite_teacher)
+        self.assertFalse(args.teacher_first_ask)
+
     def test_parallel_collection_stops_at_accepted_target(self):
         collected = []
 

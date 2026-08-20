@@ -108,3 +108,12 @@ Policy-specific acceptance additionally requires: grounded audited asks for
 `autonomous-gap-v1`; one grounded replay-verified ask for `composite-replay-v1`; and
 zero asks in standard mode for `complete-no-ask-v1`. Only rows passing both the common
 and type-specific gates enter the SFT, train, and validation JSONL artifacts.
+
+CLI policy selection is explicit:
+
+- Frozen opening tasks with neither `--composite-teacher` nor
+  `--complete-no-ask` collect `autonomous-gap-v1`.
+- Frozen opening tasks with `--composite-teacher` collect
+  `composite-replay-v1`.
+- Full ShopSimulator tasks with `--complete-no-ask` remove the Shopper and
+  `ask_shopper` tool entirely and collect `complete-no-ask-v1`.
