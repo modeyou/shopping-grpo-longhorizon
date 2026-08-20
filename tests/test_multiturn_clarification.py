@@ -168,6 +168,66 @@ def test_opening_generation_returns_audited_gap_in_one_call():
     assert result["omitted_facts"] == ["budget 420"]
 
 
+def test_opening_generation_repairs_a_leaked_omitted_fact():
+    class RepairingClient:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, messages, tools):
+            self.calls.append(messages)
+            request = (
+                "I need a mirror with budget 420"
+                if len(self.calls) == 1 else "I need a mirror"
+            )
+            return {
+                "role": "assistant",
+                "content": json.dumps({
+                    "initial_request": request,
+                    "omitted_dimensions": ["budget"],
+                    "omitted_facts": ["budget 420"],
+                }),
+            }
+
+    client = RepairingClient()
+    result = ShopperSimulator(client).generate_initial_request({
+        "instruction_full": "I need a mirror with budget 420",
+        "goal_options": [],
+    })
+
+    assert result["initial_request"] == "I need a mirror"
+    assert len(client.calls) == 2
+    assert [message["role"] for message in client.calls[1]] == [
+        "system", "user", "assistant", "user",
+    ]
+    assert "omitted fact leaked" in client.calls[1][-1]["content"]
+
+
+def test_opening_generation_stops_after_max_attempts():
+    class LeakingClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            return {
+                "role": "assistant",
+                "content": json.dumps({
+                    "initial_request": "I need a mirror with budget 420",
+                    "omitted_dimensions": ["budget"],
+                    "omitted_facts": ["budget 420"],
+                }),
+            }
+
+    client = LeakingClient()
+    with pytest.raises(ValueError, match="omitted fact leaked"):
+        ShopperSimulator(client).generate_initial_request({
+            "instruction_full": "I need a mirror with budget 420",
+            "goal_options": [],
+        }, max_attempts=2)
+
+    assert client.calls == 2
+
+
 def test_live_shopper_answer_retains_private_gap_provenance():
     class AnswerClient:
         def complete(self, messages, tools):

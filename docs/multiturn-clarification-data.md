@@ -38,9 +38,15 @@ Run from the repository root with ShopSimulator already running:
       --limit 10 \
       --model deepseek-v4-flash
 
-Each new task costs one Shopper call. Existing task IDs resume without another call.
-The generator fails if the underlying full-goal hash changed. The audit validator
-requires each omitted fact to be copied from the full goal and absent from the opening.
+Each successful task normally costs one Shopper call. If JSON or audit validation
+fails, the generator asks the same Shopper to repair its response, up to
+`--opening-attempts` attempts (default: 3). A task that still fails is reported as
+`opening_error` and skipped, while later tasks continue. Existing task IDs resume
+without another call, and the final summary reports `generated`, `failed`, and
+`skipped_existing`. Infrastructure failures still stop the run instead of being
+hidden as content failures. The generator fails if the underlying full-goal hash
+changed. The audit validator requires each omitted fact to be copied from the full
+goal and absent from the opening.
 Openings generated before `opening_audit` was introduced cannot be used by composite
 collection. Generate them into a new file instead of resuming the legacy file; the
 collector rejects such rows before making any LLM call.

@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from shopping_grpo.collection.sft import task_ids_from_jsonl
@@ -25,6 +26,10 @@ def parse_args():
     parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument(
+        "--opening-attempts", type=int, default=3,
+        help="Maximum attempts to generate and repair each opening.",
+    )
     parser.add_argument(
         "--disable-model-thinking", action="store_true",
         help="Disable chat-template thinking for structured opening generation.",
@@ -48,6 +53,8 @@ def main():
     args = parse_args()
     if not args.llm_base_url or not args.api_key:
         raise SystemExit("OPENAI_BASE_URL and OPENAI_API_KEY are required")
+    if args.opening_attempts < 1:
+        raise SystemExit("--opening-attempts must be at least 1")
     held_out = task_ids_from_jsonl(args.held_out_tasks)
     tasks = [row for row in load_tasks(args.tasks) if int(row["task_id"]) not in held_out]
     if args.limit is not None:
@@ -62,6 +69,8 @@ def main():
     )
     shopper = ShopperSimulator(client)
     generated = 0
+    failed = 0
+    skipped_existing = 0
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("a", encoding="utf-8") as output:
         for task in tasks:
@@ -73,8 +82,20 @@ def main():
                 if prior is not None:
                     if prior.get("source_goal_hash") != source_goal_hash(context):
                         raise RuntimeError(f"source goal changed for task {task_id}")
+                    skipped_existing += 1
                     continue
-                opening = shopper.generate_initial_request(context)
+                try:
+                    opening = shopper.generate_initial_request(
+                        context, max_attempts=args.opening_attempts,
+                    )
+                except ValueError as exc:
+                    failed += 1
+                    print(
+                        f"task={task_id} opening_error="
+                        f"{type(exc).__name__}:{exc}",
+                        file=sys.stderr,
+                    )
+                    continue
                 row = build_task_row(
                     task_id, opening["initial_request"], context,
                     args.model, OPENING_PROMPT_HASH,
@@ -89,7 +110,13 @@ def main():
                     f"task={task_id} opening={opening['initial_request']} "
                     f"omitted={opening['omitted_dimensions']}"
                 )
-    print(json.dumps({"selected": len(tasks), "generated": generated, "shopper_calls": shopper.call_count}, ensure_ascii=False))
+    print(json.dumps({
+        "selected": len(tasks),
+        "generated": generated,
+        "failed": failed,
+        "skipped_existing": skipped_existing,
+        "shopper_calls": shopper.call_count,
+    }, ensure_ascii=False))
     return 0
 
 

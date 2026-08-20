@@ -47,15 +47,39 @@ class ShopperSimulator:
         self.client = client
         self.call_count = 0
 
-    def generate_initial_request(self, context):
-        raw = self._complete(
-            OPENING_PROMPT,
-            context,
-            [{
-                "role": "user",
-                "content": "Generate the public underspecified shopping request now.",
-            }],
-        )
+    def generate_initial_request(self, context, max_attempts=3):
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        turns = [{
+            "role": "user",
+            "content": "Generate the public underspecified shopping request now.",
+        }]
+        last_error = None
+        for attempt in range(max_attempts):
+            raw = self._complete(OPENING_PROMPT, context, turns)
+            try:
+                return self._validate_initial_request(raw, context)
+            except ValueError as exc:
+                last_error = exc
+                if attempt + 1 == max_attempts:
+                    break
+                turns.extend([
+                    {"role": "assistant", "content": raw},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Correct the previous JSON. Validation failed: "
+                            f"{exc}. Return one corrected JSON object only. "
+                            "Keep omitted_facts verbatim from the private goal, "
+                            "but remove those facts and their paraphrases from "
+                            "initial_request."
+                        ),
+                    },
+                ])
+        raise last_error
+
+    @staticmethod
+    def _validate_initial_request(raw, context):
         result = _parse_json_object(raw)
         request = str(result.get("initial_request", "")).strip()
         dimensions = result.get("omitted_dimensions") or []
