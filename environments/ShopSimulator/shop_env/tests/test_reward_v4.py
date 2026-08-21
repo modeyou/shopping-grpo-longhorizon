@@ -74,6 +74,56 @@ def test_price_constraint_distinguishes_max_range_and_soft_target():
     assert open_lower["lower"] == 4000
 
 
+def test_price_parser_ignores_non_price_numeric_constraints():
+    size_then_price = compile_price_constraint(
+        "直径不超过12厘米，适合室内装饰，价格在30元以内。"
+    )
+    vibration_then_price = compile_price_constraint(
+        "一千万以上超声波震动和紫外线杀菌，价格在300元左右。"
+    )
+    weight_then_price = compile_price_constraint(
+        "重量不超过0.8g，价格在1300元左右。"
+    )
+
+    assert size_then_price["kind"] == "hard_max"
+    assert size_then_price["upper"] == 30
+    assert vibration_then_price["kind"] == "soft_target"
+    assert vibration_then_price["target"] == 300
+    assert weight_then_price["kind"] == "soft_target"
+    assert weight_then_price["target"] == 1300
+
+
+def test_price_parser_prefers_around_semantics_and_colloquial_large_amounts():
+    controlled_target = compile_price_constraint(
+        "大概需要批发300件，每个预算控制在80元左右。"
+    )
+    colloquial_max = compile_price_constraint(
+        "骑行顺滑安静的，五万七以内能搞定。"
+    )
+
+    assert controlled_target["kind"] == "soft_target"
+    assert controlled_target["target"] == 80
+    assert colloquial_max["kind"] == "hard_max"
+    assert colloquial_max["upper"] == 57000
+
+
+def test_price_parser_handles_suffix_budget_and_decimal_ten_thousand_range():
+    suffix_budget = compile_price_constraint(
+        "配色浅一些，350元以内的预算。"
+    )
+    decimal_range = compile_price_constraint(
+        "价格在1万-1.1万之间。"
+    )
+
+    assert suffix_budget["kind"] == "hard_max"
+    assert suffix_budget["upper"] == 350
+    assert decimal_range["kind"] == "hard_range"
+    assert (decimal_range["lower"], decimal_range["upper"]) == (
+        10000,
+        11000,
+    )
+
+
 def test_compiler_emits_hard_required_and_soft_atoms():
     features = compile_reward_features_v2(instruction(), product())
     strengths = {

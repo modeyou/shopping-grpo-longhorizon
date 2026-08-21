@@ -50,7 +50,27 @@ def _chinese_integer(value: str) -> int | None:
             total = (total + section) * _LARGE_UNITS[character]
             section = 0
             digit = 0
-    return total + section + digit
+    amount = total + section + digit
+    # Colloquial prices omit the final smaller unit: 五万七=57000,
+    # 一万二千三=12300. An explicit 零 keeps the conventional literal parse.
+    if value[-1] in _CHINESE_DIGITS and len(value) > 1:
+        unit_positions = [
+            (index, _SMALL_UNITS.get(character) or _LARGE_UNITS.get(character))
+            for index, character in enumerate(value[:-1])
+            if character in _SMALL_UNITS or character in _LARGE_UNITS
+        ]
+        if unit_positions:
+            last_index, last_unit = unit_positions[-1]
+            suffix = value[last_index + 1 :]
+            if (
+                len(suffix) == 1
+                and "零" not in value[last_index + 1 :]
+                and "〇" not in value[last_index + 1 :]
+                and last_unit >= 100
+            ):
+                trailing = _CHINESE_DIGITS[suffix]
+                amount += trailing * (last_unit // 10) - trailing
+    return amount
 
 
 def parse_money_number(value: object, unit: object = "") -> float | None:
@@ -101,15 +121,48 @@ def _constraint(
 def compile_price_constraint(instruction: object) -> dict | None:
     """Compile explicit price language without using the target product price."""
 
-    text = re.sub(r"\s+", "", str(instruction or "").replace(",", ""))
-    if not text:
+    raw = re.sub(r"(?<=\d),(?=\d{3}\b)", "", str(instruction or ""))
+    raw = re.sub(r"\s+", "", raw)
+    if not raw:
         return None
+
+    clauses = [
+        clause
+        for clause in re.split(r"[，。；;,!?！？]|(?<!\d)\.(?!\d)", raw)
+        if clause
+    ]
+    price_clauses = []
+    for clause in clauses:
+        prefix = re.search(_PRICE_PREFIX, clause)
+        if prefix:
+            # Ignore earlier numeric size/count/capacity requirements in the
+            # same clause; price syntax starts at the explicit price marker.
+            first_number = re.search(_NUMBER, clause)
+            price_clauses.append(
+                clause[prefix.start() :]
+                if first_number is None or prefix.start() < first_number.start()
+                else clause
+            )
+        elif re.search(r"(?:元|块钱|人民币|块)(?:左右|上下|以内|以下|以上)?", clause):
+            price_clauses.append(clause)
+        elif re.search(r"[零〇一二两三四五六七八九十百千万亿]+以内(?:能)?搞定", clause):
+            price_clauses.append(clause)
+    for text in price_clauses:
+        result = _compile_price_clause(text)
+        if result is not None:
+            return result
+    return None
+
+
+def _compile_price_clause(text: str) -> dict | None:
+    """Compile one clause already identified as describing price."""
 
     range_pattern = re.compile(
         rf"{_PRICE_PREFIX}(?:控制)?(?:在)?"
         rf"(?P<low_value>{_NUMBER})(?P<low_unit>{_UNIT})"
         rf"(?:-|~|～|至|到)"
         rf"(?P<high_value>{_NUMBER})(?P<high_unit>{_UNIT})(?:之间|范围内)?"
+        rf"(?![\d.])"
     )
     match = range_pattern.search(text)
     if match:
@@ -157,7 +210,8 @@ def compile_price_constraint(instruction: object) -> dict | None:
 
     soft_patterns = (
         re.compile(
-            rf"{_PRICE_PREFIX}(?:大约|大概|约|在)?{_MONEY}(?:左右|上下|附近|出头|多点|多)"
+            rf"{_PRICE_PREFIX}(?:控制)?(?:在)?(?:大约|大概|约)?"
+            rf"{_MONEY}(?:左右|上下|附近|出头|多点|多)"
         ),
         re.compile(rf"{_PRICE_PREFIX}(?:大约|大概|约){_MONEY}"),
         re.compile(rf"(?:大约|大概|约){_MONEY}(?:左右|上下|附近)?"),
@@ -183,5 +237,18 @@ def compile_price_constraint(instruction: object) -> dict | None:
         if value is not None:
             return _constraint(
                 kind="hard_max", source=plain.group(0), upper=value
+            )
+    colloquial_max = re.search(
+        rf"(?P<value>[零〇一二两三四五六七八九十百千万亿]+)"
+        rf"(?P<unit>)(?:以内)(?:能)?搞定",
+        text,
+    )
+    if colloquial_max:
+        value = _money(colloquial_max)
+        if value is not None:
+            return _constraint(
+                kind="hard_max",
+                source=colloquial_max.group(0),
+                upper=value,
             )
     return None
