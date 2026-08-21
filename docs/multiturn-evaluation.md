@@ -263,6 +263,11 @@ G+ 与 G− 的 task 级成功迁移，是“澄清带来实际收益”的主�
 尚未生成。后续正式入口只允许读取清洗后的
 `data/multiturn/evaluation-v1/tasks.jsonl`，不得退回原始 500 候选。
 
+opening 冻结分为两步：`generate_multiturn_tasks.py` 使用指定 Shopper 模型生成并审计
+gap opening；`freeze_multiturn_openings.py` 从同一私有目标确定性提取 complete opening，
+验证 `source_goal_hash`，并生成 G+/G−/C+ condition manifest。G+ 与 G− 只引用同一份
+gap opening，不重复生成。
+
 ## 10. 五面板评测 v2 实现
 
 多轮评测不再只停留在 rollout `summary.json`。当前代码已经把原单轮四面板内核升级为
