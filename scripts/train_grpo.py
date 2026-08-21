@@ -72,6 +72,22 @@ def _validated_path(path: Path, description: str) -> Path:
     return resolved
 
 
+def _hydra_overrides(args: argparse.Namespace) -> list[str]:
+    logger_override = (
+        "trainer.logger=[console,swanlab]"
+        if args.logger == "swanlab"
+        else "trainer.logger=[console]"
+    )
+    extra = list(args.hydra_overrides)
+    if extra[:1] == ["--"]:
+        extra = extra[1:]
+    return [
+        logger_override,
+        f"trainer.experiment_name={args.experiment_name}",
+        *extra,
+    ]
+
+
 def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     model = _validated_path(args.model, "model directory")
     if not model.is_dir() or not (model / "config.json").is_file():
@@ -130,18 +146,7 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
                 "SWANLAB_LOG_DIR": str(output / "swanlab"),
             }
         )
-    logger_override = (
-        "trainer.logger=[console,swanlab]"
-        if args.logger == "swanlab"
-        else "trainer.logger=[console]"
-    )
-    overrides = [
-        logger_override,
-        f"trainer.experiment_name={args.experiment_name}",
-    ]
-    extra = list(args.hydra_overrides)
-    if extra[:1] == ["--"]:
-        extra = extra[1:]
+    overrides = _hydra_overrides(args)
     command = [
         sys.executable,
         "-m",
@@ -149,7 +154,6 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
         f"--config-path={config.parent}",
         f"--config-name={config.stem}",
         *overrides,
-        *extra,
     ]
     return command, environment
 
@@ -171,11 +175,11 @@ def main() -> None:
     if args.dry_run:
         return
     Path(environment["GRPO_OUTPUT_DIR"]).mkdir(parents=True, exist_ok=True)
+    overrides = _hydra_overrides(args)
     preflight = [
         sys.executable,
         str(ROOT / "scripts/check_grpo_runtime.py"),
         *overrides,
-        *extra,
     ]
     preflight_status = subprocess.call(preflight, cwd=ROOT, env=environment)
     if preflight_status:

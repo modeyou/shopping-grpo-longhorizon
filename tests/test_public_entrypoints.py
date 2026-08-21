@@ -124,6 +124,8 @@ class PublicEntrypointTest(unittest.TestCase):
                 "--shopper-base-url",
                 "https://shopper.example.test/v1",
                 "--preflight-only",
+                "--",
+                "trainer.total_training_steps=1",
             ]
             with (
                 patch.object(sys, "argv", argv),
@@ -134,7 +136,11 @@ class PublicEntrypointTest(unittest.TestCase):
                 grpo_main()
 
         self.assertEqual(call.call_count, 1)
-        self.assertIn("scripts/check_grpo_runtime.py", call.call_args.args[0][1])
+        preflight = call.call_args.args[0]
+        self.assertIn("scripts/check_grpo_runtime.py", preflight[1])
+        self.assertIn("trainer.logger=[console]", preflight)
+        self.assertIn("trainer.experiment_name=shopping-agent-grpo", preflight)
+        self.assertIn("trainer.total_training_steps=1", preflight)
 
 
 if __name__ == "__main__":
