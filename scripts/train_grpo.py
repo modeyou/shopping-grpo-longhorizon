@@ -119,6 +119,10 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     environment.update(
         {
             "PYTHONPATH": str(ROOT / "src"),
+            # veRL's colocated FSDP workers select devices by local rank. Ray's
+            # default per-actor CUDA_VISIBLE_DEVICES rewrite makes every rank see
+            # a one-device namespace and can map all ranks onto cuda:0.
+            "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
             "SHOPPING_GRPO_ROOT": str(ROOT),
             "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
             "SHOPPING_ENV_MANIFEST": str(DEFAULT_MANIFEST),
