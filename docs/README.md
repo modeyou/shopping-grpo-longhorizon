@@ -36,3 +36,9 @@ clarification-specific metrics used for Base/SFT/GRPO comparison.
 is the consolidated Chinese study note for the development/test split, five
 evaluation panels, Reward v3/v4 boundary, Qwen3.5-2B memory budget,
 Rubric/Judge selection, and the planned GRPO online Shopper contract.
+
+[Shopping Agent and Harness review](agent-harness-context-engineering.md) is the
+detailed Chinese study note for the Agent/Harness boundary, veRL ToolAgentLoop,
+four-rollout GRPO, page-aware context engineering, Action Guard, a complete
+clarification example, current implementation gaps, and the multi-turn GRPO
+acceptance checklist.
