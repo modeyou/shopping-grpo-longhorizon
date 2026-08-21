@@ -1,8 +1,23 @@
 --- a/verl/trainer/ppo/ray_trainer.py
 +++ b/verl/trainer/ppo/ray_trainer.py
 @@ -20,0 +21,2 @@
-+# SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V3
++# SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V4
 +
+@@ -609,0 +612 @@
++        sample_shopping = []
+@@ -665,0 +669,3 @@
++            if "shopping" in test_batch.non_tensor_batch:
++                sample_shopping.extend(test_batch.non_tensor_batch["shopping"].tolist())
++
+@@ -700,0 +707,5 @@
++            validation_extra_infos = dict(reward_extra_infos_dict)
++            if sample_shopping:
++                if len(sample_shopping) != len(sample_scores):
++                    raise ValueError("validation shopping diagnostics are not trajectory-aligned")
++                validation_extra_infos["shopping"] = sample_shopping
+@@ -706 +717 @@
+-                reward_extra_infos_dict=reward_extra_infos_dict,
++                reward_extra_infos_dict=validation_extra_infos,
 @@ -1380,0 +1383,8 @@
 +        )
 +

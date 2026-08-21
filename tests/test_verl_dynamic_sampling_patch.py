@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -81,6 +82,26 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertEqual(file_sha256(target), before)
             self.assertFalse(Path(str(target) + patcher.BACKUP_SUFFIX).exists())
 
+    def test_superseded_patch_upgrades_only_with_verified_original_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "ray_trainer.py"
+            backup = Path(str(target) + patcher.BACKUP_SUFFIX)
+            shutil.copy2(original_source(), target)
+            shutil.copy2(original_source(), backup)
+            target.write_text(
+                target.read_text(encoding="utf-8") + "\n# superseded patch fixture\n",
+                encoding="utf-8",
+            )
+            superseded_hash = file_sha256(target)
+
+            with patch.object(
+                patcher, "SUPERSEDED_PATCHED_SHA256S", frozenset({superseded_hash})
+            ):
+                patcher.apply_patch(target)
+
+            self.assertEqual(file_sha256(target), patcher.EXPECTED_PATCHED_SHA256)
+            self.assertEqual(file_sha256(backup), patcher.EXPECTED_ORIGINAL_SHA256)
+
     def test_patched_fit_preserves_bypass_and_defers_reference_and_update(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "ray_trainer.py"
@@ -150,6 +171,33 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertLess(
                 fit_source.index("SHOPPING_GRPO_DYNAMIC_SAMPLING_SKIPPED"),
                 fit_source.index("self.checkpoint_manager.sleep_replicas()", ready),
+            )
+
+    def test_patched_validation_dump_preserves_shopping_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "ray_trainer.py"
+            shutil.copy2(original_source(), target)
+            result = self.run_script(target)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            validate_source = target.read_text(encoding="utf-8").split(
+                "    def _validate(self, merged: bool = False):", 1
+            )[1].split("    def _val_metrics_update(", 1)[0]
+            self.assertIn("sample_shopping = []", validate_source)
+            self.assertIn(
+                'if "shopping" in test_batch.non_tensor_batch:', validate_source
+            )
+            self.assertIn(
+                'validation_extra_infos["shopping"] = sample_shopping',
+                validate_source,
+            )
+            self.assertIn(
+                "reward_extra_infos_dict=validation_extra_infos", validate_source
+            )
+            self.assertIn(
+                "self._val_metrics_update(data_sources, sample_uids, "
+                "reward_extra_infos_dict, sample_turns)",
+                validate_source,
             )
 
     def test_select_and_concat_keep_all_trajectory_fields_aligned(self):
