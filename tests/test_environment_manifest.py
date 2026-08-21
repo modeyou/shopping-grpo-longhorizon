@@ -33,7 +33,7 @@ class EnvironmentManifestTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing"):
             validate_manifest({})
 
-    def test_current_environment_requires_reward_v3(self):
+    def test_current_environment_accepts_versioned_reward_contracts(self):
         manifest = {
             "manifest_version": MANIFEST_VERSION,
             "environment_version": "shopsimulator-environment-v2.1",
@@ -50,8 +50,10 @@ class EnvironmentManifestTest(unittest.TestCase):
             "seed": 20260726,
         }
         self.assertIs(validate_manifest(manifest), manifest)
+        manifest["reward"] = {"version": "shopsimulator-reward-v4"}
+        self.assertIs(validate_manifest(manifest), manifest)
         manifest["reward"] = {"version": "unsupported-reward"}
-        with self.assertRaisesRegex(ValueError, "requires shopsimulator-reward-v3"):
+        with self.assertRaisesRegex(ValueError, "supported Reward version"):
             validate_manifest(manifest)
 
     def test_wrong_tool_contract_is_rejected(self):

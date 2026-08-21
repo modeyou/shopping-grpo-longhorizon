@@ -18,7 +18,7 @@ Rubric/Judge 和在线 Shopper 方面的设计结论，作为后续实现与复�
 |---|---|---|
 | 基座 Actor | 已确定方向 | `Qwen3.5-2B` |
 | 当前环境 Reward | 当前已实现 | `shopsimulator-reward-v3` |
-| Reward v4 | 待确认提案 | 本文给出设计，但尚未替换或覆盖 v3 |
+| Reward v4 | 当前已实现候选 | 与 v3 并行，含原子约束、价格语义和双算入口；尚未成为默认协议 |
 | 教师/Baseline/Evaluation 在线 Shopper | 当前已实现 | rollout harness 管理独立 LLM Shopper |
 | veRL GRPO 在线 Shopper | 待实现 | 当前 AgentLoop 尚未完成 Shopper 客户端与私有目标接入 |
 | Rubric LLM | 已确定方向 | 本地 `Qwen3.8-27B`，需冻结权重和 prompt |
@@ -212,9 +212,11 @@ Reward v3 是确定性的终局 Reward，不调用另一个 LLM 判断购买结�
 
 完整现行定义见 [Reward v3](reward-v3.md)。
 
-## 6. Reward v4：待确认的改进提案
+## 6. Reward v4：已实现的候选版本
 
-Reward v4 的目标是提高终局判定的可靠性和可诊断性，而不是立即把 LLM Judge 或 PRM 塞进环境。
+Reward v4 的目标是提高终局判定的可靠性和可诊断性，而不是把 LLM Judge 或 PRM 塞进环境。
+实现细节和切换门槛见 [Reward v4](reward-v4.md)。完成 v3/v4 双算与 bad-case 抽查前，默认
+运行契约仍是 v3。
 
 ### 6.1 约束原子化
 
@@ -523,7 +525,7 @@ Base、SFT、GRPO 在正式评测中必须面对完全相同的冻结 Shopper �
 
 ## 11. 推荐执行顺序
 
-1. 保持 Reward v3 为当前运行契约，先完成并评审 Reward v4 规格；
+1. 保持 Reward v3 为默认契约，先运行 Reward v3/v4 双算并评审 gained/lost bad cases；
 2. 实现 GRPO 在线 Shopper Contract 和私有审计；
 3. 生成或补齐 Qwen Answer Bank，并做 Qwen/DeepSeek 事实级 A/B；
 4. 完成 Qwen3.5-2B 开发集 Base 评测；
@@ -539,5 +541,6 @@ Base、SFT、GRPO 在正式评测中必须面对完全相同的冻结 Shopper �
 - [多轮教师数据与 SFT 复习](multiturn-teacher-sft-review.md)
 - [多轮正式评测协议](multiturn-evaluation.md)
 - [Reward v3](reward-v3.md)
+- [Reward v4](reward-v4.md)
 - [SFT](sft.md)
 - [GRPO](grpo.md)

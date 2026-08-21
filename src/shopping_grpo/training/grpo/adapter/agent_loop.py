@@ -36,6 +36,7 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         timeout=60,
         max_steps=35,
         required_environment_version=None,
+        required_reward_version=None,
         reward_mode="native",
         context_window_tokens=24576,
         context_generation_reserve_tokens=512,
@@ -59,6 +60,7 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         self.timeout = int(timeout)
         self.max_steps = int(max_steps)
         self.required_environment_version = required_environment_version
+        self.required_reward_version = required_reward_version
         self.reward_mode = str(reward_mode)
         self.context_window_tokens = int(context_window_tokens)
         self.context_generation_reserve_tokens = int(context_generation_reserve_tokens)
@@ -256,6 +258,9 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             timeout=self.timeout,
             max_steps=self.max_steps,
             required_environment_version=self.required_environment_version,
+            required_reward_version=getattr(
+                self, "required_reward_version", None
+            ),
             env_factory=self.env_factory,
         )
         state = await session.start(task_id)

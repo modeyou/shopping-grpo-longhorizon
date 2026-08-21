@@ -23,7 +23,7 @@ from web_agent_site.engine.engine import (
     END_BUTTON, NEXT_PAGE, PREV_PAGE, BACK_TO_SEARCH,
 )
 from web_agent_site.engine.goal import get_goals
-from web_agent_site.engine.reward import (
+from web_agent_site.engine.reward_registry import (
     evaluate_abstain,
     evaluate_candidate_eligibility,
     evaluate_purchase,
@@ -453,7 +453,12 @@ class SimServer:
         ):
             raise ValueError("search index weights differ from the config")
         self.existed_goals = True
-        self.goals = get_goals(self.all_products, self.product_prices, if_persona=if_persona)
+        self.goals = get_goals(
+            self.all_products,
+            self.product_prices,
+            if_persona=if_persona,
+            reward_version=self.environment_config["reward"]["version"],
+        )
         self.show_attrs = show_attrs
         self.shuffle_goals = shuffle_goals
         self.shuffle_num = shuffle_num
@@ -639,6 +644,7 @@ class SimServer:
             eligibility = evaluate_candidate_eligibility(
                 product_info,
                 session["goal"],
+                rewards=self.environment_config["reward"],
             )
             session.setdefault("candidate_eligibility", {})[
                 session["asin"]

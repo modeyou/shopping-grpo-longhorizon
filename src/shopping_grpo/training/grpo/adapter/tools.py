@@ -130,7 +130,10 @@ class ShopSimulatorTool(BaseTool):
                 if (
                     isinstance(reward_detail, dict)
                     and reward_detail.get("reward_version")
-                    == "shopsimulator-reward-v3"
+                    in {
+                        "shopsimulator-reward-v3",
+                        "shopsimulator-reward-v4",
+                    }
                 ):
                     try:
                         public_detail = validate_reward(reward_detail)
@@ -158,7 +161,7 @@ class ShopSimulatorTool(BaseTool):
                 else:
                     _mark_infrastructure_invalid(
                         state,
-                        "invalid_terminal_reward_detail:expected Reward v3",
+                        "invalid_terminal_reward_detail:unsupported Reward",
                     )
             return ToolResponse(text="Environment terminated."), 0.0, step
         state["latest_observation"] = observation

@@ -255,6 +255,19 @@ def main():
         evaluations=evaluations,
     )
     write_json_atomic(final_paths["summary"], summary, force=args.resume)
+    reward_versions = sorted(
+        {
+            str(
+                record["reward_and_terminal"]["metrics"].get(
+                    "reward_version"
+                )
+            )
+            for record in evaluations
+            if record["reward_and_terminal"]["metrics"].get(
+                "reward_version"
+            )
+        }
+    )
     manifest = build_run_manifest(
         run_id=f"{args.actor_label}-{args.condition}",
         actor={"label": args.actor_label},
@@ -263,7 +276,7 @@ def main():
             "sha256": sha256_file(args.expected_tasks),
             "task_count": len(expected_ids),
         },
-        environment={"reward": "shopsimulator-reward-v3"},
+        environment={"reward_versions": reward_versions},
         protocol={"condition": args.condition, "composite_score": None},
         code={"repository": "shopping-grpo-longhorizon"},
         judge={

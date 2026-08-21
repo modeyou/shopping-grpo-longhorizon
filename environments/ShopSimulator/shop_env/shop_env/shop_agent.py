@@ -51,6 +51,7 @@ def _handle_reset_action(
             "environment_version",
             "shopsimulator-environment-v2.1",
         ),
+        "reward_version": env.server.environment_config["reward"]["version"],
         "observation_state": env.structured_observation(),
     }
     if if_multiturn:

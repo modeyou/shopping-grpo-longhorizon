@@ -7,8 +7,9 @@ from web_agent_site.engine.normalize import normalize_color
 from web_agent_site.engine.constraints import (
     explicit_budget_from_instruction,
 )
-from web_agent_site.engine.reward_features import (
-    compile_reward_features,
+from web_agent_site.engine.reward_registry import (
+    DEFAULT_REWARD_VERSION,
+    compile_reward_features_for_version,
 )
 import math
 import pdb
@@ -57,10 +58,25 @@ def get_price_range_above(price, count=4):
     # Generate the next count prices with step size of 10
     return [base_price + i * 10 for i in range(count)]
 
-def get_goals(all_products, product_prices, if_persona=False):
-    return get_existed_goals(all_products, product_prices, if_persona)
+def get_goals(
+    all_products,
+    product_prices,
+    if_persona=False,
+    reward_version=DEFAULT_REWARD_VERSION,
+):
+    return get_existed_goals(
+        all_products,
+        product_prices,
+        if_persona,
+        reward_version=reward_version,
+    )
 
-def get_existed_goals(all_products, product_prices, if_persona=False):
+def get_existed_goals(
+    all_products,
+    product_prices,
+    if_persona=False,
+    reward_version=DEFAULT_REWARD_VERSION,
+):
     goals = []
     cnt_atts = defaultdict(int)
     cnt_1, cnt_2, cnt_3 = 0, 0, 0
@@ -121,7 +137,13 @@ def get_existed_goals(all_products, product_prices, if_persona=False):
                 'user_persona': user_persona,
                 'reason_key': reason_key,
             }
-            goal.update(compile_reward_features(product, item))
+            goal.update(
+                compile_reward_features_for_version(
+                    product,
+                    item,
+                    reward_version,
+                )
+            )
             goals.append(goal)
             for att in attributes:
                 cnt_atts[att] += 1

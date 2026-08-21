@@ -9,12 +9,13 @@ from web_agent_site.engine.comparators import (
     BRAND_ALIAS_VERSION,
     COMPARATOR_VERSION,
 )
-from web_agent_site.engine.reward_features import (
-    REWARD_FEATURE_VERSION,
-    OPTION_AXIS_VERSION,
-)
+from web_agent_site.engine.reward_features import OPTION_AXIS_VERSION
 from web_agent_site.engine.observation import OBSERVATION_VERSION
-from web_agent_site.engine.reward import DEFAULT_REWARDS, REWARD_VERSION
+from web_agent_site.engine.reward_registry import (
+    REWARD_DEFAULTS,
+    REWARD_FEATURE_VERSIONS,
+    SUPPORTED_REWARD_VERSIONS,
+)
 from web_agent_site.engine.search import DEFAULT_FIELD_WEIGHTS, SEARCH_VERSION
 from web_agent_site.engine.termination import TERMINATION_VERSION
 from web_agent_site.engine.variant_price import VARIANT_PRICE_VERSION
@@ -66,12 +67,16 @@ def validate_config(config):
             "Environment v2.1 search field weights differ from the index contract"
         )
     reward = config.get("reward")
-    if not isinstance(reward, dict) or reward.get("version") != REWARD_VERSION:
-        raise ValueError("Environment v2.1 config has the wrong reward version")
+    reward_version = reward.get("version") if isinstance(reward, dict) else None
+    if reward_version not in SUPPORTED_REWARD_VERSIONS:
+        raise ValueError(
+            "Environment v2.1 config has an unsupported reward version"
+        )
+    default_rewards = REWARD_DEFAULTS[reward_version]
     reward_values = {
-        key: float(reward.get(key)) for key in DEFAULT_REWARDS if key in reward
+        key: float(reward.get(key)) for key in default_rewards if key in reward
     }
-    if reward_values != DEFAULT_REWARDS:
+    if reward_values != default_rewards:
         raise ValueError(
             "Environment v2.1 reward values differ from the runtime contract"
         )
@@ -85,7 +90,7 @@ def validate_config(config):
         if int(termination.get(name, 0)) <= 0:
             raise ValueError(f"Environment v2.1 termination.{name} must be positive")
     expected_versions = {
-        "reward_feature_version": REWARD_FEATURE_VERSION,
+        "reward_feature_version": REWARD_FEATURE_VERSIONS[reward_version],
         "option_axis_version": OPTION_AXIS_VERSION,
         "variant_price_version": VARIANT_PRICE_VERSION,
         "comparator_version": COMPARATOR_VERSION,

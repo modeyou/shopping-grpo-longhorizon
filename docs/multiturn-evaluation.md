@@ -15,6 +15,8 @@ Base/SFT/GRPO 配对比较。协议继承参考项目的 Reward v3 与四面板�
   隔离，还不能直接称为正式测试集。
 - Reward v3 保持不变，只评价最终环境结果；澄清行为作为独立面板报告，不写回或覆盖
   Reward v3。
+- Reward v4 已作为并行候选实现；在完成 v3/v4 gold replay、bad-case 抽查和任务重新冻结前，
+  本协议仍以 v3 为当前正式口径，不能混合两版结果。
 - Rubric 整理器固定为本地 `Qwen3.8-27B`；主 Judge 固定为
   `deepseek-v4-flash-0731`。二者都必须使用冻结 schema、prompt 和模型 revision。
 

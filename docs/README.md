@@ -13,6 +13,9 @@ Follow the guides in workflow order:
 [Reward v3](reward-v3.md) is the detailed specification shared by collection,
 GRPO and evaluation.
 
+[Reward v4](reward-v4.md) is the parallel atomic-constraint and price-semantics
+candidate, including the v3/v4 gold-replay migration gate.
+
 [Multi-turn clarification](multiturn-clarification-data.md) documents the frozen
 Shopper-opening and autonomous `ask_shopper` Teacher-data pipeline.
 

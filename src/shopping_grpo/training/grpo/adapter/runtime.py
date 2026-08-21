@@ -22,6 +22,10 @@ REWARD_V3_TYPES = {
     "max_steps",
     "reward_unverifiable",
 }
+SUPPORTED_REWARD_VERSIONS = {
+    "shopsimulator-reward-v3",
+    "shopsimulator-reward-v4",
+}
 
 
 def make_runtime_state(task_id: int, max_steps: int) -> dict:
@@ -111,14 +115,15 @@ def record_action_attempt(state: dict, tool_name: str, parameters: dict, observa
 
 
 def validate_reward(raw_detail: object) -> dict:
-    """Validate and minimize public Environment v2.1 / Reward v3 diagnostics."""
+    """Validate and minimize public versioned terminal Reward diagnostics."""
     if not isinstance(raw_detail, Mapping):
         raise ValueError("reward_detail must be an object")
-    if raw_detail.get("reward_version") != "shopsimulator-reward-v3":
+    reward_version = str(raw_detail.get("reward_version") or "")
+    if reward_version not in SUPPORTED_REWARD_VERSIONS:
         raise ValueError("reward_detail has an unsupported reward_version")
     reward_type = str(raw_detail.get("reward_type", ""))
     if reward_type not in REWARD_V3_TYPES:
-        raise ValueError(f"unknown Reward v3 reward_type: {reward_type!r}")
+        raise ValueError(f"unknown reward_type: {reward_type!r}")
     if raw_detail.get("termination_reason") != reward_type:
         raise ValueError("termination_reason must equal reward_type")
     reward_valid = raw_detail.get("reward_valid")
@@ -190,8 +195,24 @@ def validate_reward(raw_detail: object) -> dict:
                 f"dimension score {name} must be finite and in [0, 1]"
             )
         dimension_scores[name] = score
+    raw_constraint_scores = raw_detail.get("constraint_scores") or {}
+    if not isinstance(raw_constraint_scores, Mapping):
+        raise ValueError("constraint_scores must be an object")
+    constraint_scores = {}
+    for name, raw_score in raw_constraint_scores.items():
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"constraint score {name} must be numeric"
+            ) from exc
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            raise ValueError(
+                f"constraint score {name} must be finite and in [0, 1]"
+            )
+        constraint_scores[str(name)] = score
     return {
-        "reward_version": "shopsimulator-reward-v3",
+        "reward_version": reward_version,
         "reward_type": reward_type,
         "reward_valid": reward_valid,
         "termination_reason": reward_type,
@@ -200,6 +221,7 @@ def validate_reward(raw_detail: object) -> dict:
         "weighted_score": weighted_score,
         "evidence_coverage": evidence_coverage,
         "dimension_scores": dimension_scores,
+        "constraint_scores": constraint_scores,
         "terminal_utility": terminal_utility,
         "purchase_success": purchase_success,
         "sampling_invalid": sampling_invalid,
@@ -224,13 +246,46 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
         invalid = True
         native = 0.0
 
-    if state.get("reward_version") == "shopsimulator-reward-v3":
+    if state.get("reward_version") in SUPPORTED_REWARD_VERSIONS:
         detail = state.get("reward_detail") or {}
         reward_valid = bool(state.get("reward_valid", True))
         invalid_reward = not reward_valid
         gates = detail.get("hard_gates") or {}
         dimension_scores = detail.get("dimension_scores") or {}
+        constraint_scores = detail.get("constraint_scores") or {}
         component = lambda name: float(bool(gates.get(name, {}).get("passed")))
+        category_component = max(
+            component("category"),
+            component("category:0"),
+            float(constraint_scores.get("category:0", 0.0)),
+        )
+        price_component = max(
+            component("budget"),
+            component("price:0"),
+            float(constraint_scores.get("price:0", 0.0)),
+        )
+        def atom_dimension_score(prefix, legacy_name):
+            scores = [
+                float(score)
+                for name, score in constraint_scores.items()
+                if str(name).startswith(prefix + ":")
+            ]
+            return (
+                sum(scores) / len(scores)
+                if scores
+                else float(dimension_scores.get(legacy_name, 0.0))
+            )
+
+        option_scores = [
+            float(score)
+            for name, score in constraint_scores.items()
+            if str(name).startswith(("option:", "unresolved_option:"))
+        ]
+        option_score = (
+            sum(option_scores) / len(option_scores)
+            if option_scores
+            else float(dimension_scores.get("key_options", 0.0))
+        )
         full = float(state.get("reward_type") == "gold_purchase")
         strict = full
         purchase_success = bool(
@@ -242,20 +297,18 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
         )
         semantic = float(purchase_success)
         return {
-            "r_type": component("category"),
+            "r_type": category_component,
             "r_att": float(detail.get("weighted_score", 0.0)),
-            "r_option": float(dimension_scores.get("key_options", 0.0)),
-            "r_price": component("budget"),
+            "r_option": option_score,
+            "r_price": price_component,
             "match_score": float(detail.get("weighted_score", 0.0)),
             "evidence_coverage": float(detail.get("evidence_coverage", 0.0)),
-            "brand_score": float(dimension_scores.get("brand", 0.0)),
-            "model_score": float(dimension_scores.get("model", 0.0)),
-            "core_function_score": float(
-                dimension_scores.get("core_functions", 0.0)
+            "brand_score": atom_dimension_score("brand", "brand"),
+            "model_score": atom_dimension_score("model", "model"),
+            "core_function_score": atom_dimension_score(
+                "core_function", "core_functions"
             ),
-            "option_score": float(
-                dimension_scores.get("key_options", 0.0)
-            ),
+            "option_score": option_score,
             "full": full,
             "strict": strict,
             "native": native,

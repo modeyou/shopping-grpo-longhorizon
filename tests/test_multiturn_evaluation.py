@@ -239,3 +239,23 @@ def test_five_panel_preprocessing_separates_shop_steps_and_clarification():
     assert metrics["clarification"]["question_count"] == 1
     assert metrics["clarification"]["all_questions_grounded"] is True
     assert metrics["clarification"]["auditable_post_answer_action"] is True
+
+
+def test_five_panel_metrics_accept_versioned_v4_gold_terminal():
+    actor = _Actor([_tool("search_products", {"query": "测试商品"}, "search")])
+    trajectory = collect_for_task(
+        _gap_task(),
+        client=actor,
+        env_factory=_EvaluationEnv,
+        max_steps=1,
+        evaluation_condition="gap-ask-disabled",
+    )
+    trajectory["trajectory_id"] = "task-0-v4"
+    trajectory["terminal_result"]["reward_detail"][
+        "reward_version"
+    ] = "shopsimulator-reward-v4"
+
+    metrics = compute_deterministic_metrics(normalize_trajectory(trajectory))
+
+    assert metrics["reward_and_outcome"]["strict_gold_success"] is True
+    assert metrics["validity"]["trajectory_contract_issues"] == []

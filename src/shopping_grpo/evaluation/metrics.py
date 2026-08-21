@@ -1,6 +1,6 @@
 """只依赖代码计算的轨迹指标；这里禁止 LLM 推理。
 
-指标从标准化事件流、终局 Reward v3 和上下文诊断中读取，分别回答“做了什么”、
+指标从标准化事件流、版本化终局 Reward 和上下文诊断中读取，分别回答“做了什么”、
 “是否合法/是否成功”和“上下文是否健康”，不会把不同含义强行合成一个总分。
 """
 
@@ -18,7 +18,10 @@ from shopping_grpo.environment.product_id import PRODUCT_ID_CAPTURE
 
 
 DETERMINISTIC_METRICS_VERSION = "shopping-deterministic-metrics-v2"
-REWARD_V3 = "shopsimulator-reward-v3"
+SUPPORTED_REWARD_VERSIONS = {
+    "shopsimulator-reward-v3",
+    "shopsimulator-reward-v4",
+}
 _ASIN = re.compile(rf"(?<!\d){PRODUCT_ID_CAPTURE}(?!\d)")
 _INFRASTRUCTURE_ERROR_TYPES = {
     "ContextBudgetError",
@@ -89,7 +92,7 @@ def _strict_success(normalized: Mapping, reward_detail: Mapping) -> bool:
     terminal = normalized.get("terminal")
     terminal = terminal if isinstance(terminal, Mapping) else {}
     return (
-        reward_detail.get("reward_version") == REWARD_V3
+        reward_detail.get("reward_version") in SUPPORTED_REWARD_VERSIONS
         and normalized.get("status") == "done"
         and normalized.get("done") is True
         and terminal.get("done") is True
@@ -181,7 +184,7 @@ def compute_deterministic_metrics(normalized: object) -> dict:
     )
     step_errors = sum(bool(event.get("step_error")) for event in executed)
 
-    # 终局和 Reward 单独读取，严格成功必须同时满足环境终局、Reward v3 和 gold_purchase。
+    # 终局和 Reward 单独读取；严格成功要求受支持版本的有效 gold_purchase。
     terminal = normalized.get("terminal")
     terminal = terminal if isinstance(terminal, Mapping) else {}
     reward_detail = terminal.get("reward_detail")
@@ -221,7 +224,7 @@ def compute_deterministic_metrics(normalized: object) -> dict:
             contract_issues.append("done_status_without_reward_detail")
     if reward_detail and reward_detail.get("reward_version") not in {
         None,
-        REWARD_V3,
+        *SUPPORTED_REWARD_VERSIONS,
     }:
         contract_issues.append("unexpected_reward_version")
     normalization = normalized.get("normalization")

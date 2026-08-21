@@ -22,12 +22,14 @@ class ShopSimulatorSession:
         timeout: int = 60,
         max_steps: int = 35,
         required_environment_version: str | None = None,
+        required_reward_version: str | None = None,
         env_factory=None,
     ):
         self.base_url = base_url
         self.timeout = int(timeout)
         self.max_steps = int(max_steps)
         self.required_environment_version = required_environment_version
+        self.required_reward_version = required_reward_version
         self.env_factory = env_factory or ShopAgentEnv
         self.env = None
         self.state = None
@@ -65,11 +67,30 @@ class ShopSimulatorSession:
                 "ShopSimulator environment version mismatch: "
                 f"expected {self.required_environment_version!r}, got {actual_version!r}"
             )
+        actual_reward_version = (
+            initial.get("reward_version")
+            if isinstance(initial, dict)
+            else None
+        )
+        if (
+            self.required_reward_version is not None
+            and actual_reward_version != self.required_reward_version
+        ):
+            try:
+                await asyncio.to_thread(self.env.release)
+            finally:
+                self.env = None
+            raise RuntimeError(
+                "ShopSimulator reward version mismatch: "
+                f"expected {self.required_reward_version!r}, "
+                f"got {actual_reward_version!r}"
+            )
+        self.state["environment_version"] = actual_version
+        self.state["expected_reward_version"] = actual_reward_version
         if isinstance(initial, dict) and initial.get("observation_state") is not None:
             self.state["latest_observation"] = render_structured_observation(
                 initial["observation_state"]
             )
-            self.state["environment_version"] = actual_version
         else:
             self.state["latest_observation"] = str(
                 initial.get("instruction", initial.get("observation", ""))

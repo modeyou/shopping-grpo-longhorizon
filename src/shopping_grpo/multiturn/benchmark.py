@@ -45,13 +45,31 @@ def load_products(path: str | Path) -> list[dict]:
 
 
 def audit_gold_task(product: dict, task_id: int) -> dict:
-    """Evaluate the deterministic gold purchase without running an Actor."""
+    """Evaluate the deterministic Reward v3 gold purchase."""
+
+    return audit_gold_task_version(
+        product,
+        task_id,
+        reward_version="shopsimulator-reward-v3",
+    )
+
+
+def audit_gold_task_version(
+    product: dict,
+    task_id: int,
+    *,
+    reward_version: str,
+) -> dict:
+    """Evaluate one versioned deterministic gold purchase without an Actor."""
 
     # Imported lazily so ordinary package users do not need ShopSimulator on
     # sys.path. The CLI and focused tests add the embedded environment root.
     from web_agent_site.engine.constraints import explicit_budget_from_instruction
-    from web_agent_site.engine.reward import evaluate_purchase
-    from web_agent_site.engine.reward_features import compile_reward_features
+    from web_agent_site.engine.reward_registry import (
+        REWARD_DEFAULTS,
+        compile_reward_features_for_version,
+        evaluate_purchase,
+    )
     from web_agent_site.engine.variant_price import (
         candidate_options_for_evaluation,
         resolve_variant_price,
@@ -66,6 +84,7 @@ def audit_gold_task(product: dict, task_id: int) -> dict:
     if len(valid_instructions) != 1:
         return {
             "task_id": int(task_id),
+            "reward_version": reward_version,
             "eligible": False,
             "reasons": ["goal_instruction_not_unique"],
             "audit": {"valid_instruction_count": len(valid_instructions)},
@@ -90,7 +109,13 @@ def audit_gold_task(product: dict, task_id: int) -> dict:
         "category": product.get("category"),
         "price_upper": explicit_budget_from_instruction(query),
     }
-    goal.update(compile_reward_features(instruction, product))
+    goal.update(
+        compile_reward_features_for_version(
+            instruction,
+            product,
+            reward_version,
+        )
+    )
 
     selected, option_resolution = candidate_options_for_evaluation(
         candidate, goal.get("required_options_by_key")
@@ -101,6 +126,7 @@ def audit_gold_task(product: dict, task_id: int) -> dict:
         goal,
         selected_options=selected,
         price_resolution=price_resolution,
+        rewards={"version": reward_version, **REWARD_DEFAULTS[reward_version]},
     )
 
     reasons = []
@@ -110,7 +136,12 @@ def audit_gold_task(product: dict, task_id: int) -> dict:
         reasons.append("gold_option_selection_unresolved")
     if price_resolution.get("status") != "pass":
         reasons.append("gold_variant_price_unresolved")
-    if PRICE_HINT.search(query) and goal.get("price_upper") is None:
+    compiled_price = (
+        goal.get("price_constraint")
+        if reward_version == "shopsimulator-reward-v4"
+        else goal.get("price_upper")
+    )
+    if PRICE_HINT.search(query) and compiled_price is None:
         reasons.append("explicit_price_not_compiled")
     if result.reward_type != "gold_purchase":
         reasons.append("gold_purchase_not_reachable")
@@ -119,6 +150,7 @@ def audit_gold_task(product: dict, task_id: int) -> dict:
 
     return {
         "task_id": int(task_id),
+        "reward_version": reward_version,
         "eligible": not reasons,
         "reasons": reasons,
         "audit": {
@@ -133,6 +165,10 @@ def audit_gold_task(product: dict, task_id: int) -> dict:
             "price_resolution_status": price_resolution.get("status"),
             "price_resolution_method": price_resolution.get("method"),
             "compiled_price_upper": goal.get("price_upper"),
+            "compiled_price_constraint": goal.get("price_constraint"),
+            "constraint_atom_count": len(
+                goal.get("constraint_atoms") or []
+            ),
             "query_has_price_hint": bool(PRICE_HINT.search(query)),
             "reward_type": result.reward_type,
             "reward_valid": result.reward_valid,

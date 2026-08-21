@@ -4,7 +4,9 @@ from collections import Counter
 
 
 REWARD_V3 = "shopsimulator-reward-v3"
-REWARD_V3_TYPES = (
+REWARD_V4 = "shopsimulator-reward-v4"
+SUPPORTED_REWARD_VERSIONS = {REWARD_V3, REWARD_V4}
+REWARD_TYPES = (
     "gold_purchase",
     "valid_alternative_purchase",
     "partial_alternative_purchase",
@@ -38,16 +40,26 @@ def summarize_trajectories(expected_task_ids, trajectories):
     reward_version_counts = Counter(
         detail.get("reward_version", "unknown") for detail in reward_details
     )
+    observed_versions = {
+        version
+        for version in reward_version_counts
+        if version in SUPPORTED_REWARD_VERSIONS
+    }
+    reward_contract = (
+        next(iter(observed_versions))
+        if len(observed_versions) == 1
+        else "mixed_or_unknown"
+    )
     purchase_successes = sum(
         detail.get("purchase_success") is True for detail in reward_details
     )
     gold_purchases = sum(
-        detail.get("reward_version") == REWARD_V3
+        detail.get("reward_version") in SUPPORTED_REWARD_VERSIONS
         and detail.get("reward_type") == "gold_purchase"
         for detail in reward_details
     )
     reward_valid_tasks = sum(
-        detail.get("reward_version") == REWARD_V3
+        detail.get("reward_version") in SUPPORTED_REWARD_VERSIONS
         and detail.get("reward_valid") is True
         for detail in reward_details
     )
@@ -109,14 +121,14 @@ def summarize_trajectories(expected_task_ids, trajectories):
         "strict_successes": len(strict_successes),
         "strict_success_task_ids": sorted(strict_successes),
         "strict_success_rate": len(strict_successes) / denominator if denominator else 0.0,
-        "reward_contract": REWARD_V3,
+        "reward_contract": reward_contract,
         "reward_version_counts": dict(sorted(reward_version_counts.items())),
         "reward_type_counts": dict(sorted(reward_type_counts.items())),
         "reward_type_rates": {
             reward_type: reward_type_counts.get(reward_type, 0) / denominator
             if denominator
             else 0.0
-            for reward_type in REWARD_V3_TYPES
+            for reward_type in REWARD_TYPES
         },
         "purchase_successes": purchase_successes,
         "purchase_success_rate": purchase_successes / denominator if denominator else 0.0,
@@ -319,7 +331,7 @@ def _is_strict_success(trajectory):
     terminal = trajectory.get("terminal_result") or {}
     detail = _reward_detail(trajectory)
     return (
-        detail.get("reward_version") == REWARD_V3
+        detail.get("reward_version") in SUPPORTED_REWARD_VERSIONS
         and trajectory.get("status") == "done"
         and trajectory.get("done") is True
         and terminal.get("done") is True

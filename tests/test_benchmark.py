@@ -55,6 +55,19 @@ class BenchmarkTest(unittest.TestCase):
         self.assertAlmostEqual(summary["average_steps"], 5.0)
         self.assertEqual(summary["guard_reason_counts"]["schema_extra_arguments:asin"], 1)
 
+    def test_summary_accepts_v4_as_a_separate_strict_contract(self):
+        trajectory = _trajectory(10, strict=True)
+        trajectory["terminal_result"]["reward_detail"][
+            "reward_version"
+        ] = "shopsimulator-reward-v4"
+
+        summary = summarize_trajectories([10], [trajectory])
+
+        self.assertEqual(summary["strict_successes"], 1)
+        self.assertEqual(
+            summary["reward_contract"], "shopsimulator-reward-v4"
+        )
+
     def test_summary_separates_successes_by_projection_bucket(self):
         projected = _trajectory(10, strict=True, steps=1)
         projected["steps"][0]["projection"] = {

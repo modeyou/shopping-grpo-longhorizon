@@ -265,6 +265,7 @@ def summarize_evaluations(
 
     denominator = len(expected)
     missing = sorted(expected_set - set(by_task))
+    reward_version_counts = Counter()
     reward_type_counts = Counter()
     strict_successes = []
     purchase_successes = 0
@@ -307,6 +308,9 @@ def summarize_evaluations(
 
     for task_id, record in by_task.items():
         reward = record["reward_and_terminal"]["metrics"]
+        reward_version_counts[
+            str(reward.get("reward_version") or "unknown")
+        ] += 1
         reward_type_counts[str(reward.get("reward_type") or "unknown")] += 1
         if reward.get("strict_gold_success") is True:
             strict_successes.append(task_id)
@@ -433,6 +437,9 @@ def summarize_evaluations(
             ),
             "reward_valid_tasks": reward_valid,
             "reward_valid_rate": _mean(reward_valid, denominator),
+            "reward_version_counts": dict(
+                sorted(reward_version_counts.items())
+            ),
             "reward_type_counts": dict(sorted(reward_type_counts.items())),
             "total_final_reward": total_reward,
             "mean_final_reward_fixed_denominator": _mean(
