@@ -1,0 +1,24 @@
+{
+  "complete_opening_policy": "private-instruction-full-v1",
+  "condition_count": 1500,
+  "inputs": {
+    "gap_openings": "data/multiturn/evaluation-dev-v2/gap_openings.jsonl",
+    "gap_openings_sha256": "fdc8bbc5ce6cfa485ac73fac1e16f8a66bd983e93ac0419a01bf587e26129588",
+    "task_manifest": "data/multiturn/evaluation-dev-v2/tasks.jsonl",
+    "task_manifest_sha256": "93fda78a7a69b1ca68262a5821571055ed26d217791542723e2503fb4bc5fc3b"
+  },
+  "outputs": {
+    "complete_openings": "data/multiturn/evaluation-dev-v2/complete_openings.jsonl",
+    "complete_openings_sha256": "f32e83c1fbe9ea1add7022353358a3415c37b95beb95329446e3d1bdf4749377",
+    "conditions": "data/multiturn/evaluation-dev-v2/conditions.jsonl",
+    "conditions_sha256": "7d019a6f76e7222d92114596b0562e6cbf5f9470dba8449f183cbfeae182a564"
+  },
+  "schema_version": "shopping-multiturn-evaluation-opening-v1",
+  "task_count": 500,
+  "validation": {
+    "all_source_goal_hashes_match": true,
+    "all_tasks_have_gap_openings": true,
+    "conditions_per_task": 3,
+    "gap_conditions_share_one_opening": true
+  }
+}
