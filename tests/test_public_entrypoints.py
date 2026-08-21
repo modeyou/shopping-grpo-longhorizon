@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.train_grpo import build_command, parse_args
+from scripts.train_grpo import build_command, main as grpo_main, parse_args
 from shopping_grpo.cli import main as cli_main
 from shopping_grpo.smoke import run_cpu_smoke
 
@@ -94,6 +95,46 @@ class PublicEntrypointTest(unittest.TestCase):
             str(output.resolve() / "training_diagnostics.jsonl"),
         )
         self.assertIn("trainer.logger=[console]", command)
+
+    def test_grpo_preflight_only_never_launches_training(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            model = temporary / "model"
+            model.mkdir()
+            (model / "config.json").write_text("{}", encoding="utf-8")
+            (model / "model.safetensors").write_bytes(b"weights")
+            train = temporary / "train.parquet"
+            train.write_bytes(b"example")
+            validation = temporary / "validation.parquet"
+            validation.write_bytes(b"example")
+            output = temporary / "output"
+            argv = [
+                "train_grpo.py",
+                "--model",
+                str(model),
+                "--train-data",
+                str(train),
+                "--val-data",
+                str(validation),
+                "--output",
+                str(output),
+                "--config",
+                str(root / "configs/grpo.yaml"),
+                "--shopper-base-url",
+                "https://shopper.example.test/v1",
+                "--preflight-only",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.dict(os.environ, {"SHOPPER_API_KEY": "secret"}),
+                patch("scripts.train_grpo.subprocess.call", return_value=0) as call,
+                patch("builtins.print"),
+            ):
+                grpo_main()
+
+        self.assertEqual(call.call_count, 1)
+        self.assertIn("scripts/check_grpo_runtime.py", call.call_args.args[0][1])
 
 
 if __name__ == "__main__":

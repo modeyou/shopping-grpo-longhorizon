@@ -46,7 +46,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--experiment-name", default="shopping-agent-grpo")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--dry-run", action="store_true")
+    execution = parser.add_mutually_exclusive_group()
+    execution.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the resolved veRL command without running preflight or training",
+    )
+    execution.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="run the full GRPO runtime preflight without loading the model or training",
+    )
     parser.add_argument(
         "hydra_overrides",
         nargs=argparse.REMAINDER,
@@ -170,6 +180,9 @@ def main() -> None:
     preflight_status = subprocess.call(preflight, cwd=ROOT, env=environment)
     if preflight_status:
         raise SystemExit(preflight_status)
+    if args.preflight_only:
+        print("GRPO runtime preflight-only passed")
+        return
     raise SystemExit(subprocess.call(command, cwd=ROOT, env=environment))
 
 

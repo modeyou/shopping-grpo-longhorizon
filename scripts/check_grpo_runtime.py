@@ -273,21 +273,21 @@ def validate_swanlab_tracking(config):
     forbidden = {"wandb", "tracking", "vemlp_wandb"} & set(logger_backends)
     if forbidden:
         raise SystemExit(
-            "Reward v3 GRPO forbids W&B logger backends: "
+            "Reward v4 GRPO forbids W&B logger backends: "
             + ", ".join(sorted(forbidden))
         )
     if os.environ.get("SWANLAB_MODE") != "online":
-        raise SystemExit("Reward v3 GRPO requires SWANLAB_MODE=online")
+        raise SystemExit("Reward v4 GRPO requires SWANLAB_MODE=online")
     if not os.environ.get("SWANLAB_API_KEY"):
         raise SystemExit(
-            "Reward v3 GRPO requires SWANLAB_API_KEY in the launching environment"
+            "Reward v4 GRPO requires SWANLAB_API_KEY in the launching environment"
         )
     log_dir = os.environ.get("SWANLAB_LOG_DIR")
     if not log_dir:
-        raise SystemExit("Reward v3 GRPO requires SWANLAB_LOG_DIR")
+        raise SystemExit("Reward v4 GRPO requires SWANLAB_LOG_DIR")
     resolved_log_dir = Path(log_dir).resolve()
     if str(config.trainer.get("project_name")) != "shopping-grpo":
-        raise SystemExit("Reward v3 GRPO SwanLab project must be shopping-grpo")
+        raise SystemExit("Reward v4 GRPO SwanLab project must be shopping-grpo")
     print(
         "SwanLab online preflight passed: "
         + json.dumps(

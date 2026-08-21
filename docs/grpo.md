@@ -58,6 +58,13 @@ export SHOPPER_API_KEY="$OPENAI_API_KEY"
 bash scripts/grpo.sh --dry-run
 ```
 
+Run the complete environment, dependency, manifest, patch and memory-budget
+preflight without loading the model or entering veRL training:
+
+```bash
+bash scripts/grpo.sh --preflight-only
+```
+
 Train:
 
 ```bash

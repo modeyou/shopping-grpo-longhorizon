@@ -90,7 +90,7 @@ class ShopSimulatorTool(BaseTool):
             return ToolResponse(text=f"Error: action guard rejected this call ({reason}); read the latest observation."), 0.0, {"reason": reason}
         try:
             # 先转换成环境动作，再在线程中调用同步客户端；终局 reward 只信任
-            # 环境返回的 Reward v3 结构，避免训练侧自行猜测分数。
+            # 环境返回的 Reward v4 结构，避免训练侧自行猜测分数。
             action = tool_call_to_action(self.name, parameters)
             result = await asyncio.to_thread(env.step, action)
             if result.get("observation_state") is not None:
