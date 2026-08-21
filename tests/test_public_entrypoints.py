@@ -137,7 +137,10 @@ class PublicEntrypointTest(unittest.TestCase):
 
         self.assertEqual(call.call_count, 1)
         preflight = call.call_args.args[0]
-        self.assertIn("scripts/check_grpo_runtime.py", preflight[1])
+        self.assertEqual(
+            Path(preflight[1]).resolve(),
+            root / "scripts/check_grpo_runtime.py",
+        )
         self.assertIn("trainer.logger=[console]", preflight)
         self.assertIn("trainer.experiment_name=shopping-agent-grpo", preflight)
         self.assertIn("trainer.total_training_steps=1", preflight)
