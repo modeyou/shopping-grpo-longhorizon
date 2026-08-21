@@ -118,6 +118,11 @@ def validate_environment_contract():
     }
     if "finish_without_purchase" not in tool_names:
         raise SystemExit("Environment v2 tool config is missing finish_without_purchase")
+    if "ask_shopper" not in tool_names:
+        raise SystemExit("multi-turn GRPO tool config is missing ask_shopper")
+    for name in ("SHOPPER_MODEL", "SHOPPER_BASE_URL", "SHOPPER_API_KEY"):
+        if not os.environ.get(name):
+            raise SystemExit(f"multi-turn GRPO requires {name}")
     if int(manifest["max_steps"]) != 35:
         raise SystemExit("Environment v2 GRPO contract requires max_steps=35")
     validate_reward_runtime_files(

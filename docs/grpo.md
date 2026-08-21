@@ -3,7 +3,7 @@
 ## Purpose
 
 SFT teaches the action format and a strong initial policy. GRPO then samples
-fresh trajectories in ShopSimulator and optimizes the terminal Reward v3 signal.
+fresh trajectories in ShopSimulator and optimizes the terminal Reward v4 signal.
 The goal is to improve constraint satisfaction and termination behavior without
 requiring a learned reward model.
 
@@ -26,18 +26,35 @@ unknown veRL version.
 ## Inputs
 
 - Initial policy: `outputs/models/sft-merged`
-- Train set: `data/grpo/train.parquet` (1,000 tasks)
-- Validation set: `data/grpo/validation.parquet` (50 tasks)
+- Train/validation: task-disjoint multi-turn gap and complete openings converted to veRL parquet
 - Environment: ShopSimulator Environment v2.1
-- Reward: Reward v3
+- Reward: Reward v4
+- Shopper: a separate OpenAI-compatible endpoint, configured through `SHOPPER_*`
 
-Hashes are recorded in [`data/grpo/metadata.json`](../data/grpo/metadata.json).
+Do not reuse development or formal evaluation openings as GRPO training data. Build parquet only
+from the frozen GRPO task split and its matching openings:
+
+```bash
+export PYTHONPATH=./src
+python scripts/prepare_multiturn_grpo_dataset.py \
+  --tasks data/multiturn/tasks/grpo_train.jsonl \
+  --gap-openings data/multiturn/grpo-train-openings/gap_openings.jsonl \
+  --complete-openings data/multiturn/grpo-train-openings/complete_openings.jsonl \
+  --exclude-tasks data/multiturn/evaluation-dev-v2/tasks.jsonl \
+  --exclude-tasks data/multiturn/evaluation-v2/tasks.jsonl \
+  --mode mixed \
+  --split train \
+  --output data/grpo/multiturn-train.parquet
+```
 
 ## Run
 
 Inspect the resolved command first:
 
 ```bash
+export SHOPPER_MODEL=deepseek-v4-flash-0731
+export SHOPPER_BASE_URL="$OPENAI_BASE_URL"
+export SHOPPER_API_KEY="$OPENAI_API_KEY"
 bash scripts/grpo.sh --dry-run
 ```
 
@@ -46,6 +63,10 @@ Train:
 ```bash
 bash scripts/grpo.sh
 ```
+
+The multi-turn harness routes `ask_shopper` to the separate Shopper endpoint. It does not send
+that call to ShopSimulator and does not charge it against the 35 shopping-action steps. Every
+rollout has an isolated Shopper history; clarified answers are projected into later observations.
 
 Important defaults:
 

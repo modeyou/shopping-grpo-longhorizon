@@ -14,10 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "configs/grpo.yaml"
 DEFAULT_AGENT_CONFIG = ROOT / "configs/agent_loop.yaml"
 DEFAULT_TOOL_CONFIG = ROOT / "configs/tools.json"
-DEFAULT_MANIFEST = ROOT / "data/environment.json"
+DEFAULT_MANIFEST = ROOT / "data/environment-v4.json"
 DEFAULT_MODEL = ROOT / "outputs/models/sft-merged"
-DEFAULT_TRAIN_DATA = ROOT / "data/grpo/train.parquet"
-DEFAULT_VAL_DATA = ROOT / "data/grpo/validation.parquet"
+DEFAULT_TRAIN_DATA = ROOT / "data/grpo/multiturn-train.parquet"
+DEFAULT_VAL_DATA = ROOT / "data/grpo/multiturn-validation.parquet"
 
 
 def _model_has_weights(path: Path) -> bool:
@@ -36,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-data", type=Path, default=DEFAULT_TRAIN_DATA)
     parser.add_argument("--val-data", type=Path, default=DEFAULT_VAL_DATA)
     parser.add_argument("--env-url", default="http://127.0.0.1:5700")
+    parser.add_argument("--shopper-model", default="deepseek-v4-flash-0731")
+    parser.add_argument("--shopper-base-url", default=os.environ.get("OPENAI_BASE_URL"))
     parser.add_argument("--output", type=Path, default=Path("outputs/models/grpo"))
     parser.add_argument(
         "--logger",
@@ -80,6 +82,12 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
             raise SystemExit(f"output directory must be new or empty: {output}")
     if args.logger == "swanlab" and not os.environ.get("SWANLAB_API_KEY"):
         raise SystemExit("--logger swanlab requires SWANLAB_API_KEY")
+    shopper_api_key = os.environ.get("SHOPPER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if (not args.shopper_base_url or not shopper_api_key) and not args.dry_run:
+        raise SystemExit(
+            "multi-turn GRPO requires --shopper-base-url and SHOPPER_API_KEY "
+            "(OPENAI_API_KEY is accepted as a fallback)"
+        )
 
     environment = dict(os.environ)
     environment.update(
@@ -88,6 +96,10 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
             "SHOPPING_GRPO_ROOT": str(ROOT),
             "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
             "SHOPPING_ENV_MANIFEST": str(DEFAULT_MANIFEST),
+            "SHOP_REWARD_VERSION": "shopsimulator-reward-v4",
+            "SHOPPER_MODEL": str(args.shopper_model),
+            "SHOPPER_BASE_URL": str(args.shopper_base_url or ""),
+            "SHOPPER_API_KEY": shopper_api_key or "",
             "GRPO_MODEL_PATH": str(model),
             "GRPO_TRAIN_FILE": str(train_data),
             "GRPO_VAL_FILE": str(val_data),

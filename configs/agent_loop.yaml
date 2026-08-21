@@ -8,7 +8,14 @@
   reward_length_penalty_per_step: ${oc.env:SHOPPING_LENGTH_PENALTY_PER_STEP,0.01}
   reward_length_max_penalty: ${oc.env:SHOPPING_MAX_LENGTH_PENALTY,0.15}
   required_environment_version: shopsimulator-environment-v2.1
-  required_reward_version: ${oc.env:SHOP_REWARD_VERSION,shopsimulator-reward-v3}
+  required_reward_version: ${oc.env:SHOP_REWARD_VERSION,shopsimulator-reward-v4}
+  multiturn_enable: true
+  shopper_model: ${oc.env:SHOPPER_MODEL}
+  shopper_base_url: ${oc.env:SHOPPER_BASE_URL}
+  shopper_api_key: ${oc.env:SHOPPER_API_KEY}
+  shopper_timeout: ${oc.env:SHOPPER_TIMEOUT,120}
+  shopper_max_tokens: ${oc.env:SHOPPER_MAX_TOKENS,512}
+  max_shopper_questions: 2
   reward_mode: constraint_aware
   context_window_tokens: 24576
   context_generation_reserve_tokens: 512

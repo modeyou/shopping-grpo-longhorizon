@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 from typing import Any
 from uuid import uuid4
@@ -13,6 +14,7 @@ from shopping_grpo.environment.observation import render_structured_observation
 from shopping_grpo.training.grpo.adapter.runtime import (
     current_environment,
     current_runtime_state,
+    current_shopper,
     record_action_attempt,
     validate_reward,
 )
@@ -53,10 +55,12 @@ class ShopSimulatorTool(BaseTool):
             raise RuntimeError("ShopSimulator tool executed without a trajectory-local interaction state")
         if state["done"] or state["terminate"]:
             return ToolResponse(text="Error: environment is already terminal; do not call another tool."), 0.0, {}
+        parameters = parameters if isinstance(parameters, dict) else {}
+        if self.name == "ask_shopper":
+            return await _ask_shopper(state, parameters)
         if len(state["steps"]) >= state["max_steps"]:
             _terminate(state, "max_steps")
             return ToolResponse(text="Error: maximum executed tool steps reached."), 0.0, {"reason": "max_steps"}
-        parameters = parameters if isinstance(parameters, dict) else {}
         # think 不触碰环境，只记录一次模型决策；其余工具必须经过动作守卫。
         if self.name == "think":
             step = _append_step(state, self.name, parameters)
@@ -203,3 +207,71 @@ def _terminate(state, reason, *, infrastructure_invalid=False):
     state["error"] = reason
     if infrastructure_invalid:
         state["infrastructure_invalid"] = True
+
+
+async def _ask_shopper(state, parameters):
+    """Route clarification outside ShopSimulator and outside the shopping-step budget."""
+    shopper = current_shopper.get()
+    if shopper is None or not state.get("ask_shopper_enabled"):
+        state["shopper_rejection_count"] += 1
+        return ToolResponse(text="Error: ask_shopper is not enabled for this trajectory."), 0.0, {
+            "reason": "ask_shopper_disabled"
+        }
+    if state["steps"]:
+        state["shopper_rejection_count"] += 1
+        return ToolResponse(
+            text="Error: clarification must happen before using shop tools; continue shopping."
+        ), 0.0, {"reason": "shopper_question_after_shopping"}
+    question = str(parameters.get("question") or "").strip()
+    if not question:
+        state["shopper_rejection_count"] += 1
+        return ToolResponse(text="Error: shopper question must be non-empty."), 0.0, {
+            "reason": "empty_shopper_question"
+        }
+    if state["shopper_question_count"] >= state["max_shopper_questions"]:
+        state["shopper_rejection_count"] += 1
+        return ToolResponse(text="Error: maximum shopper questions reached; continue shopping."), 0.0, {
+            "reason": "maximum_shopper_questions"
+        }
+    if any(
+        item["question"].casefold() == question.casefold()
+        for item in state["shopper_questions"]
+    ):
+        state["shopper_rejection_count"] += 1
+        return ToolResponse(text="Error: repeated shopper question; continue shopping."), 0.0, {
+            "reason": "repeated_shopper_question"
+        }
+    try:
+        result = await asyncio.to_thread(shopper.answer, question)
+    except Exception as exc:
+        _terminate(
+            state,
+            f"shopper_error:{exc.__class__.__name__}:{exc}",
+            infrastructure_invalid=True,
+        )
+        return ToolResponse(text="Error: shopper simulator failed; trajectory is invalid."), 0.0, {
+            "error": state["error"]
+        }
+    answer = result["answer"]
+    used_hashes = [
+        hashlib.sha256(item.encode("utf-8")).hexdigest()
+        for item in result.get("used_facts") or []
+    ]
+    public_record = {
+        "question": question,
+        "answer": answer,
+        "used_fact_count": len(used_hashes),
+        "used_fact_hashes": used_hashes,
+    }
+    state["shopper_question_count"] += 1
+    state["shopper_questions"].append(public_record)
+    state["clarified_constraints"].append(answer)
+    text = (
+        "Shopper answer: " + answer
+        + "\n[CLARIFIED_CONSTRAINTS]\n"
+        + "\n".join(f"- {item}" for item in state["clarified_constraints"])
+    )
+    return ToolResponse(text=text), 0.0, {
+        "question_index": state["shopper_question_count"] - 1,
+        "used_fact_count": len(used_hashes),
+    }

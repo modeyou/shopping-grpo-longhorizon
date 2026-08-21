@@ -20,10 +20,11 @@ from shopping_grpo.training.grpo.adapter.runtime import (
     current_runtime_state,
     record_observation_projection,
     reward_breakdown,
-    task_id_from_kwargs,
+    multiturn_spec_from_kwargs,
     terminal_reward,
 )
 from shopping_grpo.training.grpo.adapter.session import ShopSimulatorSession
+from shopping_grpo.training.grpo.adapter.shopper import clarified_constraints_block
 
 
 class ShoppingToolAgentLoop(ToolAgentLoop):
@@ -52,6 +53,14 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         reward_length_soft_threshold=20,
         reward_length_penalty_per_step=0.01,
         reward_length_max_penalty=0.15,
+        multiturn_enable=False,
+        shopper_model=None,
+        shopper_base_url=None,
+        shopper_api_key=None,
+        shopper_timeout=120,
+        shopper_max_tokens=512,
+        max_shopper_questions=2,
+        shopper_factory=None,
         env_factory=None,
         **kwargs,
     ):
@@ -80,6 +89,18 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         self.reward_length_soft_threshold = int(reward_length_soft_threshold)
         self.reward_length_penalty_per_step = float(reward_length_penalty_per_step)
         self.reward_length_max_penalty = float(reward_length_max_penalty)
+        self.multiturn_enable = (
+            multiturn_enable
+            if isinstance(multiturn_enable, bool)
+            else str(multiturn_enable).lower() == "true"
+        )
+        self.shopper_model = shopper_model
+        self.shopper_base_url = shopper_base_url
+        self.shopper_api_key = shopper_api_key
+        self.shopper_timeout = int(shopper_timeout)
+        self.shopper_max_tokens = int(shopper_max_tokens)
+        self.max_shopper_questions = int(max_shopper_questions)
+        self.shopper_factory = shopper_factory
         maximum_context_input = (
             self.context_window_tokens
             - self.context_generation_reserve_tokens
@@ -202,6 +223,22 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             # 解析失败或投影破坏动作契约时，停止当前样本而不是把坏 observation
             # 继续喂给模型。
             parameters = json.loads(tool_call.arguments or "{}")
+            clarification = clarified_constraints_block(
+                state.get("clarified_constraints") or []
+            )
+            clarification_tokens = (
+                len(self.tokenizer.encode(clarification, add_special_tokens=False))
+                if clarification else 0
+            )
+            budgets = (
+                self.observation_token_budget - clarification_tokens,
+                self.observation_detail_token_budget - clarification_tokens,
+                self.observation_generic_token_budget - clarification_tokens,
+            )
+            if min(budgets) < 64:
+                raise ObservationProjectionError(
+                    "clarified constraints exhaust observation token budget"
+                )
             visible_observation, projection = project_observation(
                 tool_name=tool_call.name,
                 observation=raw_observation,
@@ -209,11 +246,13 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
                 count_tokens=lambda text: len(
                     self.tokenizer.encode(text, add_special_tokens=False)
                 ),
-                token_budget=self.observation_token_budget,
-                detail_token_budget=self.observation_detail_token_budget,
-                generic_token_budget=self.observation_generic_token_budget,
+                token_budget=budgets[0],
+                detail_token_budget=budgets[1],
+                generic_token_budget=budgets[2],
                 search_top_k=self.observation_search_top_k,
             )
+            if clarification:
+                visible_observation += "\n\n" + clarification
             if len(visible_observation) > self.max_tool_response_length:
                 raise ObservationProjectionError(
                     "projected observation exceeds veRL character fallback limit"
@@ -252,7 +291,9 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
 
     async def run(self, sampling_params, **kwargs):
         """启动 session、运行父类 AgentLoop，并在 finally 中释放环境租约。"""
-        task_id = task_id_from_kwargs(kwargs)
+        multiturn_enabled = bool(getattr(self, "multiturn_enable", False))
+        spec = multiturn_spec_from_kwargs(kwargs, enabled=multiturn_enabled)
+        task_id = spec["task_id"]
         session = ShopSimulatorSession(
             base_url=self.base_url,
             timeout=self.timeout,
@@ -261,9 +302,17 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             required_reward_version=getattr(
                 self, "required_reward_version", None
             ),
+            multiturn_enable=multiturn_enabled,
+            shopper_model=getattr(self, "shopper_model", None),
+            shopper_base_url=getattr(self, "shopper_base_url", None),
+            shopper_api_key=getattr(self, "shopper_api_key", None),
+            shopper_timeout=getattr(self, "shopper_timeout", 120),
+            shopper_max_tokens=getattr(self, "shopper_max_tokens", 512),
+            max_shopper_questions=getattr(self, "max_shopper_questions", 2),
+            shopper_factory=getattr(self, "shopper_factory", None),
             env_factory=self.env_factory,
         )
-        state = await session.start(task_id)
+        state = await session.start(task_id, multiturn_spec=spec if multiturn_enabled else None)
         try:
             output = await super().run(sampling_params, **kwargs)
             if not state["done"] and not state["error"]:
@@ -286,7 +335,12 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             )
             output.extra_fields["shopping"] = {
                 "task_id": task_id,
+                "harness_version": state["harness_version"],
                 "steps": len(state["steps"]),
+                "interaction_mode": state.get("interaction_mode", "single"),
+                "shopper_questions": int(state.get("shopper_question_count", 0)),
+                "shopper_rejections": int(state.get("shopper_rejection_count", 0)),
+                "shopper_dialogue": list(state.get("shopper_questions") or []),
                 "actions": [
                     {"tool": step["tool"], "parameters": step["parameters"]}
                     for step in state["steps"]

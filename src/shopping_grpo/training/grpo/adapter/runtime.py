@@ -11,6 +11,8 @@ from collections.abc import Mapping
 
 current_environment: ContextVar = ContextVar("shopsimulator_environment", default=None)
 current_runtime_state: ContextVar = ContextVar("shopsimulator_runtime_state", default=None)
+current_shopper: ContextVar = ContextVar("shopsimulator_shopper", default=None)
+MULTITURN_HARNESS_VERSION = "shopping-multiturn-harness-v1"
 REWARD_V3_TYPES = {
     "gold_purchase",
     "valid_alternative_purchase",
@@ -28,10 +30,12 @@ SUPPORTED_REWARD_VERSIONS = {
 }
 
 
-def make_runtime_state(task_id: int, max_steps: int) -> dict:
+def make_runtime_state(task_id: int, max_steps: int, *, interaction_mode="single") -> dict:
     """创建只含公共运行诊断的状态，reward 仅在环境正常终局后写入。"""
     return {
         "task_id": int(task_id),
+        "harness_version": MULTITURN_HARNESS_VERSION,
+        "interaction_mode": str(interaction_mode),
         "max_steps": int(max_steps),
         "steps": [],
         "done": False,
@@ -68,6 +72,60 @@ def make_runtime_state(task_id: int, max_steps: int) -> dict:
         "guard_rejection_reason_counts": {},
         "guard_rejection_after_truncation_count": 0,
         "action_attempt_after_truncation_count": 0,
+        "shopper_question_count": 0,
+        "shopper_rejection_count": 0,
+        "shopper_questions": [],
+        "clarified_constraints": [],
+    }
+
+
+def extra_info_from_kwargs(kwargs: dict) -> dict:
+    """Return the trajectory metadata carried by a veRL parquet sample."""
+    extra_info = kwargs.get("extra_info")
+    if hasattr(extra_info, "item"):
+        extra_info = extra_info.item()
+    if not isinstance(extra_info, dict):
+        raise ValueError("veRL sample extra_info must be an object")
+    return extra_info
+
+
+def multiturn_spec_from_kwargs(kwargs: dict, *, enabled: bool) -> dict:
+    """Validate public opening metadata without copying private facts to runtime state."""
+    extra_info = extra_info_from_kwargs(kwargs)
+    if "task_id" not in extra_info:
+        raise ValueError("veRL sample extra_info is missing task_id")
+    spec = {"task_id": int(extra_info["task_id"]), "interaction_mode": "single"}
+    if not enabled:
+        return spec
+    mode = str(extra_info.get("interaction_mode") or "")
+    harness_version = str(extra_info.get("harness_version") or "")
+    if harness_version != MULTITURN_HARNESS_VERSION:
+        raise ValueError("multiturn extra_info has an unsupported harness_version")
+    if mode not in {"gap", "complete"}:
+        raise ValueError("multiturn extra_info interaction_mode must be gap or complete")
+    initial_request = str(extra_info.get("initial_request") or "").strip()
+    source_hash = str(extra_info.get("source_goal_hash") or "").strip()
+    if not initial_request or len(source_hash) != 64:
+        raise ValueError("multiturn extra_info is missing initial_request or source_goal_hash")
+    audit = extra_info.get("opening_audit") or {}
+    omitted_facts = audit.get("omitted_facts") or []
+    if not isinstance(omitted_facts, list) or not all(
+        isinstance(item, str) and item.strip() for item in omitted_facts
+    ):
+        raise ValueError("opening_audit.omitted_facts must be a list of non-empty strings")
+    if mode == "gap" and not omitted_facts:
+        raise ValueError("gap opening requires at least one omitted fact")
+    if mode == "complete" and omitted_facts:
+        raise ValueError("complete opening must not expose omitted facts")
+    return {
+        "task_id": int(extra_info["task_id"]),
+        "interaction_mode": mode,
+        "harness_version": harness_version,
+        "initial_request": initial_request,
+        "source_goal_hash": source_hash,
+        # This field is private input for the shopper runtime. Callers must not
+        # place it in current_runtime_state or exported trajectory diagnostics.
+        "omitted_facts": [item.strip() for item in omitted_facts],
     }
 
 
@@ -406,9 +464,7 @@ def terminal_reward(state: dict, mode: str = "native") -> float:
 
 def task_id_from_kwargs(kwargs: dict) -> int:
     """从 veRL parquet 的 extra_info 读取当前任务，缺失时立即失败。"""
-    extra_info = kwargs.get("extra_info")
-    if hasattr(extra_info, "item"):
-        extra_info = extra_info.item()
-    if not isinstance(extra_info, dict) or "task_id" not in extra_info:
+    extra_info = extra_info_from_kwargs(kwargs)
+    if "task_id" not in extra_info:
         raise ValueError("veRL sample extra_info is missing task_id")
     return int(extra_info["task_id"])

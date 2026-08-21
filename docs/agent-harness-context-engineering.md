@@ -411,7 +411,7 @@ context_compaction_enable: false
 旧策略 logprob 与训练重算仍对齐，Tool Call 边界没有损坏。正式启用前必须做 token-level 测试和
 一次真实 veRL update 冒烟。
 
-### 6.6 多轮澄清新增的上下文要求（待实现）
+### 6.6 多轮澄清新增的上下文要求（Harness v1 已实现）
 
 Shopper 已经公开的回答不能因为历史压缩而丢失。例如：
 
@@ -419,7 +419,7 @@ Shopper 已经公开的回答不能因为历史压缩而丢失。例如：
 需要铜芯电磁阀，预算约230元。
 ```
 
-建议多轮 GRPO Harness 增加仅含“已经公开事实”的小型状态：
+多轮 GRPO Harness 维护仅含“已经公开事实”的小型状态：
 
 ```json
 {
@@ -430,8 +430,9 @@ Shopper 已经公开的回答不能因为历史压缩而丢失。例如：
 }
 ```
 
-它不能包含未被询问的私有目标。压缩时应把该状态视为固定 anchor，或者确定性地投影进后续
-Observation。具体注入格式需要在开发集上比较 Token 成本、重复程度和约束记忆率后冻结。
+它不能包含未被询问的私有目标。Harness v1 将其确定性地投影进后续 Observation；投影前先从
+当前页型预算中扣除 anchor 的 Token，避免追加后突破原预算。是否进一步启用历史压缩，仍需真实
+veRL update 验证 mask/logprob 对齐后决定。
 
 ## 7. Action Guard：拉 Agent 一把，而不是替 Agent 做决定
 
@@ -493,7 +494,7 @@ Harness 只接受环境返回并经过版本验证的 Reward V4，不应自行�
 - Reward V4 底层解析；
 - bounded dynamic sampling 和训练诊断。
 
-### 9.2 教师采集和评测已实现，但 veRL GRPO 尚未接入
+### 9.2 多轮 veRL Harness v1 已接入
 
 同步评测/教师 rollout 已支持：
 
@@ -504,32 +505,26 @@ Harness 只接受环境返回并经过版本验证的 Reward V4，不应自行�
 - 问题次数限制；
 - G+/G−/C+ 条件。
 
-但当前 veRL GRPO 仍是原项目的单轮完整需求 Harness：
+当前 veRL 路径已经补齐：
 
-- `configs/tools.json` 没有 `ask_shopper`；
-- GRPO Tool Adapter 不会把 `ask_shopper` 路由给 Shopper；
-- Session 尚未按 gap opening 初始化；
-- 没有在线 Shopper client/Answer Bank/私有审计；
-- 当前 GRPO parquet 仍是原单轮数据；
-- 启动入口默认 manifest/Reward 仍需正式切换到 V4；
-- Python Tool Schema 与手写 `configs/tools.json` 内容存在漂移风险。
+- `configs/tools.json` 由 canonical Python schema 生成并包含 `ask_shopper`；
+- `ask_shopper` 路由到 trajectory-local Shopper，不进入 ShopSimulator，也不占购物步骤；
+- Session 按 parquet 中的 gap/complete opening 元数据初始化并核对 `source_goal_hash`；
+- 省略事实只保存在私有 Shopper ContextVar 中，公开 runtime/诊断不保存事实原文；
+- 问题、购物步骤和拒绝次数分别计数；
+- Shopper 回答公开后写入 `clarified_constraints` 并锚定到后续 Observation；
+- `prepare_multiturn_grpo_dataset.py` 可从冻结 opening 生成多轮 veRL parquet；
+- 启动入口固定 `environment-v4.json` / Reward V4，并要求独立 Shopper 配置。
 
-因此现在直接运行原 `scripts/grpo.sh`，不能声称训练的是多轮澄清 Agent。
+尚未完成的是服务器上的真实 veRL 单轨迹、四轨迹和一次 optimizer update 冒烟；因此 v1 目前是
+“代码契约完成、CPU 测试通过”，还不是“训练运行已经验收”。
 
-## 10. 多轮 GRPO Harness 的目标设计
+## 10. 多轮 GRPO Harness 的实现与后续验收
 
 ### P0：正式 GRPO 前必须完成
 
-1. 从同一 Python 定义生成训练/评测 Tool Schema，消除配置漂移；
-2. 为 veRL 增加 `ask_shopper` 工具和独立异步路由；
-3. Session 只用当前条件指定的公开 gap/complete opening 初始化；gap 条件不得泄露省略事实；
-4. Shopper 通过受控私有通道取得上下文，并返回 `answer + used_facts`；
-5. 将购物步数与 Shopper 问题次数分开计数；
-6. 维护只含已公开信息的 `clarified_constraints`；
-7. 统一教师、GRPO 和评测的 Prompt、Guard、Projection 与 Shopper Contract；
-8. 构建 task-disjoint 的多轮 GRPO parquet；
-9. 全链路固定 Reward V4 和 `environment-v4.json`；
-10. 完成单轨迹、单组四轨迹和 4×4090 单 optimizer update 冒烟。
+上述代码契约已经完成；下一步是在服务器构建 task-disjoint parquet，然后完成单轨迹、单组四轨迹
+和 4×4090 单 optimizer update 冒烟。真实运行通过前不启动正式长训练。
 
 ### P1：根据开发集和冒烟结果定参数
 
@@ -597,17 +592,17 @@ Shopper Contract，但不能冻结未来 Actor 的实际动作。
 
 正式 GRPO 前至少验证：
 
-- [ ] Actor 只看到当前条件指定的公开 opening；
-- [ ] gap 条件的省略事实和环境私有元数据不会出现在 Actor Prompt 或公开诊断；
-- [ ] `ask_shopper` 能在 veRL ToolAgentLoop 中执行；
-- [ ] Shopper 回答只来自允许事实，并保留 `used_facts`；
-- [ ] 问答历史按 trajectory 隔离；
-- [ ] `clarified_constraints` 只含已公开事实；
+- [x] Actor parquet Prompt 只包含当前条件指定的公开 opening；
+- [x] gap 条件的省略事实和环境私有元数据不会出现在 Actor Prompt 或公开诊断；
+- [x] `ask_shopper` 已接入 veRL Tool Adapter 的 trajectory-local 路由；
+- [x] Shopper 回答只允许引用 opening 审计事实，并保留私有 provenance hash；
+- [x] 问答历史由 `ContextVar` 按 trajectory 隔离；
+- [x] `clarified_constraints` 只含已经公开的回答；
 - [ ] 搜索投影完整保留当前页全部 ASIN 和按钮；
 - [ ] Action Guard 使用的是最新可见 Observation；
 - [ ] Tool Call 严格串行；
 - [ ] context、mask、logprob 长度和分组边界一致；
-- [ ] Reward V4 与环境 manifest 一致；
+- [x] 启动入口固定 Reward V4 与 `environment-v4.json`；
 - [ ] 基础设施失败不进入有效 GRPO 组；
 - [ ] 同题四轨迹上下文和 Session 不串线；
 - [ ] 动态采样有重采/跳步上限；
@@ -622,6 +617,7 @@ Shopper Contract，但不能冻结未来 Actor 的实际动作。
 | Session 生命周期 | `src/shopping_grpo/training/grpo/adapter/session.py` |
 | veRL Tool Adapter | `src/shopping_grpo/training/grpo/adapter/tools.py` |
 | 运行状态与 Reward 诊断 | `src/shopping_grpo/training/grpo/adapter/runtime.py` |
+| trajectory-local 受控 Shopper | `src/shopping_grpo/training/grpo/adapter/shopper.py` |
 | Observation Projection | `src/shopping_grpo/environment/projection.py` |
 | 上下文窗口与同步裁剪 | `src/shopping_grpo/environment/context.py` |
 | Action Guard | `src/shopping_grpo/environment/actions.py` |
@@ -631,6 +627,8 @@ Shopper Contract，但不能冻结未来 Actor 的实际动作。
 | GRPO 主配置 | `configs/grpo.yaml` |
 | AgentLoop 参数 | `configs/agent_loop.yaml` |
 | veRL 工具配置 | `configs/tools.json` |
+| 工具配置生成/漂移检查 | `scripts/generate_grpo_tool_config.py` |
+| 多轮 opening→veRL parquet | `scripts/prepare_multiturn_grpo_dataset.py` |
 | GRPO 启动入口 | `scripts/train_grpo.py` |
 | 动态采样和指标 | `src/shopping_grpo/training/grpo/dynamic_sampling.py` |
 
