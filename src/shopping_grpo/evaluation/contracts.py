@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 
-CONTRACT_VERSION = "shopping-trajectory-evaluation-v1"
+CONTRACT_VERSION = "shopping-trajectory-evaluation-v2"
 RUBRIC_SCHEMA_VERSION = "shopping-requirement-rubric-v1"
-JUDGE_SCHEMA_VERSION = "shopping-trajectory-judge-v1"
+JUDGE_SCHEMA_VERSION = "shopping-trajectory-judge-v2"
 
 JUDGE_DIMENSIONS = (
     "search_strategy",
@@ -21,6 +21,9 @@ RUBRIC_STATUSES = frozenset(
 )
 RUBRIC_HARDNESS = frozenset({"hard", "soft", "needs_review"})
 JUDGE_STATUSES = frozenset({"valid", "invalid", "not_judged"})
+CLARIFICATION_STATUSES = frozenset(
+    {"effective", "ineffective", "unnecessary", "not_applicable", "unknown"}
+)
 ERROR_TAXONOMY = frozenset(
     {
         "search_core_requirement_missed",
@@ -44,6 +47,10 @@ ERROR_TAXONOMY = frozenset(
         "max_steps_exhaustion",
         "illegal_action",
         "context_loss",
+        "clarification_needed_but_not_asked",
+        "clarification_unnecessary",
+        "clarification_question_ungrounded",
+        "clarification_answer_not_used",
         "reward_rubric_disagreement",
         "infrastructure_invalid",
         "other",
@@ -343,11 +350,38 @@ def validate_judge_result(
                 score_payload.get("evidence_event_ids"),
                 f"{path}.evidence_event_ids",
             )
+        clarification = _mapping(
+            payload.get("clarification_assessment"),
+            "judge_result.clarification_assessment",
+        )
+        clarification_status = _nonempty_text(
+            clarification.get("status"),
+            "judge_result.clarification_assessment.status",
+        )
+        if clarification_status not in CLARIFICATION_STATUSES:
+            raise ContractValidationError(
+                "judge_result.clarification_assessment.status must be one of "
+                f"{sorted(CLARIFICATION_STATUSES)}"
+            )
+        _nonempty_text(
+            clarification.get("reason"),
+            "judge_result.clarification_assessment.reason",
+        )
+        validate_evidence(
+            clarification.get("evidence_event_ids"),
+            "judge_result.clarification_assessment.evidence_event_ids",
+        )
     else:
         if assessments or dimensions:
             raise ContractValidationError(
                 "invalid/not_judged results must not contain inferred assessments "
                 "or dimension scores"
+            )
+        clarification = payload.get("clarification_assessment")
+        if clarification not in ({}, None):
+            raise ContractValidationError(
+                "invalid/not_judged results must not contain a clarification "
+                "assessment"
             )
 
     errors = _mapping(payload.get("errors"), "judge_result.errors")

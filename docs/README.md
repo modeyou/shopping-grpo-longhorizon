@@ -28,3 +28,8 @@ policy-specific SFT acceptance, Reward boundaries, and Qwen3.8 scaling.
 Qwen3.5-2B pre-training baseline milestone, gap ask-enabled/disabled and
 complete-request controls, Reward-reachability benchmark audit, and the
 clarification-specific metrics used for Base/SFT/GRPO comparison.
+
+[Training, Reward and evaluation decisions](training-reward-evaluation-decisions.md)
+is the consolidated Chinese study note for the development/test split, five
+evaluation panels, Reward v3/v4 boundary, Qwen3.5-2B memory budget,
+Rubric/Judge selection, and the planned GRPO online Shopper contract.

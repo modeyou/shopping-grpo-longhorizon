@@ -1,7 +1,8 @@
 # 多轮澄清正式评测协议
 
 本文定义以 `Qwen3.5-2B` 为基座的多轮澄清项目如何做开发评测、训练前基座评测和最终
-Base/SFT/GRPO 配对比较。协议继承参考项目的 Reward v3 与四面板轨迹评测，但不会把原来
+Base/SFT/GRPO 配对比较。协议继承参考项目的 Reward v3 与四面板轨迹评测，并增加独立的
+澄清面板，但不会把原来
 的单轮 `Final-200 Clean` 结果误当作多轮澄清能力。
 
 ## 1. 结论与边界
@@ -14,6 +15,8 @@ Base/SFT/GRPO 配对比较。协议继承参考项目的 Reward v3 与四面板�
   隔离，还不能直接称为正式测试集。
 - Reward v3 保持不变，只评价最终环境结果；澄清行为作为独立面板报告，不写回或覆盖
   Reward v3。
+- Rubric 整理器固定为本地 `Qwen3.8-27B`；主 Judge 固定为
+  `deepseek-v4-flash-0731`。二者都必须使用冻结 schema、prompt 和模型 revision。
 
 ## 2. 继承参考项目的哪些设计
 
@@ -254,5 +257,99 @@ G+ 与 G− 的 task 级成功迁移，是“澄清带来实际收益”的主�
 
 完成这些项目后，才进入多轮 SFT。最终 benchmark 只在 checkpoint 和全部协议冻结后运行。
 
-当前第 1 项已经完成；后续正式入口只允许读取清洗后的
+当前第 1、3、4 项及其 CPU 契约测试已经完成；第 2 项的工具链已具备，但正式 opening
+尚未生成。后续正式入口只允许读取清洗后的
 `data/multiturn/evaluation-v1/tasks.jsonl`，不得退回原始 500 候选。
+
+## 10. 五面板评测 v2 实现
+
+多轮评测不再只停留在 rollout `summary.json`。当前代码已经把原单轮四面板内核升级为
+`shopping-trajectory-evaluation-v2`，每条轨迹明确拼装五个面板：
+
+1. `reward_and_terminal`：Reward v3 与终局；
+2. `requirement_rubric`：逐要求判断和 Reward–Rubric disagreement；
+3. `trajectory_quality`：五维 Judge 和错误类型；
+4. `clarification`：代码指标与 Judge 澄清判断；
+5. `deterministic`：动作、合法性、重复、上下文和基础设施。
+
+澄清面板会确定性记录：
+
+- Shopper 问题数和 grounded 数；
+- gap no-ask 与 complete unnecessary-ask；
+- 首次问题位置和购买前提问；
+- 回答后搜索/候选/规格/购买动作；
+- Actor/Shopper 调用数；
+- G− 到 G+ 的 strict/purchase success task 迁移；
+- 每个 Actor 在 C+ 上的不必要提问 task IDs。
+
+`auditable_post_answer_action` 只表示回答后存在可见动作，不宣称因果上一定使用了答案。真正的
+因果收益仍由同 task 的 G+/G− 成功迁移负责。
+
+### 10.1 冻结共享 Rubric
+
+Rubric 只为每个 task 生成一次，Base/SFT/GRPO 和三个条件共享：
+
+```bash
+export PYTHONPATH=./src
+
+python scripts/freeze_multiturn_rubrics.py \
+  --tasks data/multiturn/evaluation-dev-v1/tasks.jsonl \
+  --output-dir outputs/evaluation/multiturn/shared-dev-v1 \
+  --model qwen3.8-27b \
+  --base-url http://127.0.0.1:8001/v1 \
+  --api-key local-qwen
+```
+
+入口支持 `--resume`，并保存 TaskFacts、代码候选、Qwen 原始选择、最终 Rubric、请求元数据和
+输入/产物 SHA-256。API key 不写入 manifest。
+
+### 10.2 对一个 Actor/条件运行五面板
+
+先由 `scripts/evaluate_multiturn.sh` 或同一 collector 生成原始轨迹，再执行：
+
+```bash
+export PYTHONPATH=./src
+export OPENAI_BASE_URL="你的 DeepSeek API base URL"
+export OPENAI_API_KEY="你的 API key"
+
+python scripts/evaluate_multiturn_panels.py \
+  --expected-tasks data/multiturn/evaluation-dev-v1/tasks.jsonl \
+  --trajectories outputs/evaluation/multiturn/base-dev/gap-ask-enabled/trajectories.jsonl \
+  --rubrics outputs/evaluation/multiturn/shared-dev-v1/rubrics.jsonl \
+  --output-dir outputs/evaluation/multiturn/base-dev/gap-ask-enabled \
+  --actor-label base \
+  --condition gap-ask-enabled \
+  --judge-model deepseek-v4-flash-0731
+```
+
+该入口会：
+
+- 规范化事件并分离商店步数与 Shopper 问题；
+- 先计算确定性指标；
+- infrastructure-invalid 轨迹保留在固定分母，但不伪造 Judge 分数；
+- 为有效轨迹调用 Judge，严格验证 rubric/event IDs 和五面板 schema；
+- 保存可恢复的 `judges.jsonl`、`preprocessed.jsonl`、`evaluations.jsonl`、汇总和无密钥 manifest。
+
+### 10.3 生成 Base/SFT/GRPO × G+/G−/C+ 配对结果
+
+每个 Actor 根目录都必须包含三个条件的 `evaluations.jsonl`：
+
+```bash
+python scripts/compare_multiturn_evaluations.py \
+  --expected-tasks data/multiturn/evaluation-dev-v1/tasks.jsonl \
+  --run base=outputs/evaluation/multiturn/base-dev \
+  --run sft=outputs/evaluation/multiturn/sft-dev \
+  --run grpo=outputs/evaluation/multiturn/grpo-dev \
+  --output outputs/evaluation/multiturn/dev-comparison.json
+```
+
+比较器会拒绝 task、condition 或 interaction mode 错配，分别输出：
+
+- 同条件内 Base → SFT → GRPO 的配对迁移；
+- 每个 Actor 内 G− → G+ 的成功获得/损失 task IDs；
+- C+ 不必要提问；
+- Rubric、轨迹五维、步数、Guard、重复与澄清变化；
+- `composite_score=null`，明确禁止合成总分。
+
+正式测试只能在 opening、Shopper 合约、Rubric、Judge、模型 checkpoint 和全部 manifest
+冻结后运行。当前新增的是代码入口和 CPU 契约，尚未调用 Qwen/DeepSeek，也未产生正式成绩。

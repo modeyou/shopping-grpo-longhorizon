@@ -24,6 +24,11 @@ def _judge_result(*, primary, secondary):
             name: {"score": 1, "reason": "ok", "evidence_event_ids": []}
             for name in JUDGE_DIMENSIONS
         },
+        "clarification_assessment": {
+            "status": "not_applicable",
+            "reason": "no clarification",
+            "evidence_event_ids": [],
+        },
         "errors": {
             "primary": primary,
             "secondary": secondary,
@@ -56,8 +61,20 @@ def _evaluation(task_id, *, primary, secondary):
             },
             "errors": {"primary": primary, "secondary": secondary},
         },
+        "clarification": {
+            "deterministic": {
+                "interaction_mode": "gap-ask-enabled",
+                "question_count": 0,
+            },
+            "judge_assessment": {
+                "status": "not_applicable",
+            },
+        },
         "deterministic": {
-            "actions_and_efficiency": {},
+            "actions_and_efficiency": {
+                "executed_tool_steps": 3,
+                "executed_shop_steps": 2,
+            },
             "repetition": {},
             "legality": {},
             "context": {},
@@ -95,6 +112,16 @@ class BadcaseContractTests(unittest.TestCase):
         ):
             validate_judge_result(result, rubric_ids=[])
 
+    def test_rejects_unknown_clarification_status(self):
+        result = _judge_result(primary=None, secondary=[])
+        result["clarification_assessment"]["status"] = "helpful"
+
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "clarification_assessment.status",
+        ):
+            validate_judge_result(result, rubric_ids=[])
+
     def test_summary_indexes_task_ids_by_error_type(self):
         summary = summarize_evaluations(
             expected_task_ids=[2, 1],
@@ -120,6 +147,19 @@ class BadcaseContractTests(unittest.TestCase):
         self.assertEqual(
             quality["secondary_error_task_ids"],
             {"repeat_loop": [1], "wrong_option": [2]},
+        )
+        deterministic = summary["deterministic"]
+        self.assertEqual(
+            deterministic[
+                "average_executed_tool_steps_fixed_denominator"
+            ],
+            3.0,
+        )
+        self.assertEqual(
+            deterministic[
+                "average_executed_shop_steps_fixed_denominator"
+            ],
+            2.0,
         )
 
 

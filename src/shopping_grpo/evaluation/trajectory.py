@@ -15,7 +15,7 @@ import re
 from shopping_grpo.evaluation.contracts import CONTRACT_VERSION
 
 
-NORMALIZED_TRAJECTORY_VERSION = "shopping-normalized-trajectory-v1"
+NORMALIZED_TRAJECTORY_VERSION = "shopping-normalized-trajectory-v2"
 
 
 def _text(value: object) -> str:
@@ -114,6 +114,74 @@ def _terminal_view(trajectory: Mapping) -> dict:
         "reward_detail": reward_detail,
         "purchase": purchase,
         "progress": progress,
+    }
+
+
+def _clarification_view(trajectory: Mapping, events: list[dict]) -> dict:
+    """Retain auditable clarification facts without copying private goal text."""
+
+    interaction_mode = _text(trajectory.get("interaction_mode")) or "standard"
+    opening_audit = trajectory.get("opening_audit")
+    opening_audit = opening_audit if isinstance(opening_audit, Mapping) else {}
+    omitted_facts = {
+        str(value)
+        for value in (opening_audit.get("omitted_facts") or [])
+        if str(value).strip()
+    }
+    omitted_dimensions = [
+        str(value)
+        for value in (opening_audit.get("omitted_dimensions") or [])
+        if str(value).strip()
+    ]
+    question_rows = trajectory.get("shopper_questions")
+    question_rows = question_rows if isinstance(question_rows, list) else []
+    ask_events = [
+        event
+        for event in events
+        if event.get("event_type") == "tool_step"
+        and event.get("tool_name") == "ask_shopper"
+    ]
+    questions = []
+    for index, event in enumerate(ask_events):
+        source = {}
+        if index < len(question_rows) and isinstance(
+            question_rows[index], Mapping
+        ):
+            source = question_rows[index]
+        used = {
+            str(value)
+            for value in (source.get("used_facts") or [])
+            if str(value).strip()
+        }
+        parameters = event.get("parameters")
+        parameters = parameters if isinstance(parameters, Mapping) else {}
+        question = source.get("question") or parameters.get("question") or ""
+        answer = (
+            source.get("answer")
+            or event.get("actor_visible_observation")
+            or ""
+        )
+        questions.append(
+            {
+                "event_id": event.get("event_id"),
+                "question": str(question),
+                "answer": str(answer),
+                "used_fact_count": len(used),
+                "grounded": bool(used) and used.issubset(omitted_facts),
+            }
+        )
+    actor_calls = trajectory.get("actor_llm_calls")
+    shopper_calls = trajectory.get("shopper_llm_calls")
+    return {
+        "interaction_mode": interaction_mode,
+        "ask_enabled": interaction_mode.endswith("ask-enabled")
+        or interaction_mode in {"multiturn", "autonomous-gap-v1"},
+        "opening_has_gap": bool(omitted_facts or omitted_dimensions),
+        "omitted_dimension_count": len(omitted_dimensions),
+        "source_goal_verified": trajectory.get("source_goal_verified"),
+        "questions": questions,
+        "actor_llm_calls": int(actor_calls or 0),
+        "shopper_llm_calls": int(shopper_calls or 0),
     }
 
 
@@ -271,6 +339,7 @@ def normalize_trajectory(
             "reward_version": initial.get("reward_version"),
         },
         "events": events,
+        "clarification": _clarification_view(source, events),
         "terminal": _terminal_view(source),
         "context": {
             "turn_tokens": deepcopy(source.get("context_turn_tokens") or []),

@@ -15,6 +15,8 @@ from shopping_grpo.evaluation.rollout import (
     MULTITURN_EVALUATION_SYSTEM_PROMPT,
     collect_for_task,
 )
+from shopping_grpo.evaluation.metrics import compute_deterministic_metrics
+from shopping_grpo.evaluation.trajectory import normalize_trajectory
 from shopping_grpo.multiturn.tasks import MULTITURN_TASK_SCHEMA, source_goal_hash
 
 
@@ -205,3 +207,35 @@ def test_complete_ask_enabled_uses_private_full_goal_as_public_request():
     assert trajectory["messages"][1]["content"] == "需要测试商品，预算20元"
     tools = [item["function"]["name"] for item in actor.requests[0]["tools"]]
     assert "ask_shopper" in tools
+
+
+def test_five_panel_preprocessing_separates_shop_steps_and_clarification():
+    actor = _Actor([
+        _tool("ask_shopper", {"question": "预算是多少？"}, "ask-1"),
+        _tool("search_products", {"query": "测试商品 20元"}, "search"),
+    ])
+    trajectory = collect_for_task(
+        _gap_task(),
+        client=actor,
+        shopper=_Shopper(),
+        env_factory=_EvaluationEnv,
+        max_steps=1,
+        max_shopper_questions=2,
+        evaluation_condition="gap-ask-enabled",
+    )
+    trajectory["trajectory_id"] = "task-0-gap-enabled"
+    normalized = normalize_trajectory(trajectory)
+    metrics = compute_deterministic_metrics(normalized)
+
+    assert normalized["clarification"]["questions"] == [{
+        "event_id": "e0001",
+        "question": "预算是多少？",
+        "answer": "预算20元。",
+        "used_fact_count": 1,
+        "grounded": True,
+    }]
+    assert metrics["actions_and_efficiency"]["executed_tool_steps"] == 2
+    assert metrics["actions_and_efficiency"]["executed_shop_steps"] == 1
+    assert metrics["clarification"]["question_count"] == 1
+    assert metrics["clarification"]["all_questions_grounded"] is True
+    assert metrics["clarification"]["auditable_post_answer_action"] is True

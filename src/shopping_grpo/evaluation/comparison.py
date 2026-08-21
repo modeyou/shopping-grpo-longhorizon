@@ -10,7 +10,13 @@ from shopping_grpo.evaluation.contracts import CONTRACT_VERSION, JUDGE_DIMENSION
 from shopping_grpo.evaluation.results import EVALUATION_RESULT_VERSION
 
 
-COMPARISON_SCHEMA_VERSION = "shopping-paired-model-comparison-v1"
+COMPARISON_SCHEMA_VERSION = "shopping-paired-model-comparison-v2"
+MULTITURN_GRID_SCHEMA_VERSION = "shopping-multiturn-evaluation-grid-v1"
+MULTITURN_CONDITIONS = (
+    "gap-ask-enabled",
+    "gap-ask-disabled",
+    "complete-ask-enabled",
+)
 
 
 def _index_run(
@@ -85,9 +91,13 @@ def _pairwise(
     disagreement_transitions = Counter()
     hard_deltas = []
     dimension_deltas = {name: [] for name in JUDGE_DIMENSIONS}
-    step_deltas = []
+    tool_step_deltas = []
+    shop_step_deltas = []
     guard_deltas = []
     duplicate_action_deltas = []
+    question_count_deltas = []
+    grounded_question_deltas = []
+    post_answer_action_deltas = []
 
     for task_id in paired_ids:
         left = source[task_id]
@@ -128,12 +138,20 @@ def _pairwise(
 
         left_deterministic = left["deterministic"]
         right_deterministic = right["deterministic"]
-        step_deltas.append(
+        tool_step_deltas.append(
             right_deterministic["actions_and_efficiency"][
                 "executed_tool_steps"
             ]
             - left_deterministic["actions_and_efficiency"][
                 "executed_tool_steps"
+            ]
+        )
+        shop_step_deltas.append(
+            right_deterministic["actions_and_efficiency"][
+                "executed_shop_steps"
+            ]
+            - left_deterministic["actions_and_efficiency"][
+                "executed_shop_steps"
             ]
         )
         guard_deltas.append(
@@ -147,6 +165,24 @@ def _pairwise(
             - left_deterministic["repetition"][
                 "duplicate_canonical_action_count"
             ]
+        )
+        left_clarification = (left.get("clarification") or {}).get(
+            "deterministic"
+        ) or {}
+        right_clarification = (right.get("clarification") or {}).get(
+            "deterministic"
+        ) or {}
+        question_count_deltas.append(
+            int(right_clarification.get("question_count") or 0)
+            - int(left_clarification.get("question_count") or 0)
+        )
+        grounded_question_deltas.append(
+            int(right_clarification.get("grounded_question_count") or 0)
+            - int(left_clarification.get("grounded_question_count") or 0)
+        )
+        post_answer_action_deltas.append(
+            int(bool(right_clarification.get("auditable_post_answer_action")))
+            - int(bool(left_clarification.get("auditable_post_answer_action")))
         )
 
     return {
@@ -175,9 +211,24 @@ def _pairwise(
             name: _delta_summary(deltas, lower_is_better=False)
             for name, deltas in dimension_deltas.items()
         },
+        "clarification": {
+            "question_count": _delta_summary(
+                question_count_deltas, lower_is_better=False
+            ),
+            "grounded_question_count": _delta_summary(
+                grounded_question_deltas, lower_is_better=False
+            ),
+            "auditable_post_answer_action": _delta_summary(
+                post_answer_action_deltas, lower_is_better=False
+            ),
+        },
         "deterministic": {
             "executed_tool_steps": _delta_summary(
-                step_deltas,
+                tool_step_deltas,
+                lower_is_better=True,
+            ),
+            "executed_shop_steps": _delta_summary(
+                shop_step_deltas,
                 lower_is_better=True,
             ),
             "guard_rejections": _delta_summary(
@@ -235,4 +286,193 @@ def compare_evaluation_runs(
             )
             for source, target in combinations(labels, 2)
         },
+    }
+
+
+def _success(record: Mapping, field: str) -> bool:
+    return bool(record["reward_and_terminal"]["metrics"].get(field))
+
+
+def _condition_effect(
+    *,
+    expected: set[int],
+    gap_enabled: Mapping[int, Mapping],
+    gap_disabled: Mapping[int, Mapping],
+    complete_enabled: Mapping[int, Mapping],
+) -> dict:
+    paired_gap_ids = sorted(set(gap_enabled) & set(gap_disabled))
+    strict_transitions = Counter()
+    purchase_transitions = Counter()
+    gained = []
+    lost = []
+    for task_id in paired_gap_ids:
+        disabled_strict = _success(
+            gap_disabled[task_id], "strict_gold_success"
+        )
+        enabled_strict = _success(
+            gap_enabled[task_id], "strict_gold_success"
+        )
+        strict_transitions[
+            f"{'success' if disabled_strict else 'failure'}_to_"
+            f"{'success' if enabled_strict else 'failure'}"
+        ] += 1
+        if not disabled_strict and enabled_strict:
+            gained.append(task_id)
+        if disabled_strict and not enabled_strict:
+            lost.append(task_id)
+
+        disabled_purchase = _success(
+            gap_disabled[task_id], "purchase_success"
+        )
+        enabled_purchase = _success(
+            gap_enabled[task_id], "purchase_success"
+        )
+        purchase_transitions[
+            f"{'success' if disabled_purchase else 'failure'}_to_"
+            f"{'success' if enabled_purchase else 'failure'}"
+        ] += 1
+
+    gap_enabled_successes = sum(
+        _success(record, "strict_gold_success")
+        for record in gap_enabled.values()
+    )
+    gap_disabled_successes = sum(
+        _success(record, "strict_gold_success")
+        for record in gap_disabled.values()
+    )
+    grounded_asked_tasks = []
+    gap_no_ask_tasks = []
+    for task_id, record in gap_enabled.items():
+        clarification = (record.get("clarification") or {}).get(
+            "deterministic"
+        ) or {}
+        if clarification.get("question_count") and clarification.get(
+            "all_questions_grounded"
+        ):
+            grounded_asked_tasks.append(task_id)
+        if clarification.get("gap_no_ask"):
+            gap_no_ask_tasks.append(task_id)
+
+    unnecessary_ask_tasks = []
+    for task_id, record in complete_enabled.items():
+        clarification = (record.get("clarification") or {}).get(
+            "deterministic"
+        ) or {}
+        if clarification.get("complete_unnecessary_ask"):
+            unnecessary_ask_tasks.append(task_id)
+
+    denominator = len(expected)
+    return {
+        "expected_tasks": denominator,
+        "paired_gap_tasks": len(paired_gap_ids),
+        "paired_gap_task_ids": paired_gap_ids,
+        "strict_success": {
+            "gap_ask_enabled": gap_enabled_successes,
+            "gap_ask_disabled": gap_disabled_successes,
+            "rate_delta_enabled_minus_disabled": (
+                (gap_enabled_successes - gap_disabled_successes) / denominator
+                if denominator
+                else 0.0
+            ),
+            "transitions_disabled_to_enabled": dict(
+                sorted(strict_transitions.items())
+            ),
+            "gained_task_ids": gained,
+            "lost_task_ids": lost,
+            "net_gained_tasks": len(gained) - len(lost),
+        },
+        "purchase_success": {
+            "transitions_disabled_to_enabled": dict(
+                sorted(purchase_transitions.items())
+            )
+        },
+        "clarification": {
+            "grounded_asked_tasks": len(grounded_asked_tasks),
+            "grounded_asked_task_ids": sorted(grounded_asked_tasks),
+            "gap_no_ask_tasks": len(gap_no_ask_tasks),
+            "gap_no_ask_task_ids": sorted(gap_no_ask_tasks),
+            "complete_unnecessary_ask_tasks": len(unnecessary_ask_tasks),
+            "complete_unnecessary_ask_task_ids": sorted(
+                unnecessary_ask_tasks
+            ),
+            "complete_unnecessary_ask_rate": (
+                len(unnecessary_ask_tasks) / denominator
+                if denominator
+                else 0.0
+            ),
+        },
+    }
+
+
+def compare_multiturn_evaluation_grid(
+    *,
+    expected_task_ids: Iterable[int],
+    actors: Mapping[str, Mapping[str, Iterable[Mapping]]],
+) -> dict:
+    """Compare Base/SFT/GRPO across G+, G- and C+ without a total score."""
+
+    expected = [int(task_id) for task_id in expected_task_ids]
+    if len(expected) != len(set(expected)):
+        raise ValueError("expected_task_ids contains duplicates")
+    if not actors:
+        raise ValueError("at least one actor is required")
+    expected_set = set(expected)
+    indexed = {}
+    for actor_label, condition_runs in actors.items():
+        missing_conditions = set(MULTITURN_CONDITIONS) - set(condition_runs)
+        unexpected_conditions = set(condition_runs) - set(MULTITURN_CONDITIONS)
+        if missing_conditions or unexpected_conditions:
+            raise ValueError(
+                f"{actor_label} condition mismatch: "
+                f"missing={sorted(missing_conditions)} "
+                f"unexpected={sorted(unexpected_conditions)}"
+            )
+        indexed[str(actor_label)] = {}
+        for condition in MULTITURN_CONDITIONS:
+            run = _index_run(
+                label=f"{actor_label}/{condition}",
+                evaluations=condition_runs[condition],
+                expected=expected_set,
+            )
+            for task_id, record in run.items():
+                clarification = record.get("clarification") or {}
+                deterministic = clarification.get("deterministic") or {}
+                actual = str(
+                    deterministic.get("interaction_mode") or ""
+                )
+                if actual != condition:
+                    raise ValueError(
+                        f"{actor_label}/{condition} task {task_id} has "
+                        f"interaction_mode={actual!r}"
+                    )
+            indexed[str(actor_label)][condition] = run
+
+    by_actor = {
+        actor: _condition_effect(
+            expected=expected_set,
+            gap_enabled=runs["gap-ask-enabled"],
+            gap_disabled=runs["gap-ask-disabled"],
+            complete_enabled=runs["complete-ask-enabled"],
+        )
+        for actor, runs in indexed.items()
+    }
+    by_condition = {}
+    if len(indexed) >= 2:
+        for condition in MULTITURN_CONDITIONS:
+            by_condition[condition] = compare_evaluation_runs(
+                expected_task_ids=expected,
+                runs={
+                    actor: runs[condition].values()
+                    for actor, runs in indexed.items()
+                },
+            )
+    return {
+        "schema_version": MULTITURN_GRID_SCHEMA_VERSION,
+        "evaluation_contract": CONTRACT_VERSION,
+        "expected_tasks": len(expected),
+        "actors": list(indexed),
+        "conditions": list(MULTITURN_CONDITIONS),
+        "condition_effects_by_actor": by_actor,
+        "model_progression_by_condition": by_condition,
+        "composite_score": None,
     }

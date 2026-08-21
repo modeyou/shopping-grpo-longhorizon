@@ -1,6 +1,7 @@
 """Deterministic and LLM-as-Judge evaluation of Shopping Agent trajectories."""
 
 from shopping_grpo.evaluation.contracts import (
+    CLARIFICATION_STATUSES,
     CONTRACT_VERSION,
     ERROR_TAXONOMY,
     JUDGE_DIMENSIONS,
@@ -9,6 +10,7 @@ from shopping_grpo.evaluation.contracts import (
 )
 
 __all__ = [
+    "CLARIFICATION_STATUSES",
     "CONTRACT_VERSION",
     "ERROR_TAXONOMY",
     "JUDGE_DIMENSIONS",

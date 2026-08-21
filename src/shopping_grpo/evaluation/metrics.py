@@ -17,7 +17,7 @@ from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
 from shopping_grpo.environment.product_id import PRODUCT_ID_CAPTURE
 
 
-DETERMINISTIC_METRICS_VERSION = "shopping-deterministic-metrics-v1"
+DETERMINISTIC_METRICS_VERSION = "shopping-deterministic-metrics-v2"
 REWARD_V3 = "shopsimulator-reward-v3"
 _ASIN = re.compile(rf"(?<!\d){PRODUCT_ID_CAPTURE}(?!\d)")
 _INFRASTRUCTURE_ERROR_TYPES = {
@@ -230,6 +230,52 @@ def compute_deterministic_metrics(normalized: object) -> dict:
 
     context = normalized.get("context")
     context = context if isinstance(context, Mapping) else {}
+    clarification_source = normalized.get("clarification")
+    clarification_source = (
+        clarification_source
+        if isinstance(clarification_source, Mapping)
+        else {}
+    )
+    questions = clarification_source.get("questions")
+    questions = questions if isinstance(questions, list) else []
+    ask_events = [
+        event
+        for event in executed
+        if event.get("tool_name") == "ask_shopper"
+    ]
+    shop_events = [
+        event
+        for event in executed
+        if event.get("tool_name") != "ask_shopper"
+    ]
+    first_ask_position = next(
+        (
+            index
+            for index, event in enumerate(executed)
+            if event.get("tool_name") == "ask_shopper"
+        ),
+        None,
+    )
+    first_buy_position = next(
+        (
+            index
+            for index, event in enumerate(executed)
+            if event.get("tool_name") == "buy_now"
+        ),
+        None,
+    )
+    post_answer_events = (
+        [
+            event
+            for event in executed[first_ask_position + 1 :]
+            if event.get("tool_name") != "ask_shopper"
+        ]
+        if first_ask_position is not None
+        else []
+    )
+    condition = str(clarification_source.get("interaction_mode") or "standard")
+    opening_has_gap = bool(clarification_source.get("opening_has_gap"))
+    question_count = len(ask_events)
     return {
         "schema_version": DETERMINISTIC_METRICS_VERSION,
         "evaluation_contract": CONTRACT_VERSION,
@@ -268,6 +314,8 @@ def compute_deterministic_metrics(normalized: object) -> dict:
         },
         "actions_and_efficiency": {
             "executed_tool_steps": len(executed),
+            "executed_shop_steps": len(shop_events),
+            "shopper_question_steps": len(ask_events),
             "action_attempts": len(attempts),
             "tool_counts": dict(sorted(tool_counts.items())),
             "search_count": tool_counts.get("search_products", 0),
@@ -288,6 +336,71 @@ def compute_deterministic_metrics(normalized: object) -> dict:
             ),
             "visible_search_candidate_count": len(visible_asins),
             "opened_candidate_count": len(opened_asins),
+        },
+        "clarification": {
+            "interaction_mode": condition,
+            "ask_enabled": bool(clarification_source.get("ask_enabled")),
+            "opening_has_gap": opening_has_gap,
+            "source_goal_verified": clarification_source.get(
+                "source_goal_verified"
+            ),
+            "question_count": question_count,
+            "grounded_question_count": sum(
+                bool(item.get("grounded"))
+                for item in questions
+                if isinstance(item, Mapping)
+            ),
+            "all_questions_grounded": bool(question_count)
+            and len(questions) == question_count
+            and all(
+                bool(item.get("grounded"))
+                for item in questions
+                if isinstance(item, Mapping)
+            ),
+            "gap_no_ask": opening_has_gap and question_count == 0,
+            "complete_unnecessary_ask": (
+                condition == "complete-ask-enabled" and question_count > 0
+            ),
+            "first_question_action_attempt": (
+                first_ask_position + 1
+                if first_ask_position is not None
+                else None
+            ),
+            "shop_steps_before_first_question": (
+                sum(
+                    event.get("tool_name") != "ask_shopper"
+                    for event in executed[:first_ask_position]
+                )
+                if first_ask_position is not None
+                else None
+            ),
+            "question_before_purchase": bool(question_count)
+            and (
+                first_buy_position is None
+                or first_ask_position < first_buy_position
+            ),
+            "post_answer_shop_action_count": len(post_answer_events),
+            "post_answer_search_count": sum(
+                event.get("tool_name") == "search_products"
+                for event in post_answer_events
+            ),
+            "post_answer_decision_action_count": sum(
+                event.get("tool_name")
+                in {
+                    "open_product",
+                    "select_option",
+                    "buy_now",
+                    "finish_without_purchase",
+                }
+                for event in post_answer_events
+            ),
+            "auditable_post_answer_action": bool(post_answer_events),
+            "actor_llm_calls": int(
+                clarification_source.get("actor_llm_calls") or 0
+            ),
+            "shopper_llm_calls": int(
+                clarification_source.get("shopper_llm_calls") or 0
+            ),
         },
         "repetition": {
             "duplicate_search_query_count": duplicate_searches,

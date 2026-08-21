@@ -15,7 +15,7 @@ from shopping_grpo.evaluation.contracts import (
 from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
 
 RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v1-draft-r4"
-TRAJECTORY_JUDGE_PROMPT_VERSION = "trajectory-judge-v1-draft-r4"
+TRAJECTORY_JUDGE_PROMPT_VERSION = "trajectory-judge-v2-draft-r1"
 _JUDGE_VISIBLE_ERROR_TAXONOMY = ERROR_TAXONOMY - {
     "reward_rubric_disagreement",
     "infrastructure_invalid",
@@ -77,6 +77,13 @@ Environment Reward、Reward 分项或代码判定的任务成功结论；这些�
 
 逐条需求状态只能是 satisfied、violated、unknown、not_applicable。没有可见证据时
 使用 unknown。每项判断尽量引用真实 event_id；不得伪造不存在的 event_id。
+
+另行判断澄清行为，不把“问过问题”本身视为加分：
+- effective：缺失信息确实影响选择，问题具体，回答后有可见的利用证据；
+- ineffective：提问或回答存在，但没有推动后续搜索、核验或决策；
+- unnecessary：公开请求已经足够，仍提出不必要问题；
+- not_applicable：没有发生澄清且当前条件不要求评价澄清；
+- unknown：可见证据不足。不得使用隐藏 omitted_facts 或 used_facts 作判断。
 
 五个维度分别打 0、1、2 分，不加权、不计算总分：
 - search_strategy：搜索是否覆盖品类和关键条件，改写是否有效，是否机械重复；
@@ -238,6 +245,14 @@ def build_trajectory_judge_messages(
                     "evidence_event_ids": ["e0001"],
                 }
                 for name in JUDGE_DIMENSIONS
+            },
+            "clarification_assessment": {
+                "status": (
+                    "effective | ineffective | unnecessary | "
+                    "not_applicable | unknown"
+                ),
+                "reason": "简短理由",
+                "evidence_event_ids": ["支持判断的真实 event_id"],
             },
             "errors": {
                 "primary": "一个 frozen_error_taxonomy 值或 null",

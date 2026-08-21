@@ -51,3 +51,56 @@ def task_facts_from_environment(
             )
         )
     return rows
+
+
+def task_facts_from_products(
+    *,
+    task_ids: Iterable[int],
+    products: list[Mapping],
+) -> list[dict]:
+    """Build the same private facts directly from frozen product task data."""
+
+    from web_agent_site.engine.constraints import explicit_budget_from_instruction
+    from web_agent_site.engine.reward_features import compile_reward_features
+
+    requested = [int(task_id) for task_id in task_ids]
+    if len(set(requested)) != len(requested):
+        raise ValueError("task_ids contains duplicates")
+    rows = []
+    for task_id in requested:
+        if task_id < 0 or task_id >= len(products):
+            raise IndexError(
+                f"task_id {task_id} is outside product range [0, {len(products)})"
+            )
+        product = products[task_id]
+        if not isinstance(product, Mapping):
+            raise ValueError(f"product {task_id} must be an object")
+        instructions = [
+            item
+            for item in (product.get("instructions") or [])
+            if isinstance(item, Mapping) and item.get("attributes")
+        ]
+        if len(instructions) != 1:
+            raise ValueError(
+                f"task {task_id} must have exactly one scored instruction"
+            )
+        instruction = instructions[0]
+        query = str(instruction.get("instruction") or "").strip()
+        if not query:
+            raise ValueError(f"task {task_id} has no instruction text")
+        goal = {
+            "asin": product.get("asin"),
+            "category": product.get("category"),
+            "price_upper": explicit_budget_from_instruction(query),
+        }
+        goal.update(compile_reward_features(instruction, product))
+        rows.append(
+            build_task_facts(
+                task_id=task_id,
+                query=query,
+                target_product=product,
+                instruction_record=instruction,
+                reward_goal=goal,
+            )
+        )
+    return rows

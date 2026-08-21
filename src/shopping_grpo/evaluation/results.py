@@ -1,4 +1,4 @@
-"""Assemble four evaluation sections and paired-ready summaries."""
+"""Assemble five evaluation panels and paired-ready summaries."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ from shopping_grpo.evaluation.metrics import DETERMINISTIC_METRICS_VERSION
 from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
 
 
-EVALUATION_RESULT_VERSION = "shopping-per-task-evaluation-v1"
-EVALUATION_SUMMARY_VERSION = "shopping-evaluation-summary-v1"
+EVALUATION_RESULT_VERSION = "shopping-per-task-evaluation-v2"
+EVALUATION_SUMMARY_VERSION = "shopping-evaluation-summary-v2"
 
 
 def build_not_judged_result(
@@ -37,6 +37,7 @@ def build_not_judged_result(
         "judge_status": "not_judged",
         "rubric_assessments": [],
         "dimension_scores": {},
+        "clarification_assessment": {},
         "errors": {
             "primary": str(reason),
             "secondary": [],
@@ -138,7 +139,7 @@ def assemble_task_evaluation(
     rubric_bundle: Mapping,
     judge_result: Mapping,
 ) -> dict:
-    """Join one Actor run without mixing its four evaluation sections."""
+    """Join one Actor run without mixing its five evaluation panels."""
 
     if normalized_trajectory.get("schema_version") != NORMALIZED_TRAJECTORY_VERSION:
         raise ValueError("unsupported normalized trajectory schema")
@@ -202,6 +203,14 @@ def assemble_task_evaluation(
             "errors": deepcopy(judge["errors"]),
             "overall_diagnosis": judge["overall_diagnosis"],
         },
+        "clarification": {
+            "deterministic": deepcopy(
+                deterministic_metrics.get("clarification") or {}
+            ),
+            "judge_assessment": deepcopy(
+                judge.get("clarification_assessment") or {}
+            ),
+        },
         "deterministic": {
             key: deepcopy(value)
             for key, value in deterministic_metrics.items()
@@ -212,6 +221,7 @@ def assemble_task_evaluation(
                 "trajectory_id",
                 "task_id",
                 "reward_and_outcome",
+                "clarification",
             }
         },
         "artifacts": {
@@ -232,7 +242,7 @@ def summarize_evaluations(
     expected_task_ids: Iterable[int],
     evaluations: Iterable[Mapping],
 ) -> dict:
-    """Summarize four panels without producing a composite score."""
+    """Summarize five panels without producing a composite score."""
 
     expected = [int(task_id) for task_id in expected_task_ids]
     if len(set(expected)) != len(expected):
@@ -273,13 +283,27 @@ def summarize_evaluations(
     secondary_errors = Counter()
     primary_error_task_ids = defaultdict(list)
     secondary_error_task_ids = defaultdict(list)
-    total_steps = 0
+    total_tool_steps = 0
+    total_shop_steps = 0
     total_attempts = 0
     total_guards = 0
     total_duplicate_actions = 0
     total_duplicate_searches = 0
     truncated_tasks = 0
     infrastructure_invalid_tasks = []
+    clarification_conditions = Counter()
+    asked_tasks = 0
+    total_questions = 0
+    grounded_questions = 0
+    gap_tasks = 0
+    gap_no_ask_tasks = 0
+    complete_tasks = 0
+    unnecessary_ask_tasks = 0
+    post_answer_action_tasks = 0
+    question_before_purchase_tasks = 0
+    total_actor_calls = 0
+    total_shopper_calls = 0
+    clarification_judge_status = Counter()
 
     for task_id, record in by_task.items():
         reward = record["reward_and_terminal"]["metrics"]
@@ -325,13 +349,50 @@ def summarize_evaluations(
                 secondary_errors[str(secondary)] += 1
                 secondary_error_task_ids[str(secondary)].append(task_id)
 
+        clarification_panel = record.get("clarification") or {}
+        clarification = clarification_panel.get("deterministic") or {}
+        condition = str(clarification.get("interaction_mode") or "standard")
+        clarification_conditions[condition] += 1
+        question_count = int(clarification.get("question_count") or 0)
+        asked_tasks += question_count > 0
+        total_questions += question_count
+        grounded_questions += int(
+            clarification.get("grounded_question_count") or 0
+        )
+        is_gap = bool(clarification.get("opening_has_gap"))
+        is_complete = condition == "complete-ask-enabled"
+        gap_tasks += is_gap
+        gap_no_ask_tasks += bool(clarification.get("gap_no_ask"))
+        complete_tasks += is_complete
+        unnecessary_ask_tasks += bool(
+            clarification.get("complete_unnecessary_ask")
+        )
+        post_answer_action_tasks += bool(
+            clarification.get("auditable_post_answer_action")
+        )
+        question_before_purchase_tasks += bool(
+            clarification.get("question_before_purchase")
+        )
+        total_actor_calls += int(clarification.get("actor_llm_calls") or 0)
+        total_shopper_calls += int(
+            clarification.get("shopper_llm_calls") or 0
+        )
+        clarification_assessment = (
+            clarification_panel.get("judge_assessment") or {}
+        )
+        if clarification_assessment.get("status"):
+            clarification_judge_status[
+                str(clarification_assessment["status"])
+            ] += 1
+
         deterministic = record["deterministic"]
         actions = deterministic["actions_and_efficiency"]
         repetition = deterministic["repetition"]
         legality = deterministic["legality"]
         context = deterministic["context"]
         validity = deterministic["validity"]
-        total_steps += int(actions.get("executed_tool_steps", 0))
+        total_tool_steps += int(actions.get("executed_tool_steps", 0))
+        total_shop_steps += int(actions.get("executed_shop_steps", 0))
         total_attempts += int(actions.get("action_attempts", 0))
         total_guards += int(legality.get("guard_rejection_count", 0))
         total_duplicate_actions += int(
@@ -414,9 +475,44 @@ def summarize_evaluations(
                 for error, task_ids in sorted(secondary_error_task_ids.items())
             },
         },
+        "clarification": {
+            "condition_counts": dict(sorted(clarification_conditions.items())),
+            "asked_tasks": asked_tasks,
+            "ask_task_rate_fixed_denominator": _mean(asked_tasks, denominator),
+            "total_questions": total_questions,
+            "average_questions_fixed_denominator": _mean(
+                total_questions, denominator
+            ),
+            "grounded_questions": grounded_questions,
+            "grounded_question_rate": _mean(
+                grounded_questions, total_questions
+            ),
+            "gap_tasks": gap_tasks,
+            "gap_no_ask_tasks": gap_no_ask_tasks,
+            "gap_no_ask_rate": (
+                _mean(gap_no_ask_tasks, gap_tasks) if gap_tasks else None
+            ),
+            "complete_tasks": complete_tasks,
+            "complete_unnecessary_ask_tasks": unnecessary_ask_tasks,
+            "complete_unnecessary_ask_rate": (
+                _mean(unnecessary_ask_tasks, complete_tasks)
+                if complete_tasks
+                else None
+            ),
+            "tasks_with_auditable_post_answer_action": post_answer_action_tasks,
+            "questions_before_purchase_tasks": question_before_purchase_tasks,
+            "actor_llm_calls": total_actor_calls,
+            "shopper_llm_calls": total_shopper_calls,
+            "judge_status_counts": dict(
+                sorted(clarification_judge_status.items())
+            ),
+        },
         "deterministic": {
-            "average_executed_steps_fixed_denominator": _mean(
-                total_steps, denominator
+            "average_executed_tool_steps_fixed_denominator": _mean(
+                total_tool_steps, denominator
+            ),
+            "average_executed_shop_steps_fixed_denominator": _mean(
+                total_shop_steps, denominator
             ),
             "average_action_attempts_fixed_denominator": _mean(
                 total_attempts, denominator
