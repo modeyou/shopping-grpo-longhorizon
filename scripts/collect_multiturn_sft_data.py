@@ -58,6 +58,12 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=35)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument(
+        "--reward-version",
+        choices=("shopsimulator-reward-v3", "shopsimulator-reward-v4"),
+        default="shopsimulator-reward-v3",
+        help="Reward contract required for trajectory acceptance.",
+    )
     parser.add_argument("--context-window", type=int)
     parser.add_argument("--context-safety-margin", type=int, default=1024)
     parser.add_argument(
@@ -100,10 +106,11 @@ def collect_until_target(
     attempts_per_task,
     workers,
     collect_one,
+    reward_version="shopsimulator-reward-v3",
 ):
     """Collect independent multi-turn trajectories until enough are accepted."""
 
-    accepted = _accepted_count(output_path)
+    accepted = _accepted_count(output_path, reward_version)
     completed = completed_task_attempts(output_path)
     candidates = [
         (task, attempt_index)
@@ -138,7 +145,9 @@ def collect_until_target(
                 trajectory = future.result()
                 append_jsonl(output_path, [trajectory])
                 written.append(trajectory)
-                accepted += int(acceptance_reasons(trajectory)[0])
+                accepted += int(
+                    acceptance_reasons(trajectory, reward_version)[0]
+                )
                 infrastructure_failed |= _is_infrastructure_failure(trajectory)
                 _print_trajectory(trajectory)
             if not infrastructure_failed:
@@ -213,6 +222,7 @@ def main():
                 base_url=args.base_url,
                 max_steps=args.max_steps,
                 attempt_index=attempt,
+                reward_version=args.reward_version,
             )
         return collect_for_task(
             task,
@@ -235,6 +245,7 @@ def main():
             attempts_per_task=args.attempts_per_task,
             workers=args.workers,
             collect_one=collect_one,
+            reward_version=args.reward_version,
         )
     else:
         completed = completed_task_attempts(raw)
@@ -267,22 +278,24 @@ def main():
         "context_window": args.context_window,
         "context_safety_margin": args.context_safety_margin,
         "context_compaction_enable": args.context_compaction_enable,
+        "reward_version": args.reward_version,
     }
     summary = build_collection_artifacts(
         raw_path=raw, output_dir=args.output_dir, held_out_task_ids=held_out,
         validation_ratio=args.validation_ratio, seed=args.seed, collection_config=config,
+        reward_version=args.reward_version,
     )
     print(f"collected_raw={len(written_rows)}")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 2 if infrastructure_failed else 0
 
 
-def _accepted_count(path):
+def _accepted_count(path, reward_version="shopsimulator-reward-v3"):
     if not path.exists():
         return 0
     with path.open(encoding="utf-8") as handle:
         return sum(
-            int(acceptance_reasons(json.loads(line))[0])
+            int(acceptance_reasons(json.loads(line), reward_version)[0])
             for line in handle
             if line.strip()
         )

@@ -43,10 +43,6 @@ DEFAULT_REWARDS = {
     "wrong_purchase": -0.85,
     "reward_unverifiable": 0.0,
 }
-KNOWN_ACCEPTABLE_MATCH_THRESHOLD = 0.70
-KNOWN_ACCEPTABLE_COVERAGE_THRESHOLD = 0.75
-
-
 @dataclass(frozen=True)
 class RewardResultV4:
     reward: float
@@ -249,6 +245,9 @@ def _constraint_scoring(
     )
     match_score = passed_weight / total_weight if total_weight else 0.0
     coverage = verifiable_weight / total_weight if total_weight else 0.0
+    required_results = [
+        item for item in results if item["strength"] in {"hard", "required"}
+    ]
     return {
         "atom_version": goal.get("constraint_atom_version"),
         "active_atom_count": len(results),
@@ -257,6 +256,8 @@ def _constraint_scoring(
         "evidence_coverage": coverage,
         "all_satisfied": bool(results)
         and all(item["status"] == PASS for item in results),
+        "strict_satisfied": bool(required_results)
+        and all(item["status"] == PASS for item in required_results),
         "hard_failed": any(
             item["strength"] == "hard" and item["status"] == FAIL
             for item in results
@@ -312,7 +313,7 @@ def evaluate_purchase(
         reward_type = "wrong_purchase"
         reward_valid = True
         reward = values[reward_type]
-    elif scoring["all_satisfied"]:
+    elif scoring["strict_satisfied"]:
         reward_type = (
             "gold_purchase" if asin_match else "valid_alternative_purchase"
         )
@@ -362,9 +363,7 @@ def evaluate_candidate_eligibility(product: dict, goal: dict) -> dict:
     known_acceptable = (
         not scoring["hard_failed"]
         and not scoring["hard_unverifiable"]
-        and scoring["match_score"] >= KNOWN_ACCEPTABLE_MATCH_THRESHOLD
-        and scoring["evidence_coverage"]
-        >= KNOWN_ACCEPTABLE_COVERAGE_THRESHOLD
+        and scoring["strict_satisfied"]
     )
     return {
         "status": PASS if known_acceptable else FAIL,

@@ -43,6 +43,24 @@ class CollectMultiturnSftDataCliTests(unittest.TestCase):
         self.assertFalse(args.composite_teacher)
         self.assertFalse(args.teacher_first_ask)
 
+    def test_reward_v4_acceptance_is_explicit(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "collect_multiturn_sft_data.py",
+                "--tasks",
+                "data/grpo/train.jsonl",
+                "--output-dir",
+                "outputs/v4",
+                "--reward-version",
+                "shopsimulator-reward-v4",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.reward_version, "shopsimulator-reward-v4")
+
     def test_parallel_collection_stops_at_accepted_target(self):
         collected = []
 

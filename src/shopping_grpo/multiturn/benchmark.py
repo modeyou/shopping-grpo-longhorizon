@@ -181,6 +181,7 @@ def curate_task_ids(
     products: list[dict],
     candidates: list[int],
     reserve: list[int],
+    reward_version: str = "shopsimulator-reward-v3",
 ) -> tuple[list[int], list[dict], dict]:
     """Retain eligible candidates and fill rejected slots from reserve order."""
 
@@ -197,7 +198,10 @@ def curate_task_ids(
         raise ValueError(f"task IDs outside product data: {outside[:10]}")
 
     candidate_audits = [
-        audit_gold_task(products[task_id], task_id) for task_id in candidates
+        audit_gold_task_version(
+            products[task_id], task_id, reward_version=reward_version
+        )
+        for task_id in candidates
     ]
     accepted = [
         row["task_id"] for row in candidate_audits if row["eligible"]
@@ -208,7 +212,9 @@ def curate_task_ids(
     for task_id in reserve:
         if len(replacements) >= needed:
             break
-        audit = audit_gold_task(products[task_id], task_id)
+        audit = audit_gold_task_version(
+            products[task_id], task_id, reward_version=reward_version
+        )
         replacement_audits.append(audit)
         if audit["eligible"]:
             replacements.append(task_id)
@@ -254,6 +260,7 @@ def freeze_curated_evaluation(
     environment_manifest_path: str | Path,
     output_dir: str | Path,
     exclusion_paths=(),
+    reward_version: str = "shopsimulator-reward-v3",
 ) -> dict:
     """Write an idempotent curated benchmark, audit log, and manifest."""
 
@@ -289,6 +296,7 @@ def freeze_curated_evaluation(
         products=products,
         candidates=candidates,
         reserve=reserve,
+        reward_version=reward_version,
     )
     tasks_payload = "".join(
         json.dumps({"task_id": task_id}, separators=(",", ":")) + "\n"
@@ -319,7 +327,7 @@ def freeze_curated_evaluation(
                 environment_manifest_path
             ),
         },
-        "reward_contract": "shopsimulator-reward-v3",
+        "reward_contract": reward_version,
         "task_sha256": hashlib.sha256(tasks_payload).hexdigest(),
         "audit_sha256": hashlib.sha256(audits_payload).hexdigest(),
         "validation": {

@@ -56,6 +56,11 @@ def parse_args():
         default=[],
         help="Task manifest(s) that replacements must not overlap.",
     )
+    parser.add_argument(
+        "--reward-version",
+        choices=("shopsimulator-reward-v3", "shopsimulator-reward-v4"),
+        default="shopsimulator-reward-v3",
+    )
     return parser.parse_args()
 
 
@@ -69,6 +74,7 @@ def main():
         environment_manifest_path=args.environment_manifest,
         output_dir=args.output_dir,
         exclusion_paths=args.exclude_tasks,
+        reward_version=args.reward_version,
     )
     print(json.dumps(metadata, ensure_ascii=False, sort_keys=True))
 

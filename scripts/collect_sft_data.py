@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--max-steps", type=int, default=35)
+    parser.add_argument(
+        "--reward-version",
+        choices=("shopsimulator-reward-v3", "shopsimulator-reward-v4"),
+        default="shopsimulator-reward-v3",
+        help="Reward contract required for trajectory acceptance.",
+    )
     parser.add_argument("--thinking", action="store_true")
     parser.add_argument("--reasoning-effort", choices=("high", "max"), default="high")
     parser.add_argument("--context-window", type=int, default=0)
@@ -103,13 +109,16 @@ def collect_until_target(
     attempts_per_task,
     workers=1,
     excluded_task_ids=(),
+    reward_version="shopsimulator-reward-v3",
 ):
     """Collect concurrently without scheduling more possible successes than needed."""
 
     workers = int(workers)
     if workers < 1:
         raise ValueError("workers must be at least 1")
-    accepted = _accepted_count(output_path, excluded_task_ids)
+    accepted = _accepted_count(
+        output_path, excluded_task_ids, reward_version
+    )
     completed = completed_task_attempts(output_path)
     candidates = [
         (task, attempt_index)
@@ -149,7 +158,9 @@ def collect_until_target(
                 trajectory = future.result()
                 append_jsonl(output_path, [trajectory])
                 written.append(trajectory)
-                accepted += acceptance_reasons(trajectory)[0]
+                accepted += acceptance_reasons(
+                    trajectory, reward_version
+                )[0]
                 infrastructure_failed |= _is_infrastructure_failure(trajectory)
             if not infrastructure_failed:
                 submit_available(executor)
@@ -161,7 +172,11 @@ def collect_until_target(
     return written, accepted
 
 
-def _accepted_count(raw_path: Path, excluded_task_ids=()) -> int:
+def _accepted_count(
+    raw_path: Path,
+    excluded_task_ids=(),
+    reward_version="shopsimulator-reward-v3",
+) -> int:
     raw_path = Path(raw_path)
     if not raw_path.exists():
         return 0
@@ -174,7 +189,9 @@ def _accepted_count(raw_path: Path, excluded_task_ids=()) -> int:
             trajectory = json.loads(line)
             if int(trajectory["task_id"]) in excluded:
                 continue
-            accepted += acceptance_reasons(trajectory)[0]
+            accepted += acceptance_reasons(
+                trajectory, reward_version
+            )[0]
         return accepted
 
 
@@ -247,6 +264,7 @@ def _collection_config(args: argparse.Namespace) -> dict:
         "observation_detail_token_budget": args.observation_detail_token_budget,
         "observation_generic_token_budget": args.observation_generic_token_budget,
         "observation_search_top_k": args.observation_search_top_k,
+        "reward_version": args.reward_version,
     }
 
 
@@ -293,6 +311,7 @@ def main() -> int:
                     attempts_per_task=args.attempts_per_task,
                     workers=args.workers,
                     excluded_task_ids=held_out_ids,
+                    reward_version=args.reward_version,
                 )
                 print(f"collected_raw={len(written)} accepted_total={accepted}")
         except CollectionInfrastructureError as exc:
@@ -308,6 +327,7 @@ def main() -> int:
         validation_ratio=args.validation_ratio,
         seed=args.seed,
         collection_config=collection_config,
+        reward_version=args.reward_version,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return exit_code

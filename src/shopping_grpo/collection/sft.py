@@ -2,7 +2,7 @@
 
 The collector records everything needed for auditing in ``raw.jsonl``. This
 module is the deterministic second half of the pipeline: it accepts only strict
-Reward v3 gold purchases, removes private reasoning and terminal Reward text,
+gold purchases from the explicitly selected Reward contract, removes private reasoning and terminal Reward text,
 excludes held-out tasks, and creates task-disjoint train/validation files.
 """
 
@@ -28,13 +28,23 @@ from shopping_grpo.training.sft.dataset import split_rows_by_task
 
 
 COLLECTION_SCHEMA_VERSION = "shopping-sft-collection-v2"
+SUPPORTED_REWARD_VERSIONS = {
+    "shopsimulator-reward-v3",
+    "shopsimulator-reward-v4",
+}
 ALLOWED_MESSAGE_KEYS = {"role", "content", "tool_calls", "tool_call_id", "name"}
 ALLOWED_TOOL_CALL_KEYS = {"id", "type", "function"}
 ALLOWED_FUNCTION_KEYS = {"name", "arguments"}
 
 
-def acceptance_reasons(trajectory: dict) -> tuple[bool, list[str]]:
+def acceptance_reasons(
+    trajectory: dict,
+    reward_version: str = "shopsimulator-reward-v3",
+) -> tuple[bool, list[str]]:
     """Return whether one rollout is safe to train on and every rejection reason."""
+
+    if reward_version not in SUPPORTED_REWARD_VERSIONS:
+        raise ValueError(f"unsupported Reward version: {reward_version}")
 
     reasons = []
     steps = trajectory.get("steps") or []
@@ -99,12 +109,13 @@ def acceptance_reasons(trajectory: dict) -> tuple[bool, list[str]]:
     ):
         reasons.append("missing_buy")
 
-    if reward.get("reward_version") != "shopsimulator-reward-v3":
-        reasons.append("reward_v3_required")
+    reason_prefix = "reward_v3" if reward_version.endswith("-v3") else "reward_v4"
+    if reward.get("reward_version") != reward_version:
+        reasons.append(f"{reason_prefix}_required")
     if reward.get("reward_type") != "gold_purchase":
-        reasons.append("reward_v3_not_gold_purchase")
+        reasons.append(f"{reason_prefix}_not_gold_purchase")
     if reward.get("reward_valid") is not True:
-        reasons.append("reward_v3_invalid")
+        reasons.append(f"{reason_prefix}_invalid")
     if reward.get("purchase_success") is not True:
         reasons.append("purchase_not_successful")
     if reward.get("termination_reason") != "gold_purchase":
@@ -158,6 +169,7 @@ def build_collection_artifacts(
     validation_ratio: float = 0.1,
     seed: int = 42,
     collection_config: dict | None = None,
+    reward_version: str = "shopsimulator-reward-v3",
 ) -> dict:
     """Rebuild all derived files from raw rollouts, which remain the source of truth."""
 
@@ -176,7 +188,7 @@ def build_collection_artifacts(
 
     for trajectory in read_jsonl(raw_path):
         total += 1
-        accepted, reasons = acceptance_reasons(trajectory)
+        accepted, reasons = acceptance_reasons(trajectory, reward_version)
         task_id = int(trajectory["task_id"])
         if accepted and task_id in held_out:
             accepted = False
@@ -247,7 +259,7 @@ def build_collection_artifacts(
     metadata = {
         **summary,
         "environment": "shopsimulator-environment-v2.1",
-        "reward": "shopsimulator-reward-v3",
+        "reward": reward_version,
         "validation_ratio": float(validation_ratio),
         "split_seed": int(seed),
         "collection_config": deepcopy(collection_config or {}),

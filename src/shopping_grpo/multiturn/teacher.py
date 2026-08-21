@@ -81,6 +81,7 @@ def collect_composite_teacher_task(
     base_url="http://127.0.0.1:5700",
     max_steps=35,
     attempt_index=0,
+    reward_version="shopsimulator-reward-v3",
 ):
     """Create a clarification prefix, collect a gold backbone, and replay both."""
 
@@ -102,7 +103,9 @@ def collect_composite_teacher_task(
             max_steps=max_steps,
             attempt_index=attempt_index,
         )
-        backbone_ok, backbone_reasons = acceptance_reasons(backbone)
+        backbone_ok, backbone_reasons = acceptance_reasons(
+            backbone, reward_version
+        )
         if not backbone_ok:
             return _rejected(
                 task,
@@ -172,7 +175,7 @@ def collect_composite_teacher_task(
                 "shopper_llm_calls": 1,
             }
         )
-        replay_ok, replay_reasons = acceptance_reasons(replay)
+        replay_ok, replay_reasons = acceptance_reasons(replay, reward_version)
         if replay.get("blocked_tool_calls") or not replay_ok:
             replay["composite_stage"] = "replay_failed"
             replay["composite_rejection_reasons"] = [

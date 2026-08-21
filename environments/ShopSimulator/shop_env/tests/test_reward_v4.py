@@ -108,7 +108,7 @@ def test_v4_gold_purchase_has_atom_evidence():
     }
 
 
-def test_soft_price_miss_is_partial_not_wrong_purchase():
+def test_soft_price_miss_reduces_score_but_does_not_block_gold():
     result = evaluate_purchase(
         product(),
         goal(),
@@ -116,8 +116,12 @@ def test_soft_price_miss_is_partial_not_wrong_purchase():
         price=280,
     )
 
-    assert result.reward_type == "partial_alternative_purchase"
+    assert result.reward_type == "gold_purchase"
     assert result.reward_valid is True
+    assert result.weighted_score < 1.0
+    scoring = result.evidence["constraint_scoring"]
+    assert scoring["strict_satisfied"] is True
+    assert scoring["all_satisfied"] is False
 
 
 def test_hard_budget_or_hard_function_failure_is_wrong_purchase():

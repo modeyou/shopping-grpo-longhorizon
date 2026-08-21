@@ -5,7 +5,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT / "environments/ShopSimulator/shop_env"))
 
-from shopping_grpo.multiturn.benchmark import audit_gold_task_version
+from shopping_grpo.multiturn.benchmark import (
+    audit_gold_task_version,
+    curate_task_ids,
+)
 
 
 def _product():
@@ -44,3 +47,15 @@ def test_gold_audit_can_dual_score_the_same_task():
     assert v3["eligible"] is True
     assert v4["eligible"] is True
     assert v4["audit"]["constraint_atom_count"] == 4
+
+
+def test_batch_curator_records_selected_reward_version():
+    selected, audits, _ = curate_task_ids(
+        products=[_product()],
+        candidates=[0],
+        reserve=[],
+        reward_version="shopsimulator-reward-v4",
+    )
+
+    assert selected == [0]
+    assert audits[0]["reward_version"] == "shopsimulator-reward-v4"

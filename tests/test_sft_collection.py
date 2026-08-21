@@ -136,6 +136,21 @@ class SftCollectionTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertIn("reward_v3_invalid", reasons)
 
+    def test_acceptance_can_explicitly_select_reward_v4(self):
+        trajectory = _accepted_trajectory()
+        reward = trajectory["terminal_result"]["reward_detail"]
+        reward["reward_version"] = "shopsimulator-reward-v4"
+
+        self.assertEqual(
+            acceptance_reasons(
+                trajectory, "shopsimulator-reward-v4"
+            ),
+            (True, []),
+        )
+        accepted, reasons = acceptance_reasons(trajectory)
+        self.assertFalse(accepted)
+        self.assertIn("reward_v3_required", reasons)
+
     def test_composite_teacher_requires_verified_grounded_replay(self):
         trajectory = _accepted_trajectory()
         trajectory.update({
@@ -244,6 +259,7 @@ class SftCollectionTests(unittest.TestCase):
         self.assertIn("held_out_task", rejected_rows[0]["reject_reasons"])
         self.assertTrue(metadata_exists)
         self.assertEqual(metadata["collection_config"]["model"], "teacher-test")
+        self.assertEqual(metadata["reward"], "shopsimulator-reward-v3")
 
 
 if __name__ == "__main__":
