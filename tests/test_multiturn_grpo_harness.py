@@ -79,7 +79,13 @@ def make_ask_tool():
         item for item in MULTITURN_SHOP_TOOL_SCHEMAS
         if item["function"]["name"] == "ask_shopper"
     )
-    return ShopSimulatorTool({}, schema)
+    try:
+        from verl.tools.schemas import OpenAIFunctionToolSchema
+    except ImportError:
+        tool_schema = schema
+    else:
+        tool_schema = OpenAIFunctionToolSchema.model_validate(schema)
+    return ShopSimulatorTool({}, tool_schema)
 
 
 def test_multiturn_metadata_contract_rejects_inconsistent_modes():

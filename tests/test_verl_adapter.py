@@ -171,7 +171,9 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
     def test_runtime_state_has_no_hidden_goal_fields(self):
         state = make_runtime_state(task_id=2, max_steps=35)
         self.assertNotIn("goal", state)
-        self.assertNotIn("reward_detail", state)
+        self.assertIsNone(state["reward_detail"])
+        self.assertNotIn("instruction_full", str(state))
+        self.assertNotIn("omitted_facts", str(state))
 
     def test_task_id_is_read_from_verl_extra_info(self):
         self.assertEqual(task_id_from_kwargs({"extra_info": {"task_id": 42}}), 42)
@@ -216,12 +218,14 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             self.assertTrue(state["terminate"])
             self.assertEqual(state["terminal_result"], {"done": True, "over": True})
             self.assertTrue(state["infrastructure_invalid"])
-            self.assertIsNone(state["reward_components"])
+            self.assertIsNone(state["reward_detail"])
+            self.assertIsNone(state["reward_version"])
+            self.assertIsNone(state["reward_type"])
             self.assertNotIn("hidden", str(state))
 
         asyncio.run(run())
 
-    def test_terminal_reward_components_are_validated_without_entering_tool_observation(self):
+    def test_terminal_reward_detail_is_validated_without_entering_tool_observation(self):
         class FakeEnv:
             def step(self, action):
                 return {
@@ -231,10 +235,32 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
                     "reward": 0.6,
                     "goal": {"secret": True},
                     "reward_detail": {
-                        "r_type": 1,
-                        "r_att": 1,
-                        "r_option": 0.5,
-                        "r_price": 1,
+                        "reward_version": "shopsimulator-reward-v4",
+                        "reward_type": "valid_alternative_purchase",
+                        "reward_valid": True,
+                        "termination_reason": "valid_alternative_purchase",
+                        "target_asin_match": False,
+                        "terminal_utility": 0.6,
+                        "purchase_success": True,
+                        "sampling_invalid": False,
+                        "weighted_score": 0.6,
+                        "evidence_coverage": 1.0,
+                        "dimension_scores": {
+                            "brand": 0.0,
+                            "model": 0.0,
+                            "core_functions": 1.0,
+                            "key_options": 0.5,
+                        },
+                        "constraint_scores": {},
+                        "hard_gates": {
+                            "category": {
+                                "status": "pass",
+                                "passed": True,
+                                "verifiable": True,
+                                "comparator": "category_leaf_ancestor_chain",
+                                "source_field": "category",
+                            }
+                        },
                         "hidden_answer": "do not retain",
                     },
                 }
@@ -254,10 +280,11 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
 
             self.assertEqual(response.text, "Environment terminated.")
             self.assertFalse(state["infrastructure_invalid"])
-            self.assertEqual(
-                state["reward_components"],
-                {"r_type": 1.0, "r_att": 1.0, "r_option": 0.5, "r_price": 1.0},
-            )
+            self.assertEqual(state["reward_version"], "shopsimulator-reward-v4")
+            self.assertEqual(state["reward_type"], "valid_alternative_purchase")
+            self.assertTrue(state["reward_valid"])
+            self.assertEqual(state["reward_detail"]["weighted_score"], 0.6)
+            self.assertNotIn("hidden_answer", state["reward_detail"])
             self.assertNotIn("hidden", str(state))
 
         asyncio.run(run())
@@ -297,10 +324,11 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             finally:
                 current_runtime_state.reset(state_token)
                 current_environment.reset(env_token)
-            self.assertFalse(state["infrastructure_invalid"])
-            self.assertTrue(state["reward_unverifiable"])
-            self.assertEqual(state["reward_type"], "reward_unverifiable")
-            self.assertEqual(state["termination_reason"], "reward_unverifiable")
+            self.assertTrue(state["infrastructure_invalid"])
+            self.assertIsNone(state["reward_detail"])
+            self.assertTrue(
+                state["error"].startswith("invalid_terminal_reward_detail:")
+            )
 
         asyncio.run(run())
 
@@ -437,7 +465,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             self.assertEqual(state["action_attempt_after_truncation_count"], 3)
             self.assertEqual(
                 state["guard_rejection_reason_counts"],
-                {"asin_not_visible": 3},
+                {"click_not_in_previous_observation": 3},
             )
             self.assertIn("maximum", response.text)
 
