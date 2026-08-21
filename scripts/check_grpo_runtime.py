@@ -25,12 +25,22 @@ EXPECTED_TRANSFORMERS_REVISION = "7ea2320c76117e6742364808a666ef6f2fb40a67"
 PATCH_MARKER = "SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V3"
 MAX_SAFE_RESPONSE_LENGTH = 20480
 MAX_SAFE_SEQUENCE_LENGTH = 24576
-CURRENT_RUNTIME_FILES = {
+COMMON_RUNTIME_FILES = {
     "observation.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/observation.py",
     "pack_api.py": "environments/ShopSimulator/shop_env/shop_env/pack_api.py",
-    "reward.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/reward.py",
     "slot_lease_pool.py": "environments/ShopSimulator/shop_env/shop_env/slot_lease_pool.py",
     "web_agent_text_env.py": "environments/ShopSimulator/shop_env/web_agent_site/envs/web_agent_text_env.py",
+}
+REWARD_RUNTIME_FILES = {
+    "shopsimulator-reward-v3": {
+        "reward.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/reward.py",
+    },
+    "shopsimulator-reward-v4": {
+        "price_constraints.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/price_constraints.py",
+        "reward_features_v2.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/reward_features_v2.py",
+        "reward_registry.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/reward_registry.py",
+        "reward_v4.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/reward_v4.py",
+    },
 }
 
 
@@ -39,15 +49,20 @@ def validate_reward_runtime_files(manifest, root):
         raise SystemExit(
             "Environment v2.1 manifest must select explicit-client-release-v1"
         )
+    reward_version = (manifest.get("reward") or {}).get("version")
+    runtime_files = {
+        **COMMON_RUNTIME_FILES,
+        **REWARD_RUNTIME_FILES.get(reward_version, {}),
+    }
     expected = manifest.get("runtime_files_sha256")
-    if not isinstance(expected, dict) or set(expected) != set(CURRENT_RUNTIME_FILES):
+    if not isinstance(expected, dict) or set(expected) != set(runtime_files):
         raise SystemExit(
             "Environment v2.1 manifest runtime_files_sha256 is missing or incomplete"
         )
     from shopping_grpo.environment.manifest import sha256_file
 
     mismatches = {}
-    for name, relative_path in CURRENT_RUNTIME_FILES.items():
+    for name, relative_path in runtime_files.items():
         actual = sha256_file(Path(root) / relative_path)
         if actual != expected[name]:
             mismatches[name] = {"expected": expected[name], "actual": actual}
