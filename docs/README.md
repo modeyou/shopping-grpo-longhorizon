@@ -23,3 +23,8 @@ from ShopSimulator.
 [Multi-turn Teacher/SFT review](multiturn-teacher-sft-review.md) is the Chinese
 study note for Actor/Shopper/environment roles, three Teacher-data types,
 policy-specific SFT acceptance, Reward boundaries, and Qwen3.8 scaling.
+
+[Multi-turn evaluation protocol](multiturn-evaluation.md) freezes the
+Qwen3.5-2B pre-training baseline milestone, gap ask-enabled/disabled and
+complete-request controls, Reward-reachability benchmark audit, and the
+clarification-specific metrics used for Base/SFT/GRPO comparison.

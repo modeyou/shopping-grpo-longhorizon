@@ -86,6 +86,39 @@ class BenchmarkTest(unittest.TestCase):
             {"tasks": 1, "strict_successes": 0},
         )
 
+    def test_summary_reports_grounded_gap_questions_separately(self):
+        asked = _trajectory(10, strict=True, steps=2)
+        asked.update({
+            "interaction_mode": "gap-ask-enabled",
+            "opening_audit": {"omitted_facts": ["预算20元"]},
+            "shopper_questions": [{
+                "question": "预算是多少？",
+                "answer": "预算20元。",
+                "used_facts": ["预算20元"],
+            }],
+            "shopper_llm_calls": 1,
+        })
+        asked["steps"] = [
+            {"tool_name": "ask_shopper"},
+            {"tool_name": "search_products"},
+        ]
+        no_ask = _trajectory(11, strict=False, steps=1)
+        no_ask.update({
+            "interaction_mode": "gap-ask-enabled",
+            "opening_audit": {"omitted_facts": ["尺寸小号"]},
+            "shopper_questions": [],
+        })
+
+        clarification = summarize_trajectories(
+            [10, 11], [asked, no_ask]
+        )["clarification"]
+
+        self.assertEqual(clarification["asked_tasks"], 1)
+        self.assertEqual(clarification["grounded_questions"], 1)
+        self.assertEqual(clarification["gap_no_ask_tasks"], 1)
+        self.assertEqual(clarification["gap_no_ask_rate"], 0.5)
+        self.assertEqual(clarification["shopper_llm_calls"], 1)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

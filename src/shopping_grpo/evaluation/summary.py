@@ -99,6 +99,7 @@ def summarize_trajectories(expected_task_ids, trajectories):
         for item in by_task.values()
     )
     denominator = len(expected_ids)
+    clarification = _summarize_clarification(by_task, denominator)
     return {
         "expected_tasks": denominator,
         "completed_tasks": len(completed_ids),
@@ -200,6 +201,111 @@ def summarize_trajectories(expected_task_ids, trajectories):
                 },
             },
         },
+        "clarification": clarification,
+    }
+
+
+def _summarize_clarification(by_task, denominator):
+    conditions = Counter()
+    question_counts = Counter()
+    asked_tasks = 0
+    total_questions = 0
+    grounded_questions = 0
+    grounded_tasks = 0
+    first_question_indices = []
+    shop_steps_before_first_question = []
+    gap_tasks = 0
+    gap_no_ask = 0
+    complete_tasks = 0
+    complete_unnecessary_ask = 0
+    source_goal_mismatches = []
+    shopper_calls = 0
+
+    for task_id, trajectory in by_task.items():
+        condition = str(trajectory.get("interaction_mode") or "standard")
+        conditions[condition] += 1
+        questions = trajectory.get("shopper_questions") or []
+        count = len(questions)
+        question_counts[count] += 1
+        total_questions += count
+        shopper_calls += int(trajectory.get("shopper_llm_calls") or 0)
+        if trajectory.get("source_goal_verified") is False:
+            source_goal_mismatches.append(task_id)
+
+        is_gap = condition.startswith("gap-") or condition == "multiturn"
+        is_complete = condition == "complete-ask-enabled"
+        if is_gap:
+            gap_tasks += 1
+            gap_no_ask += count == 0
+        if is_complete:
+            complete_tasks += 1
+            complete_unnecessary_ask += count > 0
+
+        if not questions:
+            continue
+        asked_tasks += 1
+        omitted = set(
+            (trajectory.get("opening_audit") or {}).get("omitted_facts") or []
+        )
+        grounded = [
+            bool(set(item.get("used_facts") or []))
+            and set(item.get("used_facts") or []).issubset(omitted)
+            for item in questions
+        ]
+        grounded_questions += sum(grounded)
+        grounded_tasks += all(grounded)
+        ask_indices = [
+            index
+            for index, step in enumerate(trajectory.get("steps") or [])
+            if step.get("tool_name") == "ask_shopper"
+        ]
+        if ask_indices:
+            first = ask_indices[0]
+            first_question_indices.append(first)
+            shop_steps_before_first_question.append(sum(
+                step.get("tool_name") != "ask_shopper"
+                for step in (trajectory.get("steps") or [])[:first]
+            ))
+
+    return {
+        "condition_counts": dict(sorted(conditions.items())),
+        "asked_tasks": asked_tasks,
+        "ask_task_rate_fixed_denominator": (
+            asked_tasks / denominator if denominator else 0.0
+        ),
+        "total_questions": total_questions,
+        "question_count_distribution": {
+            str(count): tasks for count, tasks in sorted(question_counts.items())
+        },
+        "average_questions_fixed_denominator": (
+            total_questions / denominator if denominator else 0.0
+        ),
+        "grounded_questions": grounded_questions,
+        "grounded_question_rate": (
+            grounded_questions / total_questions if total_questions else 0.0
+        ),
+        "fully_grounded_asked_tasks": grounded_tasks,
+        "average_first_question_step_among_asked": (
+            sum(first_question_indices) / len(first_question_indices)
+            if first_question_indices else None
+        ),
+        "average_shop_steps_before_first_question": (
+            sum(shop_steps_before_first_question)
+            / len(shop_steps_before_first_question)
+            if shop_steps_before_first_question else None
+        ),
+        "gap_tasks": gap_tasks,
+        "gap_no_ask_tasks": gap_no_ask,
+        "gap_no_ask_rate": gap_no_ask / gap_tasks if gap_tasks else None,
+        "complete_tasks": complete_tasks,
+        "complete_unnecessary_ask_tasks": complete_unnecessary_ask,
+        "complete_unnecessary_ask_rate": (
+            complete_unnecessary_ask / complete_tasks
+            if complete_tasks else None
+        ),
+        "shopper_llm_calls": shopper_calls,
+        "source_goal_mismatch_tasks": len(source_goal_mismatches),
+        "source_goal_mismatch_task_ids": sorted(source_goal_mismatches),
     }
 
 

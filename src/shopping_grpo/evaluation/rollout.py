@@ -80,6 +80,33 @@ Each assistant turn must contain at most one tool call."""
 MULTITURN_SYSTEM_PROMPT += "\n\n执行规则：" + SYSTEM_PROMPT.split("执行规则：", 1)[1]
 
 
+MULTITURN_EVALUATION_SYSTEM_PROMPT = """You are a shopping agent in ShopSimulator. The
+shopper's request may be complete or may omit a decision-critical shopper-owned fact.
+
+Before shopping, decide whether missing information such as budget, size, quantity,
+intended user, compatibility, preferred model, material, or color could change the
+safe product or variant choice. If and only if `ask_shopper` is available and such a
+fact is missing, ask one concise question before relying on a guessed value. Do not ask
+for facts already stated. If the request is sufficient, start shopping without asking.
+If `ask_shopper` is unavailable, never invent a missing preference; use only public
+constraints and shop evidence, and finish without purchase when a safe choice cannot be
+established.
+
+Never ask the shopper for catalog facts, availability, seller claims, or product-page
+attributes that should be learned with shop tools. Ask at most twice. Each assistant
+turn must contain at most one tool call."""
+MULTITURN_EVALUATION_SYSTEM_PROMPT += (
+    "\n\n执行规则：" + SYSTEM_PROMPT.split("执行规则：", 1)[1]
+)
+
+
+EVALUATION_CONDITIONS = {
+    "gap-ask-enabled",
+    "gap-ask-disabled",
+    "complete-ask-enabled",
+}
+
+
 MAX_BLOCKED_TOOL_CALLS = 3
 MODEL_COMPLETION_RETRIES = 2
 MODEL_RETRY_DELAY_SECONDS = 1
@@ -341,8 +368,30 @@ def collect_for_task(
     shopper=None,
     max_shopper_questions=2,
     teacher_first_ask=False,
+    evaluation_condition=None,
 ):
     """执行一个任务并返回完整轨迹；所有异常都会被写入轨迹后再释放环境。"""
+    if evaluation_condition is not None:
+        if evaluation_condition not in EVALUATION_CONDITIONS:
+            raise ValueError(
+                f"unsupported evaluation_condition: {evaluation_condition}"
+            )
+        ask_enabled = evaluation_condition.endswith("ask-enabled")
+        if ask_enabled and shopper is None:
+            raise ValueError(
+                f"{evaluation_condition} requires a ShopperSimulator"
+            )
+        if not ask_enabled and shopper is not None:
+            raise ValueError(
+                f"{evaluation_condition} must not receive a ShopperSimulator"
+            )
+        if evaluation_condition.startswith("gap-"):
+            validate_task_row(task)
+        multiturn_reset = True
+    else:
+        ask_enabled = shopper is not None
+        multiturn_reset = shopper is not None
+
     trajectory = {
         "trajectory_id": str(uuid4()),
         "task_id": int(task["task_id"]),
@@ -362,12 +411,18 @@ def collect_for_task(
         "done": False,
         "error": None,
         "release_error": None,
-        "interaction_mode": "multiturn" if shopper is not None else "standard",
+        "interaction_mode": (
+            evaluation_condition
+            if evaluation_condition is not None
+            else "multiturn" if shopper is not None else "standard"
+        ),
         "shopper_questions": [],
         "actor_llm_calls": 0,
         "shopper_llm_calls": 0,
         "teacher_policy": (
-            "force-first-ask-v1" if teacher_first_ask
+            f"evaluation-{evaluation_condition}-v1"
+            if evaluation_condition is not None
+            else "force-first-ask-v1" if teacher_first_ask
             else "autonomous-gap-v1" if shopper is not None
             else "complete-no-ask-v1"
         ),
@@ -376,27 +431,34 @@ def collect_for_task(
         raise ValueError("teacher_first_ask requires a ShopperSimulator")
     if teacher_first_ask and int(max_shopper_questions) < 1:
         raise ValueError("teacher_first_ask requires max_shopper_questions >= 1")
-    if shopper is not None:
-        validate_task_row(task)
+    if multiturn_reset:
+        if evaluation_condition is None or evaluation_condition.startswith("gap-"):
+            validate_task_row(task)
         env = env_factory(base_url=base_url, multiturn=True)
-        shopper_calls_before = int(getattr(shopper, "call_count", 0))
+        shopper_calls_before = int(getattr(shopper, "call_count", 0)) if shopper else 0
     else:
         env = env_factory(base_url=base_url)
         shopper_calls_before = 0
     try:
         # reset 建立任务状态；后续每一轮只允许一个工具调用。
-        initial = (
-            env.reset(task["task_id"], initial_request=task["initial_request"])
-            if shopper is not None
-            else env.reset(task["task_id"])
-        )
-        if shopper is not None:
+        if multiturn_reset:
+            initial = env.reset(task["task_id"], initial_request="")
+            if evaluation_condition == "complete-ask-enabled":
+                initial["instruction"] = env.shopper_context["instruction_full"]
+            else:
+                initial["instruction"] = task["initial_request"]
+        else:
+            initial = env.reset(task["task_id"])
+        if multiturn_reset:
             expected_hash = task.get("source_goal_hash")
-            trajectory["source_goal_verified"] = bool(
-                expected_hash
-                and source_goal_hash(env.shopper_context) == expected_hash
+            trajectory["source_goal_verified"] = (
+                source_goal_hash(env.shopper_context) == expected_hash
+                if expected_hash else None
             )
-            trajectory["opening_audit"] = deepcopy(task.get("opening_audit") or {})
+            if evaluation_condition is None or evaluation_condition.startswith("gap-"):
+                trajectory["opening_audit"] = deepcopy(
+                    task.get("opening_audit") or {}
+                )
         if initial.get("observation_state") is not None:
             latest_observation = render_structured_observation(
                 initial["observation_state"]
@@ -406,15 +468,36 @@ def collect_for_task(
                 "instruction", initial.get("observation", "")
             )
         trajectory["initial_result"] = initial
-        messages = _initial_messages(task, initial, multiturn=shopper is not None)
+        messages = _initial_messages(
+            task,
+            initial,
+            multiturn=multiturn_reset,
+            system_prompt=(
+                MULTITURN_EVALUATION_SYSTEM_PROMPT
+                if evaluation_condition is not None else None
+            ),
+        )
         trajectory["messages"] = messages
         tool_schemas = tools or (
-            MULTITURN_SHOP_TOOL_SCHEMAS if shopper is not None else SHOP_TOOL_SCHEMAS
+            MULTITURN_SHOP_TOOL_SCHEMAS if ask_enabled else SHOP_TOOL_SCHEMAS
         )
         consecutive_blocked_calls = 0
         latest_observation_truncated = False
 
-        while len(trajectory["steps"]) < int(max_steps):
+        def within_step_budget():
+            if evaluation_condition is None:
+                return len(trajectory["steps"]) < int(max_steps)
+            shop_steps = sum(
+                step.get("tool_name") != "ask_shopper"
+                for step in trajectory["steps"]
+            )
+            return (
+                shop_steps < int(max_steps)
+                and len(trajectory["steps"])
+                < int(max_steps) + int(max_shopper_questions)
+            )
+
+        while within_step_budget():
             # 先请求模型，再校验动作；工具结果会追加到 messages，成为下一轮上下文。
             if teacher_first_ask and trajectory["actor_llm_calls"] == 0:
                 assistant = client.complete(
@@ -493,7 +576,7 @@ def collect_for_task(
                     trajectory["status"] = "invalid_action_limit"
                     break
                 continue
-            if len(trajectory["steps"]) >= int(max_steps):
+            if not within_step_budget():
                 trajectory["status"] = "max_steps"
                 return trajectory
             messages.append(assistant)
@@ -599,6 +682,9 @@ def collect_tasks(
     max_steps=30,
     env_factory=ShopAgentEnv,
     attempts_per_task=1,
+    shopper=None,
+    max_shopper_questions=2,
+    evaluation_condition=None,
 ):
     attempts_per_task = int(attempts_per_task)
     if attempts_per_task < 1:
@@ -617,6 +703,9 @@ def collect_tasks(
                 base_url=base_url,
                 max_steps=max_steps,
                 attempt_index=attempt_index,
+                shopper=shopper,
+                max_shopper_questions=max_shopper_questions,
+                evaluation_condition=evaluation_condition,
             )
             append_jsonl(output_path, [trajectory])
             written.append(trajectory)
@@ -728,19 +817,23 @@ def _enforce_serial_tool_call(assistant):
     return serial_assistant, list(tool_calls[1:])
 
 
-def _initial_messages(task, initial, multiturn=False):
+def _initial_messages(task, initial, multiturn=False, system_prompt=None):
     prompt = task.get("prompt")
     if prompt:
         messages = [dict(message) for message in prompt]
     else:
         messages = [{
             "role": "system",
-            "content": MULTITURN_SYSTEM_PROMPT if multiturn else SYSTEM_PROMPT,
+            "content": system_prompt or (
+                MULTITURN_SYSTEM_PROMPT if multiturn else SYSTEM_PROMPT
+            ),
         }]
     if not any(message.get("role") == "system" for message in messages):
         messages.insert(0, {
             "role": "system",
-            "content": MULTITURN_SYSTEM_PROMPT if multiturn else SYSTEM_PROMPT,
+            "content": system_prompt or (
+                MULTITURN_SYSTEM_PROMPT if multiturn else SYSTEM_PROMPT
+            ),
         })
     messages.append({"role": "user", "content": initial.get("instruction", "")})
     return messages
