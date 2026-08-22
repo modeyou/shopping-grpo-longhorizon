@@ -2,6 +2,7 @@
 
 import os
 import hashlib
+import inspect
 import json
 import sys
 import tempfile
@@ -24,6 +25,7 @@ from scripts.train_lora_sft import (
     _validate_data_manifest_binding,
     _curriculum_task_ids,
     _final_training_metrics,
+    main,
     parse_args,
 )
 
@@ -381,6 +383,21 @@ class TrainLoraSftCliTest(unittest.TestCase):
             report_to, run_name = _swanlab_config(args)
             self.assertEqual(report_to, "swanlab")
             self.assertTrue(run_name.startswith("sft-lora-r16-"))
+
+    def test_progress_callback_does_not_read_cli_flags_from_training_arguments(self):
+        """Trainer callback arguments must not shadow the outer CLI namespace."""
+        source = inspect.getsource(main)
+        callback_source = source.split("class ProgressCallback", 1)[1].split(
+            "tokenizer, chat_template", 1
+        )[0]
+
+        self.assertIn("self.swanlab_enabled = bool(swanlab_enabled)", callback_source)
+        self.assertIn("if self.swanlab_enabled:", callback_source)
+        self.assertNotIn("if args.swanlab:", callback_source)
+        self.assertIn(
+            "ProgressCallback(swanlab_enabled=args.swanlab)",
+            source,
+        )
 
     def test_final_training_metrics_include_last_eval_result(self):
         metrics = _final_training_metrics(

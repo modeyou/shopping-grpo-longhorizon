@@ -627,9 +627,10 @@ def main():
 
     # --- Progress callback: 只补充 Trainer 默认没有的耗时和显存指标。 ---
     class ProgressCallback(TrainerCallback):
-        def __init__(self):
+        def __init__(self, *, swanlab_enabled):
             self.step_start = None
             self.epoch_start = None
+            self.swanlab_enabled = bool(swanlab_enabled)
 
         def on_step_begin(self, args, state, control, **kwargs):
             self.step_start = _time.time()
@@ -641,7 +642,7 @@ def main():
             gpu_mem = torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
             logs["step_time_s"] = round(elapsed, 3)
             logs["gpu_peak_memory_gib"] = round(gpu_mem, 3)
-            if args.swanlab:
+            if self.swanlab_enabled:
                 import swanlab
                 swanlab.log(
                     {
@@ -813,7 +814,7 @@ def main():
         train_dataset=_torch_dataset(train_examples, torch),
         eval_dataset=_torch_dataset(validation_examples, torch) if validation_examples else None,
         data_collator=partial(_collate, pad_token_id=tokenizer.pad_token_id, torch=torch),
-        callbacks=[ProgressCallback()],
+        callbacks=[ProgressCallback(swanlab_enabled=args.swanlab)],
     )
     result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     evaluation_metrics = trainer.evaluate() if validation_examples else {}
