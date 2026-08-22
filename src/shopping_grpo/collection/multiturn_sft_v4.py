@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 from shopping_grpo.collection.sft import acceptance_reasons, build_sft_row
+from shopping_grpo.multiturn.tasks import source_goal_hash
 
 
 V3 = "shopsimulator-reward-v3"
@@ -196,6 +197,20 @@ def audit_source(
     for trajectory in source_rows:
         task_id = int(trajectory["task_id"])
         reasons = []
+        terminal_goal = (trajectory.get("terminal_result") or {}).get("goal") or {}
+        if not str(terminal_goal.get("instruction_text") or "").strip():
+            goal_hash = None
+            reasons.append("source_goal_fields_missing")
+        else:
+            goal_hash = source_goal_hash(
+                {
+                    "instruction_full": terminal_goal["instruction_text"],
+                    "goal_options": terminal_goal.get("goal_options") or [],
+                }
+            )
+            recorded_hash = trajectory.get("source_goal_hash")
+            if recorded_hash is not None and recorded_hash != goal_hash:
+                reasons.append("source_goal_hash_mismatch")
         if trajectory.get("teacher_policy") != expected_policy:
             reasons.append("teacher_policy_mismatch")
         if task_id not in allowed_task_ids:
@@ -246,6 +261,7 @@ def audit_source(
         seen_task_ids.add(task_id)
         row = build_sft_row(rescored)
         row["teacher_policy"] = expected_policy
+        row["source_goal_hash"] = goal_hash
         row["schema_variant"] = (
             "complete-shop-tools-v1"
             if expected_policy == "complete-no-ask-v1"
