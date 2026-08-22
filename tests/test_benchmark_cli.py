@@ -41,6 +41,33 @@ class BenchmarkCliTest(unittest.TestCase):
         self.assertEqual(args.observation_detail_token_budget, 4096)
         self.assertEqual(args.observation_generic_token_budget, 768)
         self.assertEqual(args.observation_search_top_k, 20)
+        self.assertIsNone(args.limit)
+
+    def test_limit_is_parsed(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "evaluate_shop_benchmark.py",
+                "--benchmark",
+                "data/evaluation/tasks.jsonl",
+                "--output",
+                "outputs/eval/base/raw.jsonl",
+                "--summary",
+                "outputs/eval/base/summary.json",
+                "--model",
+                "Qwen/Qwen3.5-2B",
+                "--llm-base-url",
+                "http://127.0.0.1:8000/v1",
+                "--api-key",
+                "EMPTY",
+                "--limit",
+                "10",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.limit, 10)
 
 
 if __name__ == "__main__":  # pragma: no cover

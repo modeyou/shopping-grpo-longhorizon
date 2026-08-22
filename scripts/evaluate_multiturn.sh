@@ -4,9 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="${1:-base-qwen35-2b}"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT/.venv/bin/python}"
-TASKS="${MULTITURN_TASKS:-$ROOT/data/multiturn/evaluation-v1/tasks.jsonl}"
-OPENINGS="${MULTITURN_OPENINGS:-$ROOT/data/multiturn/evaluation-v1/openings.jsonl}"
+ASSET_DIR="${MULTITURN_ASSET_DIR:-$ROOT/data/multiturn/evaluation-dev-v2}"
+TASKS="${MULTITURN_TASKS:-$ASSET_DIR/tasks.jsonl}"
+GAP_OPENINGS="${MULTITURN_GAP_OPENINGS:-$ASSET_DIR/gap_openings.jsonl}"
+COMPLETE_OPENINGS="${MULTITURN_COMPLETE_OPENINGS:-$ASSET_DIR/complete_openings.jsonl}"
 OUTPUT_ROOT="${EVAL_OUTPUT_DIR:-$ROOT/outputs/evaluation/multiturn/$LABEL}"
+EVALUATION_LIMIT="${MULTITURN_LIMIT:-}"
 
 SHOPSIM_BASE_URL="${SHOPSIM_BASE_URL:-http://127.0.0.1:5700}"
 LLM_BASE_URL="${LLM_BASE_URL:-http://127.0.0.1:8000/v1}"
@@ -16,15 +19,25 @@ SHOPPER_BASE_URL="${SHOPPER_BASE_URL:-http://127.0.0.1:8001/v1}"
 SHOPPER_API_KEY="${SHOPPER_API_KEY:-local-qwen}"
 SHOPPER_MODEL="${SHOPPER_MODEL:-qwen3.8-27b}"
 
-for path in "$TASKS" "$OPENINGS"; do
+for path in "$TASKS" "$GAP_OPENINGS" "$COMPLETE_OPENINGS"; do
   if [[ ! -f "$path" ]]; then
     echo "ERROR: required evaluation asset is missing: $path" >&2
     exit 2
   fi
 done
 
+limit_args=()
+if [[ -n "$EVALUATION_LIMIT" ]]; then
+  if [[ ! "$EVALUATION_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: MULTITURN_LIMIT must be a positive integer" >&2
+    exit 2
+  fi
+  limit_args=(--limit "$EVALUATION_LIMIT")
+fi
+
 common=(
   --expected-tasks "$TASKS"
+  "${limit_args[@]}"
   --base-url "$SHOPSIM_BASE_URL"
   --model "$SERVED_MODEL_NAME"
   --llm-base-url "$LLM_BASE_URL"
@@ -57,15 +70,15 @@ run_condition() {
     "${@:3}"
 }
 
-run_condition gap-ask-enabled "$OPENINGS" \
+run_condition gap-ask-enabled "$GAP_OPENINGS" \
   --shopper-model "$SHOPPER_MODEL" \
   --shopper-base-url "$SHOPPER_BASE_URL" \
   --shopper-api-key "$SHOPPER_API_KEY" \
   --disable-shopper-thinking
 
-run_condition gap-ask-disabled "$OPENINGS"
+run_condition gap-ask-disabled "$GAP_OPENINGS"
 
-run_condition complete-ask-enabled "$TASKS" \
+run_condition complete-ask-enabled "$COMPLETE_OPENINGS" \
   --shopper-model "$SHOPPER_MODEL" \
   --shopper-base-url "$SHOPPER_BASE_URL" \
   --shopper-api-key "$SHOPPER_API_KEY" \

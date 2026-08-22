@@ -18,6 +18,11 @@ def parse_args():
         type=Path,
         help="Optional fixed-denominator task-ID manifest for frozen openings.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Evaluate only the first N frozen tasks while preserving source order.",
+    )
     parser.add_argument("--output", type=Path, required=True, help="原始评测轨迹 JSONL")
     parser.add_argument("--summary", type=Path, required=True, help="汇总指标 JSON")
     parser.add_argument("--base-url", default="http://127.0.0.1:5700")
@@ -105,6 +110,8 @@ def main():
         raise SystemExit("--observation-token-budget 不能为负数")
     if args.max_shopper_questions < 0:
         raise SystemExit("--max-shopper-questions 不能为负数")
+    if args.limit is not None and args.limit < 1:
+        raise SystemExit("--limit must be a positive integer")
     ask_enabled = args.condition in {
         "gap-ask-enabled", "complete-ask-enabled",
     }
@@ -117,6 +124,9 @@ def main():
         )
     tasks = load_tasks(args.benchmark)
     expected_tasks = load_tasks(args.expected_tasks) if args.expected_tasks else tasks
+    if args.limit is not None:
+        tasks = tasks[:args.limit]
+        expected_tasks = expected_tasks[:args.limit]
     expected_ids = [int(task["task_id"]) for task in expected_tasks]
     actual_ids = [int(task["task_id"]) for task in tasks]
     if len(expected_ids) != len(set(expected_ids)):
@@ -183,6 +193,7 @@ def main():
     summary["protocol"] = {
         "benchmark": str(args.benchmark),
         "expected_tasks": str(args.expected_tasks or args.benchmark),
+        "limit": args.limit,
         "model": args.model,
         "reward_contract": summary["reward_contract"],
         "max_steps": args.max_steps,
