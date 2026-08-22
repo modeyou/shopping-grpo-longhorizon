@@ -32,6 +32,10 @@ Qwen3.5-2B pre-training baseline milestone, gap ask-enabled/disabled and
 complete-request controls, Reward-reachability benchmark audit, and the
 clarification-specific metrics used for Base/SFT/GRPO comparison.
 
+[Current multi-turn experiment results](multiturn-experiment-results.md) records
+the Reward v4 development baseline and subsequent SFT/GRPO paired results; it
+is intentionally separate from the original reference artifacts in `experiments/`.
+
 [Training, Reward and evaluation decisions](training-reward-evaluation-decisions.md)
 is the consolidated Chinese study note for the development/test split, five
 evaluation panels, Reward v3/v4 boundary, Qwen3.5-2B memory budget,

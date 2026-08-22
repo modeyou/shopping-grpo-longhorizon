@@ -1,5 +1,9 @@
 # 多轮澄清教师数据与 SFT 复习笔记
 
+> 当前分支的运行契约已经冻结为 Environment v2.1 + Reward v4。本文后续的 Reward v3
+> 说明记录的是三类 Teacher 原始采集 provenance，不能直接作为当前训练验收结论。正式 SFT
+> 数据必须通过 `scripts/audit_multiturn_sft_reward_v4.py` 对教师实际购买、实际 options 和价格
+> 进行确定性 Reward v4 重审，并只保留 v3/v4 双重严格 `gold_purchase` 的交集。
 本文统一说明真实运行架构、教师数据采集、SFT 筛选和扩量策略。它是概念总览；具体命令参见
 [`multiturn-clarification-data.md`](multiturn-clarification-data.md)，最初的研究假设参见
 [`multiturn-clarification-design.md`](multiturn-clarification-design.md)。
