@@ -1,9 +1,18 @@
+import json
+
+import pytest
+
 from shopping_grpo.collection.multiturn_sft_mix import (
     POLICY_ORDER,
     allocate_row_quotas,
     membership_patterns,
     select_disjoint_rows,
     split_selected,
+)
+from shopping_grpo.evaluation.artifacts import (
+    ArtifactError,
+    guard_task_id_disjoint,
+    load_unique_task_ids,
 )
 
 
@@ -126,3 +135,34 @@ def test_membership_patterns_count_unique_tasks():
         "complete-no-ask-v1+composite-replay-v1+autonomous-gap-v1": 1,
         "composite-replay-v1": 1,
     }
+
+
+def _write_task_ids(path, task_ids):
+    path.write_text(
+        "".join(json.dumps({"task_id": task_id}) + "\n" for task_id in task_ids),
+        encoding="utf-8",
+    )
+
+
+def test_final_evaluation_task_guard_accepts_disjoint_inputs(tmp_path):
+    evaluation = tmp_path / "evaluation.jsonl"
+    train = tmp_path / "train.jsonl"
+    validation = tmp_path / "validation.jsonl"
+    _write_task_ids(evaluation, [10, 20])
+    _write_task_ids(train, [1, 2])
+    _write_task_ids(validation, [3])
+
+    assert load_unique_task_ids(evaluation) == {10, 20}
+    audit = guard_task_id_disjoint([train, validation], evaluation)
+    assert audit["overlap_count"] == 0
+    assert audit["candidate_rows"] == 3
+
+
+def test_final_evaluation_task_guard_rejects_overlap(tmp_path):
+    evaluation = tmp_path / "evaluation.jsonl"
+    train = tmp_path / "train.jsonl"
+    _write_task_ids(evaluation, [10, 20])
+    _write_task_ids(train, [1, 20])
+
+    with pytest.raises(ArtifactError, match="overlaps final evaluation"):
+        guard_task_id_disjoint([train], evaluation)

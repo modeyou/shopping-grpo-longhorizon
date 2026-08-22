@@ -31,6 +31,7 @@ tool schema, including `ask_shopper`, without inserting a synthetic question.
 
 "$GRPO_PYTHON" scripts/prepare_multiturn_sft_mix.py \
   --audit-manifest outputs/multiturn-sft/v4-audit-pools-02/manifest.json \
+  --evaluation-tasks data/evaluation/tasks.jsonl \
   --model "$MODEL_DIR" \
   --revision 15852e8c16360a2fea060d615a32b45270f8a8fc \
   --output-dir outputs/multiturn-sft/mix-formal-1800-v4-seed20260822 \
@@ -109,6 +110,7 @@ export OMP_NUM_THREADS=8
   --revision 15852e8c16360a2fea060d615a32b45270f8a8fc \
   --train outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/train.jsonl \
   --validation outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/validation.jsonl \
+  --evaluation-tasks data/evaluation/tasks.jsonl \
   --output outputs/models/multiturn-sft-v4-1800-seed20260822 \
   --max-length 24576 \
   --epochs 1 \

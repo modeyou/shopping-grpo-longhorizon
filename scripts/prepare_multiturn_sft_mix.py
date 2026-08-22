@@ -18,8 +18,16 @@ from shopping_grpo.collection.multiturn_sft_mix import (
     split_selected,
 )
 from shopping_grpo.collection.multiturn_sft_v4 import read_jsonl, sha256_file
-from shopping_grpo.evaluation.artifacts import write_json_atomic, write_jsonl_atomic
+from shopping_grpo.evaluation.artifacts import (
+    ArtifactError,
+    load_unique_task_ids,
+    write_json_atomic,
+    write_jsonl_atomic,
+)
 from shopping_grpo.training.sft.dataset import IGNORE_INDEX, build_supervised_example
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 POLICY_ARTIFACTS = {
@@ -32,6 +40,11 @@ POLICY_ARTIFACTS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit-manifest", type=Path, required=True)
+    parser.add_argument(
+        "--evaluation-tasks",
+        type=Path,
+        default=ROOT / "data/evaluation/tasks.jsonl",
+    )
     parser.add_argument("--model", required=True)
     parser.add_argument("--revision")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -182,6 +195,18 @@ def main() -> int:
     if output.exists() and any(output.iterdir()):
         raise SystemExit(f"output directory must be new or empty: {output}")
 
+    evaluation_path = args.evaluation_tasks.resolve()
+    try:
+        evaluation_ids = load_unique_task_ids(evaluation_path)
+    except ArtifactError as exc:
+        raise SystemExit(str(exc)) from exc
+    evaluation_exclusion = {
+        "path": str(evaluation_path),
+        "sha256": sha256_file(evaluation_path),
+        "rows": len(evaluation_ids),
+        "selected_overlap_count": 0,
+    }
+
     audit_manifest = json.loads(
         args.audit_manifest.read_text(encoding="utf-8")
     )
@@ -195,14 +220,28 @@ def main() -> int:
         path = Path(artifact["path"])
         if sha256_file(path) != artifact["sha256"]:
             raise SystemExit(f"pool hash mismatch: {path}")
-        rows = read_jsonl(path)
+        source_rows = read_jsonl(path)
+        excluded = {
+            int(row["task_id"])
+            for row in source_rows
+            if int(row["task_id"]) in evaluation_ids
+        }
+        rows = [
+            row
+            for row in source_rows
+            if int(row["task_id"]) not in evaluation_ids
+        ]
+        if not rows:
+            raise SystemExit(f"all {policy} rows overlap final evaluation")
         if policy == "complete-no-ask-v1":
             rows = augment_complete_schemas(rows, seed=args.seed)
         pools[policy] = rows
         pool_inputs[policy] = {
             "path": str(path.resolve()),
             "sha256": artifact["sha256"],
-            "rows": len(rows),
+            "source_rows": len(source_rows),
+            "evaluation_overlap_excluded": len(excluded),
+            "eligible_rows": len(rows),
         }
 
     tokenizer, chat_template = _load_preprocessing(args.model, args.revision)
@@ -253,6 +292,11 @@ def main() -> int:
         raise AssertionError("selected mix contains duplicate task IDs")
     if len(goal_hashes) != len(set(goal_hashes)):
         raise AssertionError("selected mix contains duplicate source-goal hashes")
+    selected_overlap = sorted(set(task_values) & evaluation_ids)
+    if selected_overlap:
+        raise AssertionError(
+            f"selected mix overlaps final evaluation: {selected_overlap[:20]}"
+        )
 
     output.mkdir(parents=True, exist_ok=True)
     all_path = output / "all.jsonl"
@@ -303,6 +347,7 @@ def main() -> int:
         "token_share_tolerance": args.token_share_tolerance,
         "row_quotas_from_token_averages": quotas,
         "pool_inputs": pool_inputs,
+        "evaluation_exclusion": evaluation_exclusion,
         "pool_membership_patterns": membership_patterns(pools),
         "tokenization": tokenization,
         "selected": summary,

@@ -14,7 +14,7 @@ POLICY_ORDER = (
     "composite-replay-v1",
     "autonomous-gap-v1",
 )
-MIX_SCHEMA_VERSION = "shopping-multiturn-sft-mix-v1"
+MIX_SCHEMA_VERSION = "shopping-multiturn-sft-mix-v2"
 
 
 def stable_hash(seed: int, *parts: object) -> str:

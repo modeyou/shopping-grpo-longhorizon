@@ -67,6 +67,52 @@ def index_jsonl(
     return result
 
 
+def load_unique_task_ids(path: str | Path) -> set[int]:
+    """Load normalized, unique integer task IDs from a JSONL artifact."""
+    task_ids: set[int] = set()
+    for row_number, row in enumerate(iter_jsonl(path), start=1):
+        if "task_id" not in row:
+            raise ArtifactError(f"{path}:{row_number}: missing key 'task_id'")
+        try:
+            task_id = int(row["task_id"])
+        except (TypeError, ValueError) as exc:
+            raise ArtifactError(
+                f"{path}:{row_number}: task_id must be an integer"
+            ) from exc
+        if task_id in task_ids:
+            raise ArtifactError(f"{path}:{row_number}: duplicate task_id={task_id}")
+        task_ids.add(task_id)
+    if not task_ids:
+        raise ArtifactError(f"{path}: no task IDs")
+    return task_ids
+
+
+def guard_task_id_disjoint(
+    candidate_paths: Iterable[str | Path], evaluation_path: str | Path
+) -> dict:
+    """Fail closed when any candidate training task occurs in final evaluation."""
+    evaluation_ids = load_unique_task_ids(evaluation_path)
+    candidate_ids: set[int] = set()
+    candidate_rows = 0
+    for path in candidate_paths:
+        ids = load_unique_task_ids(path)
+        candidate_rows += len(ids)
+        candidate_ids.update(ids)
+    overlap = sorted(candidate_ids & evaluation_ids)
+    if overlap:
+        raise ArtifactError(
+            "training data overlaps final evaluation task IDs: "
+            f"{overlap[:20]} (total={len(overlap)})"
+        )
+    return {
+        "evaluation_tasks": str(Path(evaluation_path).resolve()),
+        "evaluation_rows": len(evaluation_ids),
+        "candidate_rows": candidate_rows,
+        "unique_candidate_tasks": len(candidate_ids),
+        "overlap_count": 0,
+    }
+
+
 def _prepare_output(path: str | Path, *, force: bool) -> Path:
     output = Path(path)
     if output.exists() and not force:

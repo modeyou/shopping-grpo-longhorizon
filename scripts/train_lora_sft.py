@@ -13,12 +13,18 @@ import time as _time
 from functools import partial
 from pathlib import Path
 
-from shopping_grpo.evaluation.artifacts import ArtifactError
+from shopping_grpo.evaluation.artifacts import (
+    ArtifactError,
+    guard_task_id_disjoint,
+)
 from shopping_grpo.evaluation.blind_guard import guard_blind_final
 from shopping_grpo.training.sft.dataset import (
     load_supervised_examples,
     select_training_examples,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+
 
 DEFAULT_TARGET_MODULES = (
     "q_proj",
@@ -42,6 +48,12 @@ def parse_args():
     parser.add_argument("--model", required=True, help="Hugging Face 模型名或本地模型目录")
     parser.add_argument("--train", type=Path, required=True, help="训练 SFT JSONL")
     parser.add_argument("--validation", type=Path, default=None, help="可选验证 SFT JSONL")
+    parser.add_argument(
+        "--evaluation-tasks",
+        type=Path,
+        default=ROOT / "data/evaluation/tasks.jsonl",
+        help="最终评测 task_id；训练与验证必须零重叠",
+    )
     parser.add_argument(
         "--curriculum-manifest",
         type=Path,
@@ -207,6 +219,9 @@ def _reproducibility_record(args, torch):
         "model_revision": args.revision,
         "model_files": model_files,
         "train_sha256": _sha256_file(args.train),
+        "evaluation_tasks_sha256": _sha256_file(
+            getattr(args, "evaluation_tasks", ROOT / "data/evaluation/tasks.jsonl")
+        ),
         "validation_sha256": (
             _sha256_file(args.validation) if args.validation else None
         ),
@@ -516,6 +531,10 @@ def main():
             args.curriculum_manifest, args.curriculum_stage, "validation"
         )
     try:
+        guard_task_id_disjoint(
+            [args.train, *([args.validation] if args.validation else [])],
+            args.evaluation_tasks,
+        )
         guard_blind_final(
             [args.train, *([args.validation] if args.validation else [])],
             allowed=False,
