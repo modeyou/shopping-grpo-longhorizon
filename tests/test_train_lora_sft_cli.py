@@ -1,6 +1,7 @@
 """验证 LoRA SFT 入口的关键默认值。"""
 
 import os
+import hashlib
 import json
 import sys
 import tempfile
@@ -20,6 +21,7 @@ from scripts.train_lora_sft import (
     _resolve_dtype,
     _swanlab_config,
     _validate_reproducibility_request,
+    _validate_data_manifest_binding,
     _curriculum_task_ids,
     _final_training_metrics,
     parse_args,
@@ -185,6 +187,60 @@ class TrainLoraSftCliTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "requires --validation"):
             _interval_training_args(args, has_validation=False)
 
+    def test_formal_training_binds_v2_data_manifest_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            train = root / "train.jsonl"
+            validation = root / "validation.jsonl"
+            evaluation = root / "evaluation.jsonl"
+            train.write_text('{"task_id":1}\n', encoding="utf-8")
+            validation.write_text('{"task_id":2}\n', encoding="utf-8")
+            evaluation.write_text('{"task_id":3}\n', encoding="utf-8")
+
+            def digest(path):
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "shopping-multiturn-sft-mix-v2",
+                        "reward": "shopsimulator-reward-v4",
+                        "split": {"task_disjoint": True},
+                        "evaluation_exclusion": {
+                            "sha256": digest(evaluation),
+                            "selected_overlap_count": 0,
+                        },
+                        "artifacts": {
+                            "train.jsonl": {"rows": 1, "sha256": digest(train)},
+                            "validation.jsonl": {
+                                "rows": 1,
+                                "sha256": digest(validation),
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                data_manifest=manifest,
+                require_clean_git=True,
+                train=train,
+                validation=validation,
+                evaluation_tasks=evaluation,
+            )
+            binding = _validate_data_manifest_binding(args)
+            expected_manifest_hash = digest(manifest)
+
+        self.assertEqual(binding["sha256"], expected_manifest_hash)
+        self.assertEqual(
+            binding["schema_version"], "shopping-multiturn-sft-mix-v2"
+        )
+
+    def test_clean_git_formal_training_requires_data_manifest(self):
+        args = SimpleNamespace(data_manifest=None, require_clean_git=True)
+        with self.assertRaisesRegex(SystemExit, "requires --data-manifest"):
+            _validate_data_manifest_binding(args)
     def test_reproducibility_record_freezes_inputs_and_runtime(self):
         class FakeCuda:
             @staticmethod

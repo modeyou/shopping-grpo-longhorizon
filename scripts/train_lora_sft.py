@@ -49,6 +49,12 @@ def parse_args():
     parser.add_argument("--train", type=Path, required=True, help="训练 SFT JSONL")
     parser.add_argument("--validation", type=Path, default=None, help="可选验证 SFT JSONL")
     parser.add_argument(
+        "--data-manifest",
+        type=Path,
+        default=None,
+        help="冻结 SFT 数据 manifest；正式 clean-Git 训练必须提供",
+    )
+    parser.add_argument(
         "--evaluation-tasks",
         type=Path,
         default=ROOT / "data/evaluation/tasks.jsonl",
@@ -154,6 +160,57 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
+def _validate_data_manifest_binding(args):
+    if args.data_manifest is None:
+        if args.require_clean_git:
+            raise SystemExit("--require-clean-git requires --data-manifest")
+        return None
+    if args.validation is None:
+        raise SystemExit("--data-manifest requires --validation")
+
+    path = args.data_manifest.resolve()
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid data manifest: {path}") from exc
+    if manifest.get("schema_version") != "shopping-multiturn-sft-mix-v2":
+        raise SystemExit("data manifest must use shopping-multiturn-sft-mix-v2")
+    if manifest.get("reward") != "shopsimulator-reward-v4":
+        raise SystemExit("data manifest must use shopsimulator-reward-v4")
+    split = manifest.get("split") or {}
+    if split.get("task_disjoint") is not True:
+        raise SystemExit("data manifest does not guarantee task-disjoint split")
+
+    artifacts = manifest.get("artifacts") or {}
+    for name, candidate in (
+        ("train.jsonl", args.train),
+        ("validation.jsonl", args.validation),
+    ):
+        record = artifacts.get(name) or {}
+        if record.get("sha256") != _sha256_file(candidate):
+            raise SystemExit(f"data manifest hash mismatch: {name}")
+        actual_rows = sum(
+            1 for line in Path(candidate).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+        if record.get("rows") != actual_rows:
+            raise SystemExit(f"data manifest row count mismatch: {name}")
+
+    exclusion = manifest.get("evaluation_exclusion") or {}
+    if exclusion.get("selected_overlap_count") != 0:
+        raise SystemExit("data manifest evaluation overlap is not zero")
+    evaluation_hash = _sha256_file(args.evaluation_tasks)
+    if exclusion.get("sha256") != evaluation_hash:
+        raise SystemExit("data manifest evaluation task hash mismatch")
+
+    return {
+        "path": str(path),
+        "sha256": _sha256_file(path),
+        "schema_version": manifest["schema_version"],
+        "reward": manifest["reward"],
+        "evaluation_tasks_sha256": evaluation_hash,
+    }
+
 def _git_state():
     root = Path(__file__).resolve().parents[1]
     try:
@@ -184,7 +241,7 @@ def _nvidia_driver_versions():
         return None
     return sorted({line.strip() for line in output.splitlines() if line.strip()})
 
-def _reproducibility_record(args, torch):
+def _reproducibility_record(args, torch, data_manifest=None):
     packages = {}
     for distribution in (
         "accelerate",
@@ -218,6 +275,7 @@ def _reproducibility_record(args, torch):
         "git": _git_state(),
         "model_revision": args.revision,
         "model_files": model_files,
+        "data_manifest": data_manifest,
         "train_sha256": _sha256_file(args.train),
         "evaluation_tasks_sha256": _sha256_file(
             getattr(args, "evaluation_tasks", ROOT / "data/evaluation/tasks.jsonl")
@@ -541,6 +599,7 @@ def main():
         )
     except ArtifactError as exc:
         raise SystemExit(str(exc)) from exc
+    data_manifest = _validate_data_manifest_binding(args)
     _validate_optional_training_dependencies(args)
     (
         torch,
@@ -561,7 +620,9 @@ def main():
     ) = _training_dependencies()
     interval_args = _interval_training_args(args, bool(args.validation))
     set_seed(args.seed, deterministic=args.full_determinism)
-    reproducibility = _reproducibility_record(args, torch)
+    reproducibility = _reproducibility_record(
+        args, torch, data_manifest=data_manifest
+    )
     _validate_reproducibility_request(args, reproducibility)
 
     # --- Progress callback: 只补充 Trainer 默认没有的耗时和显存指标。 ---

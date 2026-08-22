@@ -110,6 +110,7 @@ export OMP_NUM_THREADS=8
   --revision 15852e8c16360a2fea060d615a32b45270f8a8fc \
   --train outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/train.jsonl \
   --validation outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/validation.jsonl \
+  --data-manifest outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/manifest.json \
   --evaluation-tasks data/evaluation/tasks.jsonl \
   --output outputs/models/multiturn-sft-v4-1800-seed20260822 \
   --max-length 24576 \
