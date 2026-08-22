@@ -15,6 +15,8 @@ other preference. Return one JSON object only:
 Every used_facts entry must be copied verbatim from ALLOWED FACTS. If no allowed fact
 answers the question, use an empty list and say you have no additional preference."""
 
+NO_ADDITIONAL_PREFERENCE = "没有其他补充，请按我已经说明的要求选择。"
+
 
 class ControlledShopper:
     """Expose only opening-owned omitted facts to a separate shopper LLM."""
@@ -40,7 +42,7 @@ class ControlledShopper:
 
         if not self.allowed_facts:
             result = {
-                "answer": "没有其他补充，请按我已经说明的要求选择。",
+                "answer": NO_ADDITIONAL_PREFERENCE,
                 "used_facts": [],
             }
         else:
@@ -76,8 +78,13 @@ class ControlledShopper:
             raise ValueError("shopper answer must contain answer and used_facts")
         if not all(isinstance(item, str) and item in self.allowed_facts for item in used):
             raise ValueError("shopper used_facts must come from allowed facts")
-        if self.allowed_facts and not used:
-            raise ValueError("gap shopper answer must use at least one allowed fact")
+        if not used:
+            # The shopper prompt explicitly permits an empty provenance list when
+            # the question cannot be answered by an allowed fact. Never expose the
+            # model's unconstrained free text in that case: use a deterministic,
+            # preference-free answer so an irrelevant question remains valid
+            # without creating a new private fact.
+            answer = NO_ADDITIONAL_PREFERENCE
         record = {"question": question, "answer": answer, "used_facts": list(used)}
         self.history.append(record)
         return record

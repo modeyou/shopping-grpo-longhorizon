@@ -153,6 +153,43 @@ def test_complete_opening_uses_deterministic_no_preference_answer():
     assert shopper.call_count == 0
 
 
+def test_gap_shopper_empty_provenance_uses_safe_deterministic_fallback():
+    class EmptyFactClient:
+        def complete(self, messages, tools):
+            return {
+                "content": json.dumps(
+                    {
+                        "answer": "我还想要一个未授权的红色版本。",
+                        "used_facts": [],
+                    },
+                    ensure_ascii=False,
+                )
+            }
+
+    shopper = ControlledShopper(
+        EmptyFactClient(),
+        initial_request="想买自动浇水器。",
+        allowed_facts=["预算大约230元"],
+        max_questions=2,
+    )
+
+    answer = shopper.answer("颜色有什么要求？")
+
+    assert answer == {
+        "question": "颜色有什么要求？",
+        "answer": "没有其他补充，请按我已经说明的要求选择。",
+        "used_facts": [],
+    }
+    assert shopper.call_count == 1
+    assert shopper.history == [
+        {
+            "question": "颜色有什么要求？",
+            "answer": "没有其他补充，请按我已经说明的要求选择。",
+            "used_facts": [],
+        }
+    ]
+
+
 def test_repeated_question_is_rejected_without_incrementing_count():
     client = FakeClient()
     shopper = ControlledShopper(
