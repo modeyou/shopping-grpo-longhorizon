@@ -28,8 +28,14 @@ class SftCurriculumTest(unittest.TestCase):
         self.assertEqual(len(commands), 3)
         self.assertEqual(commands[0]["stage"], "a")
         self.assertEqual(commands[0]["train"][commands[0]["train"].index("--model") + 1], "Qwen/Qwen3.5-2B")
-        self.assertTrue(commands[1]["train"][commands[1]["train"].index("--model") + 1].endswith("stage-a/merged"))
-        self.assertTrue(commands[2]["merge"][commands[2]["merge"].index("--output") + 1].endswith("stage-c/merged"))
+        stage_b_model = Path(
+            commands[1]["train"][commands[1]["train"].index("--model") + 1]
+        )
+        self.assertEqual(stage_b_model.parts[-2:], ("stage-a", "merged"))
+        stage_c_output = Path(
+            commands[2]["merge"][commands[2]["merge"].index("--output") + 1]
+        )
+        self.assertEqual(stage_c_output.parts[-2:], ("stage-c", "merged"))
         self.assertIn("--curriculum-manifest", commands[0]["train"])
         self.assertIn("--gradient-checkpointing", commands[0]["train"])
 
@@ -52,9 +58,21 @@ class SftCurriculumTest(unittest.TestCase):
             swanlab=True,
         )
 
+        train = commands[0]["train"]
         self.assertEqual([command["stage"] for command in commands], ["b"])
-        self.assertIn("--swanlab", commands[0]["train"])
-        self.assertIn("stage-b/adapter", " ".join(commands[0]["train"]))
+        self.assertIn("--swanlab", train)
+        self.assertEqual(
+            train[train.index("--swanlab-project") + 1],
+            "shopping-multiturn-agentic",
+        )
+        self.assertEqual(
+            train[train.index("--swanlab-run-name") + 1],
+            "sft-curriculum-pure-v4-stage-b",
+        )
+        self.assertEqual(
+            Path(train[train.index("--output") + 1]),
+            Path("outputs") / "stage-b" / "adapter",
+        )
 
         with self.assertRaisesRegex(ValueError, "after"):
             build_stage_commands(

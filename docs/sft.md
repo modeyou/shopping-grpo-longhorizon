@@ -48,6 +48,27 @@ The generated manifest freezes source hashes, output hashes, selected task IDs,
 policy/schema counts, token counts, split membership, model revision, and seed.
 Training data must have zero overlap with the final evaluation task set.
 
+## SwanLab setup
+
+The 64-example smoke uses `--swanlab-mode local` and needs no cloud login.
+Formal training uses `online` mode. Authenticate once on the training server with
+the SwanLab CLI installed in the project environment:
+
+```bash
+: "${SWANLAB_BIN:?set SWANLAB_BIN to the project SwanLab CLI}"
+"$SWANLAB_BIN" --version
+"$SWANLAB_BIN" login
+"$SWANLAB_BIN" verify
+"$SWANLAB_BIN" ping
+```
+
+Use the interactive login prompt instead of putting the API key in shell history
+or a launch script. Do not use `login --local` inside the repository because its
+`.swanlab/` credentials directory can violate the clean-Git reproducibility gate.
+The formal run is uploaded once from world rank zero to project
+`shopping-multiturn-agentic`. SFT run names start with `sft-lora-`; the frozen
+formal name is `qwen35-2b-sft-lora-v4-n1800-seed20260822`.
+
 ## Formal recipe
 
 | Setting | Value |
@@ -113,8 +134,9 @@ export OMP_NUM_THREADS=8
   --full-determinism \
   --require-clean-git \
   --swanlab \
-  --swanlab-project shopping-grpo-multiturn \
-  --swanlab-run-name qwen35-2b-multiturn-v4-1800-seed20260822
+  --swanlab-mode online \
+  --swanlab-project shopping-multiturn-agentic \
+  --swanlab-run-name qwen35-2b-sft-lora-v4-n1800-seed20260822
 ```
 
 ## Reproducibility contract

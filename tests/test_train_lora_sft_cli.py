@@ -151,7 +151,7 @@ class TrainLoraSftCliTest(unittest.TestCase):
         self.assertEqual(args.dtype, "auto")
         self.assertFalse(args.bf16)
         self.assertFalse(args.swanlab)
-        self.assertEqual(args.swanlab_project, "shopping-grpo")
+        self.assertEqual(args.swanlab_project, "shopping-multiturn-agentic")
         self.assertEqual(
             args.curriculum_manifest,
             Path("data/sft_curriculum/manifest.json"),
@@ -324,7 +324,7 @@ class TrainLoraSftCliTest(unittest.TestCase):
         with patch.dict(sys.modules, {"swanlab": object()}), patch.dict(os.environ, {}, clear=True):
             report_to, run_name = _swanlab_config(args)
             self.assertEqual(report_to, "swanlab")
-            self.assertIn("lora-r16", run_name)
+            self.assertTrue(run_name.startswith("sft-lora-r16-"))
 
     def test_final_training_metrics_include_last_eval_result(self):
         metrics = _final_training_metrics(
