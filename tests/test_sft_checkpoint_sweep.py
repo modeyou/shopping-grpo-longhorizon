@@ -1,13 +1,18 @@
 import hashlib
+import io
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from scripts.run_sft_checkpoint_sweep import (
     build_actor_command,
     build_merge_command,
+    checkpoint_result,
+    shopper_infrastructure_errors,
     validate_assets,
+    validate_shopper_api,
 )
 
 
@@ -85,3 +90,74 @@ def test_commands_keep_merge_on_cpu_and_actor_single_gpu_external():
     assert actor[actor.index("--port") + 1] == "18102"
     assert actor[actor.index("--served-model-name") + 1] == "candidate"
     assert "CUDA_VISIBLE_DEVICES" not in " ".join(actor)
+
+
+def test_validate_shopper_api_makes_authenticated_chat_request():
+    response = io.BytesIO(
+        json.dumps(
+            {"choices": [{"message": {"content": "OK"}}]}
+        ).encode()
+    )
+
+    with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        validate_shopper_api(
+            base_url="https://shopper.example.test/v1",
+            api_key="secret",
+            model="shopper-model",
+        )
+
+    request = urlopen.call_args.args[0]
+    assert request.full_url == (
+        "https://shopper.example.test/v1/chat/completions"
+    )
+    assert request.get_header("Authorization") == "Bearer secret"
+
+
+def test_shopper_infrastructure_errors_detects_forbidden_only():
+    rows = [
+        {"task_id": 1, "error": {"message": "HTTP Error 403: Forbidden"}},
+        {"task_id": 2, "error": {"message": "ContextBudgetError"}},
+        {"task_id": 3, "error": None},
+    ]
+
+    assert [
+        row["task_id"] for row in shopper_infrastructure_errors(rows)
+    ] == [1]
+
+
+def test_checkpoint_result_rejects_shopper_infrastructure_failures(
+    tmp_path,
+):
+    for condition in (
+        "gap-ask-enabled",
+        "gap-ask-disabled",
+        "complete-ask-enabled",
+    ):
+        root = tmp_path / condition
+        root.mkdir()
+        _write_jsonl(
+            root / "trajectories.jsonl",
+            [
+                {
+                    "task_id": 3,
+                    "error": {"message": "HTTP Error 403: Forbidden"},
+                }
+            ],
+        )
+        (root / "summary.json").write_text(
+            json.dumps(
+                {
+                    "completed_tasks": 1,
+                    "missing_tasks": [],
+                    "protocol": {
+                        "model": "candidate",
+                        "reward_contract": "shopsimulator-reward-v4",
+                    },
+                    "clarification": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    with pytest.raises(ValueError, match="Shopper infrastructure errors"):
+        checkpoint_result(tmp_path, 1, "candidate")

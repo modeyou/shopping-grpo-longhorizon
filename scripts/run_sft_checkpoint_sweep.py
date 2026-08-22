@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -21,6 +22,13 @@ CONDITIONS = (
     "gap-ask-enabled",
     "gap-ask-disabled",
     "complete-ask-enabled",
+)
+SHOPPER_INFRASTRUCTURE_ERROR_MARKERS = (
+    "HTTP Error 401",
+    "HTTP Error 403",
+    "Unauthorized",
+    "Forbidden",
+    "Connection refused",
 )
 
 
@@ -177,6 +185,64 @@ def wait_for_actor(
     raise TimeoutError(f"Actor readiness timeout; inspect {log_path}")
 
 
+def validate_shopper_api(
+    *, base_url: str, api_key: str, model: str, timeout: int = 120
+) -> None:
+    """Make one minimal authenticated request before launching a long sweep."""
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Reply with the single word OK.",
+                }
+            ],
+            "temperature": 0,
+            "max_tokens": 8,
+            "stream": False,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Shopper API preflight failed with HTTP {exc.code}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Shopper API preflight connection failed: {exc.reason}"
+        ) from exc
+    if not isinstance(result.get("choices"), list) or not result["choices"]:
+        raise RuntimeError("Shopper API preflight returned no choices")
+    print("Shopper API preflight passed", flush=True)
+
+
+def shopper_infrastructure_errors(rows: list[dict]) -> list[dict]:
+    failures = []
+    for row in rows:
+        serialized = json.dumps(
+            row.get("error"), ensure_ascii=False, default=str
+        )
+        if any(
+            marker in serialized
+            for marker in SHOPPER_INFRASTRUCTURE_ERROR_MARKERS
+        ):
+            failures.append(row)
+    return failures
+
+
 def stop_actors(processes: list[subprocess.Popen], timeout: int = 60) -> None:
     for process in processes:
         if process.poll() is None:
@@ -207,6 +273,12 @@ def checkpoint_result(output: Path, expected_tasks: int, model_name: str) -> dic
             raise ValueError(f"incomplete checkpoint evaluation: {summary_path}")
         if summary.get("missing_tasks") != []:
             raise ValueError(f"missing checkpoint sweep tasks: {summary_path}")
+        infrastructure_errors = shopper_infrastructure_errors(rows)
+        if infrastructure_errors:
+            raise ValueError(
+                "Shopper infrastructure errors in "
+                f"{trajectories}: {len(infrastructure_errors)}/{len(rows)}"
+            )
         protocol = summary["protocol"]
         if protocol.get("model") != model_name:
             raise ValueError(f"model mismatch in {summary_path}")
@@ -318,6 +390,12 @@ def main() -> None:
         "final_evaluation_used": False,
     }
     print(json.dumps(plan, ensure_ascii=False, indent=2), flush=True)
+    if not args.dry_run:
+        validate_shopper_api(
+            base_url=os.environ["SHOPPER_BASE_URL"],
+            api_key=os.environ["SHOPPER_API_KEY"],
+            model=os.environ["SHOPPER_MODEL"],
+        )
     if args.preflight_only:
         print("SFT CHECKPOINT SWEEP PREFLIGHT PASSED")
         return
