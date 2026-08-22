@@ -280,6 +280,16 @@ def _loss_only_eval_trainer_class(trainer_base, enable_skip_logits):
     return LossOnlyEvalTrainer
 
 
+def _final_training_metrics(train_metrics, log_history):
+    """Merge Trainer train metrics with the final validation metrics."""
+    metrics = dict(train_metrics)
+    for entry in reversed(log_history):
+        if "eval_loss" in entry:
+            metrics.update(entry)
+            break
+    return metrics
+
+
 def _load_preprocessing_components(
     model_name,
     auto_config,
@@ -550,17 +560,27 @@ def main():
     )
     result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     trainer.save_model(str(args.output))
+
+    final_metrics = _final_training_metrics(result.metrics, trainer.state.log_history)
+    total_time = _time.time() - _start_time
+    gpu_peak = torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        peak_tensor = torch.tensor(gpu_peak, device=torch.cuda.current_device())
+        torch.distributed.all_reduce(peak_tensor, op=torch.distributed.ReduceOp.MAX)
+        gpu_peak = float(peak_tensor.item())
+
+    if not trainer.is_world_process_zero():
+        return
+
     chat_template.save_pretrained(str(args.output))
 
     # --- 训练完成摘要 ---
-    total_time = _time.time() - _start_time
-    gpu_peak = torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
 
     train_summary = {
         "train_examples": len(train_examples),
         "validation_examples": len(validation_examples),
         "train_loss": result.training_loss,
-        "metrics": result.metrics,
+        "metrics": final_metrics,
         "log_history": trainer.state.log_history,
         "peak_gpu_memory_gib": round(gpu_peak, 2),
         "total_time_minutes": round(total_time / 60, 1) if total_time else None,
@@ -582,7 +602,7 @@ def main():
     print(f"\n{'='*60}")
     print("  训练完成")
     print(f"  train_loss={result.training_loss:.4f}")
-    print(f"  eval_loss={result.metrics.get('eval_loss', 'N/A')}")
+    print(f"  eval_loss={final_metrics.get('eval_loss', 'N/A')}")
     print(f"  peak_gpu={gpu_peak:.1f} GiB")
     print(f"  adapter → {args.output}")
     print(f"{'='*60}\n")

@@ -17,6 +17,7 @@ from scripts.train_lora_sft import (
     _resolve_dtype,
     _swanlab_config,
     _curriculum_task_ids,
+    _final_training_metrics,
     parse_args,
 )
 
@@ -196,6 +197,20 @@ class TrainLoraSftCliTest(unittest.TestCase):
             report_to, run_name = _swanlab_config(args)
             self.assertEqual(report_to, "swanlab")
             self.assertIn("lora-r16", run_name)
+
+    def test_final_training_metrics_include_last_eval_result(self):
+        metrics = _final_training_metrics(
+            {"train_loss": 0.4, "epoch": 1.0},
+            [
+                {"eval_loss": 0.3, "epoch": 0.5},
+                {"loss": 0.2, "epoch": 1.0},
+                {"eval_loss": 0.25, "epoch": 1.0},
+            ],
+        )
+
+        self.assertEqual(metrics["train_loss"], 0.4)
+        self.assertEqual(metrics["eval_loss"], 0.25)
+        self.assertEqual(metrics["epoch"], 1.0)
 
     def test_qwen35_uses_processor_template_and_underlying_tokenizer(self):
         """Qwen3.5 是多模态检查点，不能只加载 AutoTokenizer。"""
