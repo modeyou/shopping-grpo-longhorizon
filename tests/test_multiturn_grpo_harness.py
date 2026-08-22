@@ -8,8 +8,10 @@ from shopping_grpo.environment.tools import MULTITURN_SHOP_TOOL_SCHEMAS
 from shopping_grpo.multiturn.tasks import source_goal_hash
 from shopping_grpo.training.grpo.adapter.runtime import (
     MULTITURN_HARNESS_VERSION,
+    current_environment,
     current_runtime_state,
     current_shopper,
+    make_runtime_state,
     multiturn_spec_from_kwargs,
 )
 from shopping_grpo.training.grpo.adapter.session import ShopSimulatorSession
@@ -74,10 +76,10 @@ class FakeClient:
         }
 
 
-def make_ask_tool():
+def make_tool(name):
     schema = next(
         item for item in MULTITURN_SHOP_TOOL_SCHEMAS
-        if item["function"]["name"] == "ask_shopper"
+        if item["function"]["name"] == name
     )
     try:
         from verl.tools.schemas import OpenAIFunctionToolSchema
@@ -86,6 +88,10 @@ def make_ask_tool():
     else:
         tool_schema = OpenAIFunctionToolSchema.model_validate(schema)
     return ShopSimulatorTool({}, tool_schema)
+
+
+def make_ask_tool():
+    return make_tool("ask_shopper")
 
 
 def test_multiturn_metadata_contract_rejects_inconsistent_modes():
@@ -188,6 +194,30 @@ def test_gap_shopper_empty_provenance_uses_safe_deterministic_fallback():
             "used_facts": [],
         }
     ]
+
+
+def test_guard_rejection_repeats_current_legal_targets_to_the_agent():
+    async def run():
+        state = make_runtime_state(task_id=2, max_steps=35)
+        state["latest_observation"] = '详情页\n可点击的按钮: ["< Prev"]'
+        env_token = current_environment.set(object())
+        state_token = current_runtime_state.set(state)
+        try:
+            response, _, _ = await make_tool("view_attributes").execute(
+                "tool-invalid-subpage", {}
+            )
+        finally:
+            current_runtime_state.reset(state_token)
+            current_environment.reset(env_token)
+
+        assert state["terminate"] is False
+        assert state["guard_rejection_count"] == 1
+        assert "click_not_in_previous_observation" in response.text
+        assert "你处于信息子页" in response.text
+        assert "prev_page" in response.text
+        assert "< Prev" in response.text
+
+    asyncio.run(run())
 
 
 def test_repeated_question_is_rejected_without_incrementing_count():

@@ -8,7 +8,10 @@ import math
 from typing import Any
 from uuid import uuid4
 
-from shopping_grpo.environment.actions import action_reject_reason
+from shopping_grpo.environment.actions import (
+    action_guard_tool_message,
+    action_reject_reason,
+)
 from shopping_grpo.environment.tools import tool_call_to_action
 from shopping_grpo.environment.observation import render_structured_observation
 from shopping_grpo.training.grpo.adapter.runtime import (
@@ -48,7 +51,7 @@ class ShopSimulatorTool(BaseTool):
     @rollout_trace_op
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs):
         """校验、执行一次工具调用，并把公共结果写入 trajectory 状态。"""
-        del instance_id, kwargs
+        del kwargs
         env = current_environment.get()
         state = current_runtime_state.get()
         if env is None or state is None:
@@ -82,12 +85,21 @@ class ShopSimulatorTool(BaseTool):
                 bool(state.get("latest_observation_truncated"))
             )
             state["consecutive_guard_rejections"] += 1
+            guard_text = action_guard_tool_message(
+                {
+                    "id": instance_id,
+                    "function": {"name": self.name},
+                },
+                reason,
+                observation,
+            )["content"]
             if state["consecutive_guard_rejections"] >= 3:
                 _terminate(state, "too_many_guard_rejections")
-                return ToolResponse(text="Error: maximum consecutive action guard rejections reached."), 0.0, {
-                    "reason": reason
-                }
-            return ToolResponse(text=f"Error: action guard rejected this call ({reason}); read the latest observation."), 0.0, {"reason": reason}
+                guard_text = (
+                    "Error: maximum consecutive action guard rejections reached.\n"
+                    + guard_text
+                )
+            return ToolResponse(text=guard_text), 0.0, {"reason": reason}
         try:
             # 先转换成环境动作，再在线程中调用同步客户端；终局 reward 只信任
             # 环境返回的 Reward v4 结构，避免训练侧自行猜测分数。
