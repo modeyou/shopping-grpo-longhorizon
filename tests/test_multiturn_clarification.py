@@ -269,6 +269,31 @@ def test_live_shopper_answer_retains_private_gap_provenance():
     }
 
 
+def test_live_shopper_without_gap_facts_returns_no_preference_fallback():
+    class UngroundedAnswerClient:
+        def complete(self, messages, tools):
+            return {
+                "role": "assistant",
+                "content": json.dumps({
+                    "answer": "invented preference",
+                    "used_facts": ["budget 420"],
+                }),
+            }
+
+    result = ShopperSimulator(UngroundedAnswerClient()).answer_audited(
+        "Any other requirements?",
+        {"instruction_full": "I need a mirror with budget 420", "goal_options": []},
+        [],
+    )
+
+    assert result == {
+        "answer": "\u6ca1\u6709\u5176\u4ed6\u504f\u597d\uff0c"
+        "\u8bf7\u6309\u5df2\u7ecf\u63d0\u4f9b\u7684"
+        "\u4fe1\u606f\u9009\u62e9\u3002",
+        "used_facts": [],
+    }
+
+
 def test_shopper_combines_rules_and_private_facts_into_one_system_message():
     class CapturingClient:
         def __init__(self):

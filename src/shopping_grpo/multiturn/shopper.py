@@ -41,6 +41,12 @@ an answer like '需要铜芯电磁阀，预算大约230元。'"""
 
 OPENING_PROMPT_HASH = hashlib.sha256(OPENING_PROMPT.encode("utf-8")).hexdigest()
 
+NO_ADDITIONAL_PREFERENCE_ANSWER = (
+    "\u6ca1\u6709\u5176\u4ed6\u504f\u597d\uff0c"
+    "\u8bf7\u6309\u5df2\u7ecf\u63d0\u4f9b\u7684"
+    "\u4fe1\u606f\u9009\u62e9\u3002"
+)
+
 
 class ShopperSimulator:
     def __init__(self, client):
@@ -135,8 +141,18 @@ class ShopperSimulator:
         used = result.get("used_facts") or []
         if not answer or not isinstance(used, list):
             raise ValueError("audited answer must contain answer and used_facts")
+        if not facts:
+            return {
+                "answer": NO_ADDITIONAL_PREFERENCE_ANSWER,
+                "used_facts": [],
+            }
         if not all(isinstance(item, str) and item in facts for item in used):
             raise ValueError("audited answer used_facts must come from omitted facts")
+        if not used:
+            return {
+                "answer": NO_ADDITIONAL_PREFERENCE_ANSWER,
+                "used_facts": [],
+            }
         return {"answer": answer, "used_facts": used}
 
     def answer_gap(self, question, context, omitted_facts):
