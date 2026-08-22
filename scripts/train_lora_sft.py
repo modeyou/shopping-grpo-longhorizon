@@ -2,7 +2,13 @@
 """对验收后的 Shopping tool-calling 数据进行最小 LoRA SFT。"""
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
+import os
+import platform
+import subprocess
+import sys
 import time as _time
 from functools import partial
 from pathlib import Path
@@ -87,8 +93,16 @@ def parse_args():
     parser.add_argument("--qlora", action="store_true", help="以 NF4 4-bit 加载基座，并按 PEFT 标准预处理")
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--logging-steps", type=int, default=5)
+    parser.add_argument("--eval-steps", type=int, default=None)
+    parser.add_argument("--save-steps", type=int, default=None)
     parser.add_argument("--save-total-limit", type=int, default=3)
+    parser.add_argument(
+        "--lr-scheduler-type", choices=("linear",), default="linear"
+    )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--data-seed", type=int, default=None)
+    parser.add_argument("--full-determinism", action="store_true")
+    parser.add_argument("--require-clean-git", action="store_true")
     parser.add_argument("--train-count", type=int, default=None)
     parser.add_argument("--train-ratio", type=float, default=None)
     parser.add_argument("--subset-seed", type=int, default=42)
@@ -120,6 +134,134 @@ def _curriculum_task_ids(path, stage, split):
         raise SystemExit(f"课程清单缺少阶段 {stage!r} 的 {split} task IDs") from exc
 
 
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _git_state():
+    root = Path(__file__).resolve().parents[1]
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip()
+        dirty = bool(
+            subprocess.check_output(
+                ["git", "status", "--porcelain"], cwd=root, text=True
+            ).strip()
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return {"commit": None, "dirty": None}
+    return {"commit": commit, "dirty": dirty}
+
+
+def _nvidia_driver_versions():
+    try:
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=driver_version",
+                "--format=csv,noheader",
+            ],
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return sorted({line.strip() for line in output.splitlines() if line.strip()})
+
+def _reproducibility_record(args, torch):
+    packages = {}
+    for distribution in (
+        "accelerate",
+        "liger-kernel",
+        "numpy",
+        "peft",
+        "safetensors",
+        "swanlab",
+        "tokenizers",
+        "transformers",
+        "triton",
+    ):
+        try:
+            packages[distribution] = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            packages[distribution] = None
+    model_root = Path(args.model)
+    model_files = {}
+    if model_root.is_dir():
+        for name in ("config.json", "model.safetensors.index.json"):
+            artifact = model_root / name
+            if artifact.is_file():
+                model_files[name] = _sha256_file(artifact)
+    return {
+        "seed": args.seed,
+        "data_seed": args.seed if args.data_seed is None else args.data_seed,
+        "full_determinism": args.full_determinism,
+        "python_hash_seed": os.environ.get("PYTHONHASHSEED"),
+        "world_size": int(os.environ.get("WORLD_SIZE", "1")),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "git": _git_state(),
+        "model_revision": args.revision,
+        "model_files": model_files,
+        "train_sha256": _sha256_file(args.train),
+        "validation_sha256": (
+            _sha256_file(args.validation) if args.validation else None
+        ),
+        "runtime": {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "python_packages": packages,
+            "torch": torch.__version__,
+            "torch_cuda": torch.version.cuda,
+            "cudnn": torch.backends.cudnn.version(),
+            "nvidia_driver_versions": _nvidia_driver_versions(),
+            "gpu_names": [
+                torch.cuda.get_device_name(index)
+                for index in range(torch.cuda.device_count())
+            ],
+        },
+    }
+
+
+def _validate_reproducibility_request(args, record):
+    if (
+        args.full_determinism
+        and record["python_hash_seed"] != str(args.seed)
+    ):
+        raise SystemExit(
+            "--full-determinism requires PYTHONHASHSEED to equal --seed"
+        )
+    git = record["git"]
+    if args.require_clean_git and (
+        not git.get("commit") or git.get("dirty") is not False
+    ):
+        raise SystemExit("--require-clean-git requires a known clean Git worktree")
+
+
+def _interval_training_args(args, has_validation):
+    for name in ("logging_steps", "eval_steps", "save_steps"):
+        value = getattr(args, name)
+        if value is not None and value <= 0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be positive")
+    if args.eval_steps is not None and not has_validation:
+        raise SystemExit("--eval-steps requires --validation")
+    values = {
+        "eval_strategy": "no",
+        "save_strategy": "epoch",
+    }
+    if has_validation:
+        values["eval_strategy"] = "steps" if args.eval_steps else "epoch"
+        if args.eval_steps:
+            values["eval_steps"] = args.eval_steps
+    if args.save_steps:
+        values["save_strategy"] = "steps"
+        values["save_steps"] = args.save_steps
+    return values
+
+
 def _training_dependencies():
     try:
         import torch
@@ -134,6 +276,7 @@ def _training_dependencies():
             Trainer,
             TrainerCallback,
             TrainingArguments,
+            set_seed,
         )
     except ImportError as exc:
         raise SystemExit("缺少训练依赖。请执行：uv sync --extra sft") from exc
@@ -152,6 +295,7 @@ def _training_dependencies():
         Trainer,
         TrainerCallback,
         TrainingArguments,
+        set_seed,
     )
 
 
@@ -350,6 +494,15 @@ def main():
     args = parse_args()
     if args.max_length < 1 or args.epochs <= 0:
         raise SystemExit("--max-length 与 --epochs 必须为正数")
+    if (
+        int(os.environ.get("RANK", "0")) == 0
+        and args.output.exists()
+        and any(args.output.iterdir())
+        and not args.resume_from_checkpoint
+    ):
+        raise SystemExit(
+            f"output directory must be new or empty: {args.output.resolve()}"
+        )
     if bool(args.curriculum_manifest) != bool(args.curriculum_stage):
         raise SystemExit("--curriculum-manifest 与 --curriculum-stage 必须一起提供")
     if args.curriculum_manifest and not args.validation:
@@ -385,7 +538,12 @@ def main():
         Trainer,
         TrainerCallback,
         TrainingArguments,
+        set_seed,
     ) = _training_dependencies()
+    interval_args = _interval_training_args(args, bool(args.validation))
+    set_seed(args.seed, deterministic=args.full_determinism)
+    reproducibility = _reproducibility_record(args, torch)
+    _validate_reproducibility_request(args, reproducibility)
 
     # --- Progress callback: 只补充 Trainer 默认没有的耗时和显存指标。 ---
     class ProgressCallback(TrainerCallback):
@@ -403,6 +561,15 @@ def main():
             gpu_mem = torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
             logs["step_time_s"] = round(elapsed, 3)
             logs["gpu_peak_memory_gib"] = round(gpu_mem, 3)
+            if args.swanlab:
+                import swanlab
+                swanlab.log(
+                    {
+                        "train/step_time_s": logs["step_time_s"],
+                        "system/gpu_peak_memory_gib": logs["gpu_peak_memory_gib"],
+                    },
+                    step=state.global_step,
+                )
             eta_seconds = (state.max_steps - state.global_step) * elapsed if state.global_step else 0
             eta_str = f"{eta_seconds/60:.0f}min" if eta_seconds > 0 else "?"
             print(
@@ -413,11 +580,17 @@ def main():
             return control
 
         def on_epoch_begin(self, args, state, control, **kwargs):
+            if not state.is_world_process_zero:
+                return control
             self.epoch_start = _time.time()
             print(f"\n{'='*60}\n  EPOCH {int(state.epoch)} 开始  steps={state.max_steps}\n{'='*60}")
+            return control
         def on_epoch_end(self, args, state, control, **kwargs):
+            if not state.is_world_process_zero:
+                return control
             epoch_time = _time.time() - self.epoch_start if self.epoch_start else 0
             print(f"  EPOCH {int(state.epoch)} 完成  耗时={epoch_time/60:.1f}min")
+            return control
 
     tokenizer, chat_template, is_multimodal = _load_preprocessing_components(
         args.model,
@@ -515,7 +688,9 @@ def main():
 
     args.output.mkdir(parents=True, exist_ok=True)
     report_to, run_name = _swanlab_config(args)
-    if report_to == "swanlab":
+    world_process_zero = int(os.environ.get("RANK", "0")) == 0
+    trainer_report_to = report_to if world_process_zero else "none"
+    if report_to == "swanlab" and world_process_zero:
         import swanlab
         swanlab.init(
             project=args.swanlab_project,
@@ -532,19 +707,21 @@ def main():
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         warmup_ratio=args.warmup_ratio,
+        lr_scheduler_type=args.lr_scheduler_type,
+        data_seed=args.seed if args.data_seed is None else args.data_seed,
+        full_determinism=args.full_determinism,
         bf16=dtype_name == "bf16",
         fp16=dtype_name == "fp16",
         gradient_checkpointing=args.gradient_checkpointing,
         use_liger_kernel=args.liger_kernel,
         logging_steps=args.logging_steps,
-        save_strategy="epoch",
         save_total_limit=args.save_total_limit,
-        eval_strategy="epoch" if validation_examples else "no",
-        report_to=report_to,
+        report_to=trainer_report_to,
         run_name=run_name,
         max_steps=args.max_steps if args.max_steps > 0 else -1,
         remove_unused_columns=False,
         seed=args.seed,
+        **interval_args,
     )
     trainer_class = _loss_only_eval_trainer_class(
         Trainer,
@@ -559,9 +736,11 @@ def main():
         callbacks=[ProgressCallback()],
     )
     result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    evaluation_metrics = trainer.evaluate() if validation_examples else {}
     trainer.save_model(str(args.output))
 
     final_metrics = _final_training_metrics(result.metrics, trainer.state.log_history)
+    final_metrics.update(evaluation_metrics)
     total_time = _time.time() - _start_time
     gpu_peak = torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
     if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -570,6 +749,9 @@ def main():
         gpu_peak = float(peak_tensor.item())
 
     if not trainer.is_world_process_zero():
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+            torch.distributed.destroy_process_group()
         return
 
     chat_template.save_pretrained(str(args.output))
@@ -584,6 +766,7 @@ def main():
         "log_history": trainer.state.log_history,
         "peak_gpu_memory_gib": round(gpu_peak, 2),
         "total_time_minutes": round(total_time / 60, 1) if total_time else None,
+        "reproducibility": reproducibility,
         "monitoring": {
             "backend": report_to,
             "project": args.swanlab_project if args.swanlab else None,
@@ -613,6 +796,9 @@ def main():
     )
 
     print(f"LoRA adapter 已保存到 {args.output}")
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":

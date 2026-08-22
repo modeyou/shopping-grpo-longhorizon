@@ -6,16 +6,20 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.train_lora_sft import (
     DEFAULT_TARGET_MODULES,
+    _interval_training_args,
     _load_preprocessing_components,
     _loss_only_eval_trainer_class,
     _model_load_kwargs,
     _prepare_model_for_training,
+    _reproducibility_record,
     _resolve_dtype,
     _swanlab_config,
+    _validate_reproducibility_request,
     _curriculum_task_ids,
     _final_training_metrics,
     parse_args,
@@ -137,6 +141,13 @@ class TrainLoraSftCliTest(unittest.TestCase):
         self.assertEqual(args.lora_alpha, 32)
         self.assertEqual(args.gradient_accumulation_steps, 8)
         self.assertEqual(args.save_total_limit, 3)
+        self.assertIsNone(args.eval_steps)
+        self.assertIsNone(args.save_steps)
+        self.assertEqual(args.lr_scheduler_type, "linear")
+        self.assertEqual(args.seed, 42)
+        self.assertIsNone(args.data_seed)
+        self.assertFalse(args.full_determinism)
+        self.assertFalse(args.require_clean_git)
         self.assertEqual(args.dtype, "auto")
         self.assertFalse(args.bf16)
         self.assertFalse(args.swanlab)
@@ -146,6 +157,123 @@ class TrainLoraSftCliTest(unittest.TestCase):
             Path("data/sft_curriculum/manifest.json"),
         )
         self.assertEqual(args.curriculum_stage, "b")
+
+    def test_step_intervals_freeze_curve_and_checkpoint_frequency(self):
+        args = SimpleNamespace(
+            logging_steps=5,
+            eval_steps=25,
+            save_steps=25,
+        )
+
+        self.assertEqual(
+            _interval_training_args(args, has_validation=True),
+            {
+                "eval_strategy": "steps",
+                "eval_steps": 25,
+                "save_strategy": "steps",
+                "save_steps": 25,
+            },
+        )
+
+    def test_eval_steps_require_validation(self):
+        args = SimpleNamespace(
+            logging_steps=5,
+            eval_steps=25,
+            save_steps=None,
+        )
+
+        with self.assertRaisesRegex(SystemExit, "requires --validation"):
+            _interval_training_args(args, has_validation=False)
+
+    def test_reproducibility_record_freezes_inputs_and_runtime(self):
+        class FakeCuda:
+            @staticmethod
+            def device_count():
+                return 1
+
+            @staticmethod
+            def get_device_name(index):
+                self.assertEqual(index, 0)
+                return "Test GPU"
+
+        class FakeCudnn:
+            @staticmethod
+            def version():
+                return 999
+
+        fake_torch = SimpleNamespace(
+            __version__="test-torch",
+            version=SimpleNamespace(cuda="test-cuda"),
+            backends=SimpleNamespace(cudnn=FakeCudnn),
+            cuda=FakeCuda,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            model.mkdir()
+            (model / "config.json").write_text("{}", encoding="utf-8")
+            train = root / "train.jsonl"
+            validation = root / "validation.jsonl"
+            train.write_text('{"task_id":1}\n', encoding="utf-8")
+            validation.write_text('{"task_id":2}\n', encoding="utf-8")
+            args = SimpleNamespace(
+                model=str(model),
+                revision="frozen-revision",
+                train=train,
+                validation=validation,
+                seed=42,
+                data_seed=42,
+                full_determinism=True,
+            )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "PYTHONHASHSEED": "42",
+                        "WORLD_SIZE": "4",
+                        "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+                    },
+                    clear=False,
+                ),
+                patch(
+                    "scripts.train_lora_sft._git_state",
+                    return_value={"commit": "abc", "dirty": False},
+                ),
+            ):
+                record = _reproducibility_record(args, fake_torch)
+
+        self.assertEqual(record["seed"], 42)
+        self.assertEqual(record["world_size"], 4)
+        self.assertEqual(record["git"], {"commit": "abc", "dirty": False})
+        self.assertEqual(record["model_revision"], "frozen-revision")
+        self.assertEqual(len(record["train_sha256"]), 64)
+        self.assertEqual(len(record["validation_sha256"]), 64)
+        self.assertEqual(len(record["model_files"]["config.json"]), 64)
+        self.assertEqual(record["runtime"]["gpu_names"], ["Test GPU"])
+
+    def test_strict_reproducibility_requires_hash_seed_and_clean_git(self):
+        args = SimpleNamespace(
+            seed=42,
+            full_determinism=True,
+            require_clean_git=True,
+        )
+        valid = {
+            "python_hash_seed": "42",
+            "git": {"commit": "abc", "dirty": False},
+        }
+        _validate_reproducibility_request(args, valid)
+
+        with self.assertRaisesRegex(SystemExit, "PYTHONHASHSEED"):
+            _validate_reproducibility_request(
+                args,
+                {**valid, "python_hash_seed": "7"},
+            )
+        with self.assertRaisesRegex(SystemExit, "clean Git"):
+            _validate_reproducibility_request(
+                args,
+                {**valid, "git": {"commit": "abc", "dirty": True}},
+            )
 
     def test_swanlab_flags_are_opt_in_and_keep_a_stable_run_name(self):
         """国内监控必须显式启用，且实验名可由调用方固定以便对比。"""

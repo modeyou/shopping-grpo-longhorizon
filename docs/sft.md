@@ -1,88 +1,157 @@
-# LoRA SFT
+# Multi-turn Reward v4 LoRA SFT
 
 ## Purpose
 
-The base model can speak naturally but does not reliably follow
-ShopSimulator's action protocol. Supervised fine-tuning teaches the basic
-policy: issue legal tool calls, use observations as evidence, select product
-variants and terminate.
+The current SFT stage teaches Qwen3.5-2B to follow ShopSimulator's multi-turn
+action protocol: ask only when information is missing, issue legal shopping tool
+calls, ground actions in visible observations, select product variants, and
+terminate with a valid purchase or stop decision.
 
-## Inputs
+`experiments/sft/summary.json` belongs to the original reference project. It is
+not a training input, a split definition, or the hyperparameter source for this
+multi-turn run.
 
-- Base model: `Qwen/Qwen3.5-2B`
-- Main data: `data/sft_pure_v4/all.jsonl` (1,192 rows)
-- Fixed curriculum manifest: `data/sft_curriculum/manifest.json`
-- Gradient rows: 1,073; development rows: 119; Final evaluation overlap: 0
-- Target: assistant tokens only; user and tool-observation tokens are masked
+## Frozen data contract
 
-The source and label hashes, exact task IDs, stage definitions, and review-only
-flags are frozen in the curriculum manifest. The older `data/sft/` split is
-kept only for reproducing the historical baseline.
+The formal dataset is generated only from the three Reward v4 re-audited pools:
 
-## Run
+- complete requests with no unnecessary question;
+- replay-verified composite clarification trajectories;
+- autonomous gap trajectories.
 
-After `bash scripts/setup.sh`:
+The mix contains 1,800 unique task/source-goal pairs. The split is task- and
+goal-disjoint, with approximately 1,620 training rows and 180 validation rows.
+Target assistant-token shares are 50% complete, 30% composite, and 20%
+autonomous. Half of the selected complete examples expose the full multi-turn
+tool schema, including `ask_shopper`, without inserting a synthetic question.
 
 ```bash
-# Check all six train/merge commands without loading a model.
-bash scripts/sft_curriculum.sh --dry-run
+: "${GRPO_PYTHON:?set GRPO_PYTHON to the project Python}"
+: "${MODEL_DIR:?set MODEL_DIR to the pinned local model}"
 
-# Run A -> B -> C on the server.
-bash scripts/sft_curriculum.sh --swanlab
+"$GRPO_PYTHON" scripts/prepare_multiturn_sft_mix.py \
+  --audit-manifest outputs/multiturn-sft/v4-audit-pools-02/manifest.json \
+  --model "$MODEL_DIR" \
+  --revision 15852e8c16360a2fea060d615a32b45270f8a8fc \
+  --output-dir outputs/multiturn-sft/mix-formal-1800-v4-seed20260822 \
+  --total-rows 1800 \
+  --validation-ratio 0.1 \
+  --max-length 24576 \
+  --seed 20260822 \
+  --complete-token-ratio 0.5 \
+  --composite-token-ratio 0.3 \
+  --autonomous-token-ratio 0.2 \
+  --token-share-tolerance 0.05
 ```
 
-The launcher trains a LoRA adapter and then merges it with the base model:
+The generated manifest freezes source hashes, output hashes, selected task IDs,
+policy/schema counts, token counts, split membership, model revision, and seed.
+Training data must have zero overlap with the final evaluation task set.
 
-```text
-outputs/models/sft-curriculum/stage-a/{adapter,merged}/
-outputs/models/sft-curriculum/stage-b/{adapter,merged}/
-outputs/models/sft-curriculum/stage-c/{adapter,merged}/
-```
-
-Default recipe:
+## Formal recipe
 
 | Setting | Value |
 |---|---|
+| Base model | Qwen3.5-2B pinned revision |
 | Maximum sequence length | 24,576 |
-| Epochs | 1 per stage |
+| Epochs | 1 |
 | Per-device batch size | 1 |
-| Gradient accumulation | 8 |
-| Learning rate | `1e-4` -> `7e-5` -> `5e-5` |
+| GPUs | 4 (CUDA 0-3) |
+| Gradient accumulation | 2 |
+| Effective global batch | 8 |
+| Peak learning rate | `1e-4` |
+| Scheduler | 3% warmup, then linear decay |
 | LoRA rank / alpha / dropout | 16 / 32 / 0.05 |
+| Precision | bf16 |
 | Gradient checkpointing | enabled |
-| Attention implementation | SDPA |
-| Saved epoch checkpoints | 3 |
+| Attention / fused loss | SDPA / Liger |
+| Train logging | every 5 steps |
+| Validation and checkpoint | every 25 steps plus final validation |
+| Checkpoints retained | 3 |
+| Seed / data seed | 42 / 42 |
 
-The long context is intentional: a training example includes the complete
-multi-turn interaction. Shortening it may truncate the terminal decision or the
-evidence that supports it.
-
-Stage A learns the action protocol from 256 foundation rows. Stage B restarts a
-fresh LoRA on A's merged checkpoint and uses 799 cumulative constraint rows.
-Stage C does the same from B and uses all 1,073 training rows. Therefore simple
-skills receive three passes, constraint handling two, and long-horizon strategy
-one. Use `--start-stage b` after A is complete, or `--stop-after-stage b` for a
-bounded server run. A checkpoint interrupted inside a stage can be resumed
-with `--start-stage <stage> --resume-from-checkpoint <checkpoint-dir>`.
-
-## Evaluate
+The learning rate is not constant. It warms up from zero to `1e-4`, then
+linearly decays. One epoch is the first formal run; further epochs require dev
+rollout evidence rather than only a lower training loss.
 
 ```bash
-bash scripts/serve_model.sh outputs/models/sft-curriculum/stage-c/merged
-bash scripts/evaluate.sh sft
+: "${TORCHRUN:?set TORCHRUN to the project torchrun}"
+: "${MODEL_DIR:?set MODEL_DIR to the pinned local model}"
+
+export PYTHONHASHSEED=42
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=8
+
+"$TORCHRUN" --standalone --nproc-per-node=4 scripts/train_lora_sft.py \
+  --model "$MODEL_DIR" \
+  --revision 15852e8c16360a2fea060d615a32b45270f8a8fc \
+  --train outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/train.jsonl \
+  --validation outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/validation.jsonl \
+  --output outputs/models/multiturn-sft-v4-1800-seed20260822 \
+  --max-length 24576 \
+  --epochs 1 \
+  --per-device-train-batch-size 1 \
+  --per-device-eval-batch-size 1 \
+  --gradient-accumulation-steps 2 \
+  --learning-rate 1e-4 \
+  --warmup-ratio 0.03 \
+  --lr-scheduler-type linear \
+  --lora-r 16 \
+  --lora-alpha 32 \
+  --lora-dropout 0.05 \
+  --dtype bf16 \
+  --gradient-checkpointing \
+  --liger-kernel \
+  --attention-implementation sdpa \
+  --logging-steps 5 \
+  --eval-steps 25 \
+  --save-steps 25 \
+  --save-total-limit 3 \
+  --seed 42 \
+  --data-seed 42 \
+  --full-determinism \
+  --require-clean-git \
+  --swanlab \
+  --swanlab-project shopping-grpo-multiturn \
+  --swanlab-run-name qwen35-2b-multiturn-v4-1800-seed20260822
 ```
 
-Validation loss is a training-health signal, not the final model score. Select
-among stages using the 119-row development split and failure-type coverage.
-Run Final-200 Clean only after the recipe is frozen, so the final benchmark is
-not silently used for checkpoint selection.
+## Reproducibility contract
 
-## Output contract
+A completed adapter's `train_summary.json` records:
 
-GRPO starts from the merged model, not directly from the adapter:
+- Git commit and dirty-worktree state;
+- train and validation SHA256 hashes;
+- model revision and model configuration hashes;
+- seed, data seed, `PYTHONHASHSEED`, world size, and visible GPUs;
+- Python/platform, NVIDIA driver, Torch/CUDA/cuDNN, and package versions;
+- complete arguments, step history, final metrics, runtime, and peak GPU memory.
 
-```text
-GRPO_MODEL_PATH=outputs/models/sft-curriculum/stage-c/merged
-```
+A formal run also requires `PYTHONHASHSEED=42` and `--require-clean-git`; it
+fails before model loading when either condition is not satisfied.
 
-This boundary keeps the GRPO launcher independent of the SFT trainer process.
+The output directory must be new or empty unless an explicit checkpoint resume
+is requested. SwanLab is initialized only on world rank zero, so a four-GPU run
+creates one experiment rather than four duplicate runs.
+
+`--full-determinism` requests deterministic PyTorch algorithms. Exact bitwise
+identity is only expected on the same hardware, driver, CUDA, Torch,
+Transformers, Liger, and Triton stack. Across stacks, reproducibility is judged
+by frozen artifacts/configuration and bounded metric agreement, not byte-for-byte
+floating-point equality.
+
+## Metrics and model selection
+
+SwanLab curves record training loss, validation loss, learning rate, gradient
+norm, step time, throughput, epoch, and GPU memory. Loss is a training-health
+signal, not the shopping score.
+
+After SFT, use the frozen development rollout to report strict success,
+`gold_purchase`, reward-valid and done rates, guard rejection reasons, grounded
+question rate, unnecessary asking on complete requests, gap no-ask rate, reward
+types, and average steps. Select the recipe using development results. Do not
+run or use the final evaluation set until the SFT/GRPO recipe is frozen.
+
+GRPO consumes a reviewed merged model, not the LoRA adapter directly. Merging is
+a separate explicitly authorized step after adapter and development acceptance.
