@@ -23,6 +23,20 @@ def parse_args():
         type=int,
         help="Evaluate only the first N frozen tasks while preserving source order.",
     )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help="Number of deterministic source-order shards.",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="Zero-based shard index selected from --shard-count.",
+    )
+    parser.add_argument("--summary-only", action="store_true")
+    parser.add_argument("--execution-shards", type=int)
     parser.add_argument("--output", type=Path, required=True, help="原始评测轨迹 JSONL")
     parser.add_argument("--summary", type=Path, required=True, help="汇总指标 JSON")
     parser.add_argument("--base-url", default="http://127.0.0.1:5700")
@@ -112,6 +126,14 @@ def main():
         raise SystemExit("--max-shopper-questions 不能为负数")
     if args.limit is not None and args.limit < 1:
         raise SystemExit("--limit must be a positive integer")
+    if args.execution_shards is not None and args.execution_shards < 1:
+        raise SystemExit("--execution-shards must be a positive integer")
+    if args.shard_count < 1:
+        raise SystemExit("--shard-count must be a positive integer")
+    if not 0 <= args.shard_index < args.shard_count:
+        raise SystemExit(
+            "--shard-index must be between zero and shard-count minus one"
+        )
     ask_enabled = args.condition in {
         "gap-ask-enabled", "complete-ask-enabled",
     }
@@ -127,6 +149,8 @@ def main():
     if args.limit is not None:
         tasks = tasks[:args.limit]
         expected_tasks = expected_tasks[:args.limit]
+    tasks = tasks[args.shard_index::args.shard_count]
+    expected_tasks = expected_tasks[args.shard_index::args.shard_count]
     expected_ids = [int(task["task_id"]) for task in expected_tasks]
     actual_ids = [int(task["task_id"]) for task in tasks]
     if len(expected_ids) != len(set(expected_ids)):
@@ -175,18 +199,19 @@ def main():
                 if args.disable_shopper_thinking else None
             ),
         ))
-    collect_tasks(
-        tasks,
-        client=client,
-        output_path=args.output,
-        base_url=args.base_url,
-        max_steps=args.max_steps,
-        shopper=shopper,
-        max_shopper_questions=args.max_shopper_questions,
-        evaluation_condition=(
-            None if args.condition == "standard" else args.condition
-        ),
-    )
+    if not args.summary_only:
+        collect_tasks(
+            tasks,
+            client=client,
+            output_path=args.output,
+            base_url=args.base_url,
+            max_steps=args.max_steps,
+            shopper=shopper,
+            max_shopper_questions=args.max_shopper_questions,
+            evaluation_condition=(
+                None if args.condition == "standard" else args.condition
+            ),
+        )
     summary = summarize_trajectories(
         expected_ids, _read_jsonl(args.output)
     )
@@ -194,6 +219,10 @@ def main():
         "benchmark": str(args.benchmark),
         "expected_tasks": str(args.expected_tasks or args.benchmark),
         "limit": args.limit,
+        "shard_count": args.shard_count,
+        "shard_index": args.shard_index,
+        "summary_only": args.summary_only,
+        "execution_shards": args.execution_shards or args.shard_count,
         "model": args.model,
         "reward_contract": summary["reward_contract"],
         "max_steps": args.max_steps,
