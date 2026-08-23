@@ -302,6 +302,79 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             return AgentState.TERMINATED
         return next_state
 
+    def _finalize_shopping_output(self, output, state, task_id):
+        """Attach the canonical Reward-v4 result and public trajectory diagnostics."""
+        if not state["done"] and not state["error"]:
+            state["error"] = "assistant_finished_without_environment_done"
+            state["termination_reason"] = state["error"]
+            state["terminate"] = True
+        breakdown = apply_reward_length_shaping(
+            apply_bounded_reward_shaping(
+                reward_breakdown(state),
+                state,
+                profile=getattr(self, "reward_shaping_profile", "none"),
+            ),
+            state,
+            enabled=getattr(self, "reward_length_shaping_enable", False),
+            soft_threshold=getattr(self, "reward_length_soft_threshold", 20),
+            penalty_per_step=getattr(self, "reward_length_penalty_per_step", 0.01),
+            max_penalty=getattr(self, "reward_length_max_penalty", 0.15),
+        )
+        output.reward_score = (
+            float(breakdown["total"])
+            if self.reward_mode == "constraint_aware"
+            else terminal_reward(state, mode=self.reward_mode)
+        )
+        output.extra_fields["shopping"] = {
+            "task_id": task_id,
+            "harness_version": state["harness_version"],
+            "steps": len(state["steps"]),
+            "interaction_mode": state.get("interaction_mode", "single"),
+            "shopper_questions": int(state.get("shopper_question_count", 0)),
+            "shopper_rejections": int(state.get("shopper_rejection_count", 0)),
+            "shopper_dialogue": list(state.get("shopper_questions") or []),
+            "actions": [
+                {"tool": step["tool"], "parameters": step["parameters"]}
+                for step in state["steps"]
+            ],
+            "done": bool(state["done"]),
+            "termination_reason": state["termination_reason"],
+            "error": state["error"],
+            "infrastructure_invalid": bool(state["infrastructure_invalid"]),
+            "action_attempts": int(state["action_attempt_count"]),
+            "repeat_actions": int(state["repeat_action_count"]),
+            "overlong": bool(breakdown.get("overlong", False)),
+            "reward_mode": self.reward_mode,
+            "reward_shaping_profile": getattr(self, "reward_shaping_profile", "none"),
+            "reward_version": state.get("reward_version"),
+            "reward_type": state.get("reward_type"),
+            "reward_valid": bool(state.get("reward_valid", True)),
+            "reward_unverifiable": bool(state.get("reward_unverifiable")),
+            "reward": breakdown,
+            "context_compactions": int(state["context_compactions"]),
+            "context_tokens_removed": int(state["context_tokens_removed"]),
+            "context_max_input_tokens": int(state["context_max_input_tokens"]),
+            "observation_projection_count": int(state["observation_projection_count"]),
+            "observation_truncated_count": int(state["observation_truncated_count"]),
+            "observation_raw_tokens": int(state["observation_raw_tokens"]),
+            "observation_visible_tokens": int(state["observation_visible_tokens"]),
+            "observation_max_raw_tokens": int(state["observation_max_raw_tokens"]),
+            "observation_max_visible_tokens": int(state["observation_max_visible_tokens"]),
+            "observation_visible_asin_count": int(state["observation_visible_asin_count"]),
+            "observation_visible_button_count": int(state["observation_visible_button_count"]),
+            "observation_any_truncated": bool(state["observation_any_truncated"]),
+            "observation_footer_failures": int(state["observation_footer_failures"]),
+            "guard_rejections": int(state["guard_rejection_count"]),
+            "guard_rejection_reasons": dict(state["guard_rejection_reason_counts"]),
+            "guard_rejections_after_truncation": int(
+                state["guard_rejection_after_truncation_count"]
+            ),
+            "action_attempts_after_truncation": int(
+                state["action_attempt_after_truncation_count"]
+            ),
+        }
+        return output
+
     async def run(self, sampling_params, **kwargs):
         """启动 session、运行父类 AgentLoop，并在 finally 中释放环境租约。"""
         multiturn_enabled = bool(getattr(self, "multiturn_enable", False))

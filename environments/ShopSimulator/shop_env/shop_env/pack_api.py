@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify, Response
 sys.path.append("../")
 from shop_agent import shop_agent
 from slot_lease_pool import SlotLeasePool
+from snapshot_store import SnapshotStore
 from web_agent_site.utils import DEBUG_PROD_SIZE
 from web_agent_site.envs.web_agent_text_env import WebAgentTextEnv
 
@@ -24,6 +25,7 @@ SERVER_PORT = int(os.environ.get("SHOPSIM_PORT", "5000"))
 envs: List[Any] = []
 env_max_num: int = DEFAULT_ENV_MAX_NUM
 slot_pool = SlotLeasePool(env_max_num)
+snapshot_store = SnapshotStore()
 
 # Configure logging format
 logging.basicConfig(
@@ -66,6 +68,7 @@ def api_some_function() -> Response:
         # Release all environments
         if action == 'release_all':
             slot_pool.reset(env_max_num)
+            snapshot_store.clear()
             logger.info("[Init] All environments have been initialized")
             return jsonify({'result': {"message": "All environments have been initialized"}})
 
@@ -82,6 +85,33 @@ def api_some_function() -> Response:
             else:
                 logger.error("[Error] No valid environment index provided")
                 return jsonify({'result': {"error": "No valid environment index provided"}})
+
+        if action == 'snapshot':
+            if not isinstance(env_idx, int) or env_idx in slot_pool.free_slots():
+                return jsonify({'result': {'error': 'snapshot requires a leased environment'}})
+            snapshot_id = snapshot_store.create(envs[env_idx], env_idx)
+            return jsonify({'result': {'snapshot_id': snapshot_id}})
+
+        if action == 'drop_snapshot':
+            snapshot_id = data.get('snapshot_id')
+            if not isinstance(snapshot_id, str) or not snapshot_id:
+                return jsonify({'result': {'error': 'drop_snapshot requires snapshot_id'}})
+            dropped = snapshot_store.drop(snapshot_id)
+            return jsonify({'result': {'snapshot_id': snapshot_id, 'dropped': dropped}})
+
+        if action == 'clone':
+            snapshot_id = data.get('snapshot_id')
+            if not isinstance(snapshot_id, str) or not snapshot_id:
+                return jsonify({'result': {'error': 'clone requires snapshot_id'}})
+            target_idx = slot_pool.acquire()
+            if target_idx is None:
+                return jsonify({'result': {'error': 'Unable to get available environment resource'}})
+            try:
+                result = snapshot_store.clone_into(snapshot_id, envs[target_idx], target_idx)
+            except Exception:
+                slot_pool.release(target_idx)
+                raise
+            return jsonify({'result': result})
 
         # If env_idx is not provided, assign an available env_idx
         if env_idx is None:

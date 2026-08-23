@@ -89,6 +89,36 @@ class ShopAgentEnv:
         self.done = bool(result.get("done", False))
         return result
 
+    def snapshot(self):
+        """Create an opaque server-side snapshot of the leased environment."""
+        result = self._call({"action": "snapshot", "env_idx": self._leased_env_idx()})
+        snapshot_id = result.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            raise ShopProtocolError("snapshot response is missing snapshot_id")
+        return snapshot_id
+
+    def clone(self, snapshot_id):
+        """Lease a new client restored from a server-side snapshot."""
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            raise ValueError("snapshot_id must be a non-empty string")
+        clone = type(self)(
+            base_url=self.base_url, timeout=self.timeout,
+            transport=self.transport, multiturn=self.multiturn,
+        )
+        result = clone._call({"action": "clone", "snapshot_id": snapshot_id})
+        env_idx = result.get("env_idx")
+        if not isinstance(env_idx, int):
+            raise ShopProtocolError("clone response is missing integer env_idx")
+        clone.env_idx = env_idx
+        clone.done = bool(result.get("done", False))
+        return clone
+
+    def drop_snapshot(self, snapshot_id):
+        """Drop a snapshot; repeated drops are safe."""
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            raise ValueError("snapshot_id must be a non-empty string")
+        return self._call({"action": "drop_snapshot", "snapshot_id": snapshot_id})
+
     def release(self):
         """释放当前租约；重复 release 是安全的空操作。"""
         if self.env_idx is None:
