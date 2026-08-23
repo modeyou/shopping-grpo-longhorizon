@@ -72,6 +72,39 @@ def validate_selection(path: Path) -> tuple[dict, Path, Path]:
             raise SystemExit(f"selection exclusion hash mismatch: {detail.get('label')}")
     if (manifest.get("audit") or {}).get("selected_exclusion_overlap_count") != 0:
         raise SystemExit("selection manifest contains excluded active tasks")
+    if (manifest.get("audit") or {}).get("all_selected_tasks_reward_reachable") is not True:
+        raise SystemExit("selection manifest does not certify Reward v4 reachability")
+    reward_contract = manifest.get("reward_contract") or {}
+    if reward_contract.get("version") != REWARD_VERSION:
+        raise SystemExit(f"selection manifest must use {REWARD_VERSION}")
+    reward_audit = reward_contract.get("audit") or {}
+    reward_audit_path = resolve_repo_path(str(reward_audit.get("path", "")), ROOT)
+    if sha256_file(reward_audit_path) != reward_audit.get("sha256"):
+        raise SystemExit("selection Reward v4 audit hash mismatch")
+    reward_rows = read_jsonl(reward_audit_path)
+    if len(reward_rows) != int(reward_audit.get("rows", -1)):
+        raise SystemExit("selection Reward v4 audit row count mismatch")
+    reward_by_id = {}
+    for row in reward_rows:
+        task_id = int(row.get("task_id", -1))
+        if task_id in reward_by_id:
+            raise SystemExit(f"duplicate Reward v4 audit task: {task_id}")
+        reward_by_id[task_id] = row
+    selected_ids = load_unique_task_ids(train_path) | load_unique_task_ids(
+        validation_path
+    )
+    invalid_selected = [
+        task_id
+        for task_id in sorted(selected_ids)
+        if task_id not in reward_by_id
+        or reward_by_id[task_id].get("eligible") is not True
+        or reward_by_id[task_id].get("reward_version") != REWARD_VERSION
+    ]
+    if invalid_selected:
+        raise SystemExit(
+            "selected tasks are not Reward v4 reachable: "
+            + ", ".join(str(task_id) for task_id in invalid_selected[:10])
+        )
     return manifest, train_path, validation_path
 
 
@@ -141,6 +174,13 @@ def main() -> None:
     environment = json.loads(environment_path.read_text(encoding="utf-8"))
     if (environment.get("reward") or {}).get("version") != REWARD_VERSION:
         raise SystemExit(f"environment manifest must use {REWARD_VERSION}")
+    selected_environment = selection["reward_contract"]["environment_manifest"]
+    if (
+        resolve_repo_path(str(selected_environment.get("path", "")), ROOT)
+        != environment_path
+        or sha256_file(environment_path) != selected_environment.get("sha256")
+    ):
+        raise SystemExit("selection environment manifest mismatch")
 
     train_gap, train_complete = validate_openings(
         train_task_source,
@@ -225,6 +265,7 @@ def main() -> None:
         "reward_version": REWARD_VERSION,
         "environment": artifact(environment_path),
         "selection_source": artifact(selection_path),
+        "reward_reachability_audit": selection["reward_contract"]["audit"],
         "source_reservoir": selection["source_reservoir"],
         "selection_method": selection["selection"],
         "selection": {
@@ -256,6 +297,7 @@ def main() -> None:
         "audit": {
             "train_validation_overlap_count": len(train_ids & validation_ids),
             "selected_exclusion_overlap_count": len((train_ids | validation_ids) & excluded_ids),
+            "all_selected_tasks_reward_reachable": True,
             "train_mode_counts": {"gap": len(train_gap), "complete": len(train_complete)},
             "validation_mode_counts": {
                 "gap": len(validation_gap),

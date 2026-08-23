@@ -46,6 +46,7 @@ class GrpoDataManifestTest(unittest.TestCase):
             train_tasks = data / "train-tasks.jsonl"
             validation_tasks = data / "validation-tasks.jsonl"
             selection_source = data / "selection-manifest.json"
+            reward_audit = data / "reward-audit.jsonl"
             reservoir = data / "reservoir.jsonl"
             opening = data / "openings.jsonl"
             exclusion = data / "excluded.jsonl"
@@ -58,6 +59,10 @@ class GrpoDataManifestTest(unittest.TestCase):
             )
             validation_tasks.write_text('{"task_id": 3}\n', encoding="utf-8")
             selection_source.write_text("selection", encoding="utf-8")
+            reward_audit.write_text(
+                '{"task_id": 1, "eligible": true}\n',
+                encoding="utf-8",
+            )
             reservoir.write_text('{"task_id": 1}\n', encoding="utf-8")
             opening.write_text('{"task_id": 1}\n', encoding="utf-8")
             exclusion.write_text('{"task_id": 9}\n', encoding="utf-8")
@@ -75,6 +80,7 @@ class GrpoDataManifestTest(unittest.TestCase):
                 "reward_version": REWARD_VERSION,
                 "environment": detail(environment),
                 "selection_source": detail(selection_source),
+                "reward_reachability_audit": detail(reward_audit, rows=1),
                 "source_reservoir": detail(reservoir),
                 "selection": {
                     "train": detail(train_tasks, tasks=2),
@@ -91,6 +97,7 @@ class GrpoDataManifestTest(unittest.TestCase):
                 "audit": {
                     "train_validation_overlap_count": 0,
                     "selected_exclusion_overlap_count": 0,
+                    "all_selected_tasks_reward_reachable": True,
                 },
             }
             manifest_path = data / "manifest.json"
@@ -104,6 +111,22 @@ class GrpoDataManifestTest(unittest.TestCase):
                 root=root,
             )
             self.assertEqual(accepted["status"], "accepted")
+
+            reward_audit.write_text("tampered", encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValueError, "Reward v4 reachability audit hash mismatch"
+            ):
+                validate_grpo_data_manifest(
+                    manifest_path,
+                    train_data=train,
+                    validation_data=validation,
+                    environment_manifest=environment,
+                    root=root,
+                )
+            reward_audit.write_text(
+                '{"task_id": 1, "eligible": true}\n',
+                encoding="utf-8",
+            )
 
             train.write_bytes(b"tampered")
             with self.assertRaisesRegex(ValueError, "train parquet hash mismatch"):

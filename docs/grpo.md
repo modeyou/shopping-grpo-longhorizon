@@ -46,14 +46,14 @@ GRPO 输入必须满足：
 当前协议固定如下：
 
 - 从旧 5,000-task reservoir 重新排除正式 SFT train/validation、冻结 DEV-500 和 sealed Final-200。
-- seed 固定为 `20260823`，按 `sha256(seed:task_id)` 升序排列。
-- 排序后前 200 个 task 作为 validation，随后 1,000 个 task 作为 train，其余仅记录为 unused。
+- seed 固定为 `20260823`，先按 `sha256(seed:task_id)` 升序排列，再使用与 DEV-500 相同的 Reward v4 gold-purchase 审计逐项过滤不可达任务。
+- 从审计通过的有序任务中取前 200 个作为 validation，随后 1,000 个作为 train；其余 Reward v4 可达任务记录为 unused，不可达任务单独写入 `reward-audit.jsonl`。
 - 每个 task 生成一个经过审计的 gap opening；complete opening 从同一个 ShopSimulator 私有目标确定性派生。
 - train 因此包含 1,000 gap + 1,000 complete，共 2,000 条 prompt；validation 包含 200 gap + 200 complete，共 400 条 prompt。
 - 任务选择、排除集、opening、Environment v2.1 / Reward v4 manifest、Parquet 和全部 SHA-256 都写入 `data/grpo/formal-v2`。
-- `train_grpo.py` 会强制验证 `shopping-multiturn-grpo-dataset-v2`、`status=accepted`、Reward v4、路径、哈希、行数和 task-disjoint 审计；不满足时拒绝启动。
+- `train_grpo.py` 会强制验证 `shopping-multiturn-grpo-dataset-v2`、`status=accepted`、Reward v4、reachability audit、路径、哈希、行数和 task-disjoint 审计；不满足时拒绝启动。
 
-第一步只冻结 active task，不调用 LLM：
+第一步审计 reservoir 并冻结 active task，不调用 LLM，也不访问运行中的 ShopSimulator API：
 
 ~~~bash
 export PYTHONPATH=./src
@@ -62,6 +62,8 @@ GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
 "$GRPO_PYTHON" scripts/select_multiturn_grpo_tasks.py \
   --reservoir data/multiturn/tasks/grpo_train.jsonl \
   --expected-reservoir-sha256 c5aecc973fb15bd6e37b90c7fa0c4c292573f3fe14aff5d1f27ce9eb3c446c5b \
+  --products environments/ShopSimulator/shop_env/data/fine_items_eval_train_all.json.gz \
+  --environment-manifest data/environment-v4.json \
   --exclude sft-train=data/sft/formal-v2/train.jsonl \
   --exclude sft-validation=data/sft/formal-v2/validation.jsonl \
   --exclude dev500=data/multiturn/evaluation-dev-v2/tasks.jsonl \
@@ -72,7 +74,9 @@ GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
   --output-dir data/grpo/formal-v2/selection
 ~~~
 
-随后分别用 `generate_multiturn_tasks.py` 为 `train-tasks.jsonl` 和 `validation-tasks.jsonl` 生成冻结 gap openings，再用 `freeze_multiturn_openings.py` 派生 complete openings。最后仅通过以下命令发布正式 Parquet 与 accepted manifest：
+selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原因计数，以及商品数据的压缩/解压哈希。2026-08-23 的真实 5,000-task 本地验证得到 3,916 个 Reward v4 可达任务、1,084 个不可达任务；预期 train task SHA-256 为 `7b1a3dc5bad4f2af5a66b6f1b36bed34ddab059d5b890563b79674686c607498`，validation task SHA-256 为 `651a2815d1770c5b5d456cdc5b673c9437fa75b839fc79746f27eb9eb19d9a65`，reward audit SHA-256 为 `44fb157ce78f9233689eb410785127bdd255b44dfe111ab9314d5db1226f36f2`。正式服务器运行必须独立复现这些计数与哈希后才能继续。
+
+随后分别用 `generate_multiturn_tasks.py` 为 `train-tasks.jsonl` 和 `validation-tasks.jsonl` 生成冻结 gap openings。为保持与 DEV-500 一致，opening generator 固定使用 `qwen3.8-27b`、temperature 0、thinking 关闭，以及仓库当前 `OPENING_PROMPT_HASH`（DEV-500 为 `9fac425b31f44721e95d9bc1bb1a5d42da79ee305cbd5356001368de8ed0769b`）。再用 `freeze_multiturn_openings.py` 确定性派生 complete openings。最后仅通过以下命令发布正式 Parquet 与 accepted manifest：
 
 ~~~bash
 "$GRPO_PYTHON" scripts/finalize_multiturn_grpo_dataset.py \
@@ -85,7 +89,7 @@ GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
   --output-dir data/grpo/formal-v2
 ~~~
 
-这些命令定义来源与验收合同；只有 task selection 是本地确定性操作，opening 生成仍需单独确认 Shopper endpoint 后执行。本节不表示已经生成或启动训练。
+这些命令定义来源与验收合同；task selection 与 Reward v4 可达性审计都是本地确定性操作，opening 生成仍需单独确认 `qwen3.8-27b` endpoint 后执行。GRPO 训练期的 `ask_shopper` 仍使用独立 DeepSeek API，两者不能混为一个模型来源。本节不表示已经生成 opening 或启动训练。
 
 ## 默认优化配置
 

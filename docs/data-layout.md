@@ -34,6 +34,10 @@ data/sft/formal-v2/
 ~~~text
 data/grpo/formal-v2/
 ├── selection/
+│   ├── train-tasks.jsonl
+│   ├── validation-tasks.jsonl
+│   ├── reward-audit.jsonl
+│   └── selection-manifest.json
 ├── multiturn-train-tasks.jsonl
 ├── multiturn-validation-tasks.jsonl
 ├── multiturn-train-gap-openings.jsonl
@@ -45,7 +49,7 @@ data/grpo/formal-v2/
 └── manifest.json
 ~~~
 
-只有 `shopping-multiturn-grpo-dataset-v2`、`status=accepted`、Reward v4 且通过全部哈希和 task-disjoint 校验的 `manifest.json` 才能被 `train_grpo.py` 接受。
+只有 selection schema v2 已证明全部 active task 在 Reward v4 下可达，并且最终 `shopping-multiturn-grpo-dataset-v2`、`status=accepted` 通过 reachability audit、全部哈希和 task-disjoint 校验时，`manifest.json` 才能被 `train_grpo.py` 接受。
 
 ## 禁止的模糊路径
 

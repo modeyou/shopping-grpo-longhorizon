@@ -9,7 +9,7 @@ from pathlib import Path
 from shopping_grpo.evaluation.artifacts import load_unique_task_ids
 
 
-SELECTION_SCHEMA = "shopping-multiturn-grpo-selection-v1"
+SELECTION_SCHEMA = "shopping-multiturn-grpo-selection-v2"
 DATASET_SCHEMA = "shopping-multiturn-grpo-dataset-v2"
 REWARD_VERSION = "shopsimulator-reward-v4"
 
@@ -135,6 +135,11 @@ def validate_grpo_data_manifest(
         label="selection source",
     )
     _validate_recorded_artifact(
+        manifest.get("reward_reachability_audit") or {},
+        root=root,
+        label="Reward v4 reachability audit",
+    )
+    _validate_recorded_artifact(
         manifest.get("source_reservoir") or {},
         root=root,
         label="source reservoir",
@@ -212,4 +217,6 @@ def validate_grpo_data_manifest(
         raise ValueError("GRPO manifest does not certify train/validation disjointness")
     if audit.get("selected_exclusion_overlap_count") != 0:
         raise ValueError("GRPO manifest does not certify exclusion disjointness")
+    if audit.get("all_selected_tasks_reward_reachable") is not True:
+        raise ValueError("GRPO manifest does not certify Reward v4 reachability")
     return manifest

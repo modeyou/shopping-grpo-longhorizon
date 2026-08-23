@@ -4,8 +4,17 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+import hashlib
 import json
 from pathlib import Path
+import sys
+
+
+SHOP_ENV_ROOT = (
+    Path(__file__).resolve().parents[1] / "environments/ShopSimulator/shop_env"
+)
+sys.path.insert(0, str(SHOP_ENV_ROOT))
 
 from shopping_grpo.evaluation.artifacts import (
     load_unique_task_ids,
@@ -13,11 +22,16 @@ from shopping_grpo.evaluation.artifacts import (
     write_jsonl_atomic,
 )
 from shopping_grpo.training.grpo.data_manifest import (
+    REWARD_VERSION,
     SELECTION_SCHEMA,
-    deterministic_active_split,
     repo_relative,
     sha256_file,
 )
+from shopping_grpo.multiturn.benchmark import (
+    audit_gold_task_version,
+    load_products,
+)
+from shopping_grpo.multiturn.splits import decompressed_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +60,19 @@ def main() -> None:
     parser.add_argument("--train-count", type=int, default=1000)
     parser.add_argument("--validation-count", type=int, default=200)
     parser.add_argument("--expected-reservoir-sha256")
+    parser.add_argument(
+        "--products",
+        type=Path,
+        default=ROOT / (
+            "environments/ShopSimulator/shop_env/data/"
+            "fine_items_eval_train_all.json.gz"
+        ),
+    )
+    parser.add_argument(
+        "--environment-manifest",
+        type=Path,
+        default=ROOT / "data/environment-v4.json",
+    )
     args = parser.parse_args()
 
     output = args.output_dir.resolve()
@@ -83,13 +110,47 @@ def main() -> None:
             }
         )
 
-    selected = deterministic_active_split(
-        reservoir_ids,
-        excluded_ids,
-        seed=args.seed,
-        train_count=args.train_count,
-        validation_count=args.validation_count,
-    )
+    environment_path = args.environment_manifest.resolve()
+    environment = json.loads(environment_path.read_text(encoding="utf-8"))
+    if (environment.get("reward") or {}).get("version") != REWARD_VERSION:
+        raise SystemExit(f"environment manifest must use {REWARD_VERSION}")
+    products_path = args.products.resolve()
+    product_hash = decompressed_sha256(products_path)
+    if product_hash != environment.get("product_data_sha256"):
+        raise SystemExit(
+            "decompressed product data hash does not match environment manifest"
+        )
+    products = load_products(products_path)
+
+    def rank(task_id: int) -> tuple[bytes, int]:
+        return (
+            hashlib.sha256(f"{int(args.seed)}:{task_id}".encode("utf-8")).digest(),
+            task_id,
+        )
+
+    candidates = sorted(reservoir_ids - excluded_ids, key=rank)
+    outside = [task_id for task_id in candidates if not 0 <= task_id < len(products)]
+    if outside:
+        raise SystemExit(f"task IDs outside product data: {outside[:10]}")
+    reward_audits = [
+        audit_gold_task_version(
+            products[task_id], task_id, reward_version=REWARD_VERSION
+        )
+        for task_id in candidates
+    ]
+    reachable = [row["task_id"] for row in reward_audits if row["eligible"]]
+    required = args.validation_count + args.train_count
+    if len(reachable) < required:
+        raise SystemExit(
+            f"only {len(reachable)} Reward v4 reachable tasks for {required} requested"
+        )
+    selected = {
+        "validation": reachable[: args.validation_count],
+        "train": reachable[
+            args.validation_count : args.validation_count + args.train_count
+        ],
+        "unused": reachable[required:],
+    }
     train_path = output / "train-tasks.jsonl"
     validation_path = output / "validation-tasks.jsonl"
     write_jsonl_atomic(train_path, ({"task_id": value} for value in selected["train"]))
@@ -97,7 +158,15 @@ def main() -> None:
         validation_path,
         ({"task_id": value} for value in selected["validation"]),
     )
+    reward_audit_path = output / "reward-audit.jsonl"
+    write_jsonl_atomic(reward_audit_path, reward_audits)
     selected_ids = set(selected["train"]) | set(selected["validation"])
+    rejection_reasons = Counter(
+        reason
+        for row in reward_audits
+        if not row["eligible"]
+        for reason in row.get("reasons") or []
+    )
     manifest = {
         "schema_version": SELECTION_SCHEMA,
         "status": "frozen",
@@ -108,8 +177,30 @@ def main() -> None:
         },
         "selection": {
             "seed": args.seed,
-            "method": "sha256(seed:task_id) ascending",
+            "method": (
+                "sha256(seed:task_id) ascending, then retain Reward v4 reachable tasks"
+            ),
             "split_order": ["validation", "train", "unused"],
+        },
+        "reward_contract": {
+            "version": REWARD_VERSION,
+            "environment_manifest": {
+                "path": repo_relative(environment_path, ROOT),
+                "sha256": sha256_file(environment_path),
+            },
+            "product_data": {
+                "path": repo_relative(products_path, ROOT),
+                "compressed_sha256": sha256_file(products_path),
+                "decompressed_sha256": product_hash,
+            },
+            "audit": {
+                "path": repo_relative(reward_audit_path, ROOT),
+                "sha256": sha256_file(reward_audit_path),
+                "rows": len(reward_audits),
+                "reachable_tasks": len(reachable),
+                "rejected_tasks": len(reward_audits) - len(reachable),
+                "rejection_reasons": dict(sorted(rejection_reasons.items())),
+            },
         },
         "splits": {
             "validation": {
@@ -131,7 +222,14 @@ def main() -> None:
         },
         "exclusions": exclusions,
         "audit": {
-            "eligible_reservoir_tasks": len(reservoir_ids - excluded_ids),
+            "post_exclusion_candidate_tasks": len(candidates),
+            "reward_reachable_tasks": len(reachable),
+            "reward_rejected_tasks": len(reward_audits) - len(reachable),
+            "all_selected_tasks_reward_reachable": all(
+                row["eligible"]
+                for row in reward_audits
+                if row["task_id"] in selected_ids
+            ),
             "train_validation_overlap_count": 0,
             "selected_exclusion_overlap_count": len(selected_ids & excluded_ids),
         },
@@ -146,6 +244,7 @@ def main() -> None:
                 "train_tasks": len(selected["train"]),
                 "validation_tasks": len(selected["validation"]),
                 "unused_tasks": len(selected["unused"]),
+                "reward_rejected_tasks": len(reward_audits) - len(reachable),
             },
             ensure_ascii=False,
         )
