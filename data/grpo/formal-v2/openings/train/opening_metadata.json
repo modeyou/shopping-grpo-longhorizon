@@ -1,0 +1,24 @@
+{
+  "complete_opening_policy": "private-instruction-full-v1",
+  "condition_count": 3000,
+  "inputs": {
+    "gap_openings": "/home/gjx/shopping-grpo/data/grpo/formal-v2/selection/train-gap-openings.jsonl",
+    "gap_openings_sha256": "ad48f941ff240dd9ddd10b1f7d17e3e15756a4ddbe880bf3cfde5986712b4842",
+    "task_manifest": "/home/gjx/shopping-grpo/data/grpo/formal-v2/selection/train-tasks.jsonl",
+    "task_manifest_sha256": "c8dedc11f4bc0f22e6b7776d80f9e9b17c82447c6389d1b6e1837d68803f3826"
+  },
+  "outputs": {
+    "complete_openings": "/home/gjx/shopping-grpo/data/grpo/formal-v2/openings/train/complete_openings.jsonl",
+    "complete_openings_sha256": "ec22fe989ab7f3e73392f7a0d499019c7d070526a47787ea187f73173128164e",
+    "conditions": "/home/gjx/shopping-grpo/data/grpo/formal-v2/openings/train/conditions.jsonl",
+    "conditions_sha256": "96b1e1456d332cbf433d3b1f76593985e69da35293b1cdd65d7ea1f45ae101b1"
+  },
+  "schema_version": "shopping-multiturn-evaluation-opening-v1",
+  "task_count": 1000,
+  "validation": {
+    "all_source_goal_hashes_match": true,
+    "all_tasks_have_gap_openings": true,
+    "conditions_per_task": 3,
+    "gap_conditions_share_one_opening": true
+  }
+}

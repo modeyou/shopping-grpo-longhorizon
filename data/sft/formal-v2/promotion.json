@@ -1,0 +1,31 @@
+{
+  "artifacts": {
+    "manifest.json": {
+      "path": "data/sft/formal-v2/manifest.json",
+      "sha256": "11be05b2d4e2cfb49529542a23030988e21ea59266cad97b48598302e56e4eeb"
+    },
+    "train.jsonl": {
+      "path": "data/sft/formal-v2/train.jsonl",
+      "rows": 1620,
+      "sha256": "bbfd477b5f4a776d64dd0c6e338829e8b76cd6529ca7806bef3def7c119ac9ae"
+    },
+    "validation.jsonl": {
+      "path": "data/sft/formal-v2/validation.jsonl",
+      "rows": 180,
+      "sha256": "40d648d4e8cf2f47bb1af6ef330907da25e2e7cbf45fe7e8856aad833652ab8b"
+    }
+  },
+  "destination": "data/sft/formal-v2",
+  "schema_version": "shopping-formal-sft-promotion-v1",
+  "source": {
+    "manifest_sha256": "11be05b2d4e2cfb49529542a23030988e21ea59266cad97b48598302e56e4eeb",
+    "path": "outputs/multiturn-sft/mix-formal-1800-v4-seed20260822"
+  },
+  "status": "accepted",
+  "validation": {
+    "byte_identical_copy": true,
+    "evaluation_overlap_count": 0,
+    "source_preserved": true,
+    "task_disjoint": true
+  }
+}

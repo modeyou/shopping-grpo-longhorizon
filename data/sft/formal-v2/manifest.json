@@ -1,0 +1,172 @@
+{
+  "artifacts": {
+    "all.jsonl": {
+      "rows": 1800,
+      "sha256": "0a4367e656682a18221e6ca546b898080eb9032897a9590be699475fa046440b"
+    },
+    "selection-audit.jsonl": {
+      "rows": 1800,
+      "sha256": "8cd092ffc73b186e764f17a22de978dea87c1af51f4a45098e875a84861f302e"
+    },
+    "train.jsonl": {
+      "rows": 1620,
+      "sha256": "bbfd477b5f4a776d64dd0c6e338829e8b76cd6529ca7806bef3def7c119ac9ae"
+    },
+    "validation.jsonl": {
+      "rows": 180,
+      "sha256": "40d648d4e8cf2f47bb1af6ef330907da25e2e7cbf45fe7e8856aad833652ab8b"
+    }
+  },
+  "evaluation_exclusion": {
+    "path": "/home/gjx/shopping-grpo/data/evaluation/tasks.jsonl",
+    "rows": 200,
+    "selected_overlap_count": 0,
+    "sha256": "d99112a20ef47534c27a32e4b38229bf048dcc6b06fef2e3e919aac3093662f5"
+  },
+  "max_length": 24576,
+  "model": "/home/gjx/models/Qwen/Qwen3.5-2B",
+  "model_revision": "15852e8c16360a2fea060d615a32b45270f8a8fc",
+  "pool_inputs": {
+    "autonomous-gap-v1": {
+      "eligible_rows": 905,
+      "evaluation_overlap_excluded": 0,
+      "path": "/home/gjx/shopping-grpo/outputs/multiturn-sft/v4-audit-pools-02/autonomous.jsonl",
+      "sha256": "03be5f4f49dc0af4b10efe37eab409cf47126648aba51be65cc92a80febe6a37",
+      "source_rows": 905
+    },
+    "complete-no-ask-v1": {
+      "eligible_rows": 2064,
+      "evaluation_overlap_excluded": 0,
+      "path": "/home/gjx/shopping-grpo/outputs/multiturn-sft/v4-audit-pools-02/complete.jsonl",
+      "sha256": "4ce179f46529b0f739370b26f255af95706618927fd16526ce72254af544f824",
+      "source_rows": 2064
+    },
+    "composite-replay-v1": {
+      "eligible_rows": 1603,
+      "evaluation_overlap_excluded": 0,
+      "path": "/home/gjx/shopping-grpo/outputs/multiturn-sft/v4-audit-pools-02/composite.jsonl",
+      "sha256": "532af6578412c45f88e594bd2abd786e4de4b9dd3259292c2b2fab9e79787af8",
+      "source_rows": 1603
+    }
+  },
+  "pool_membership_patterns": {
+    "autonomous-gap-v1": 72,
+    "complete-no-ask-v1": 467,
+    "complete-no-ask-v1+autonomous-gap-v1": 15,
+    "complete-no-ask-v1+composite-replay-v1": 771,
+    "complete-no-ask-v1+composite-replay-v1+autonomous-gap-v1": 811,
+    "composite-replay-v1": 14,
+    "composite-replay-v1+autonomous-gap-v1": 7
+  },
+  "reward": "shopsimulator-reward-v4",
+  "row_quotas_from_token_averages": {
+    "autonomous-gap-v1": 371,
+    "complete-no-ask-v1": 802,
+    "composite-replay-v1": 627
+  },
+  "schema_version": "shopping-multiturn-sft-mix-v2",
+  "seed": 20260822,
+  "selected": {
+    "assistant_tokens": 422179,
+    "policies": {
+      "autonomous-gap-v1": {
+        "assistant_token_share": 0.19872376409058717,
+        "assistant_tokens": 83897,
+        "input_tokens": 2213924,
+        "rows": 371,
+        "schema_variants": {
+          "multiturn-shop-tools-v1": 371
+        }
+      },
+      "complete-no-ask-v1": {
+        "assistant_token_share": 0.502225359385474,
+        "assistant_tokens": 212029,
+        "input_tokens": 4836537,
+        "rows": 802,
+        "schema_variants": {
+          "complete-ask-available-v1": 401,
+          "complete-shop-tools-v1": 401
+        }
+      },
+      "composite-replay-v1": {
+        "assistant_token_share": 0.2990508765239389,
+        "assistant_tokens": 126253,
+        "input_tokens": 3922054,
+        "rows": 627,
+        "schema_variants": {
+          "multiturn-shop-tools-v1": 627
+        }
+      }
+    },
+    "rows": 1800
+  },
+  "source_pool_schema": "shopping-multiturn-sft-v4-pool-v1",
+  "split": {
+    "task_disjoint": true,
+    "train_rows": 1620,
+    "validation_rows": 180
+  },
+  "target_assistant_token_ratios": {
+    "autonomous-gap-v1": 0.2,
+    "complete-no-ask-v1": 0.5,
+    "composite-replay-v1": 0.3
+  },
+  "token_share_tolerance": 0.05,
+  "tokenization": {
+    "autonomous-gap-v1": {
+      "assistant_tokens": {
+        "max": 1062,
+        "mean": 226.327796234773,
+        "min": 157
+      },
+      "drop_reasons": {
+        "chat_template_or_length": 2
+      },
+      "dropped_rows": 2,
+      "input_rows": 905,
+      "input_tokens": {
+        "max": 19563,
+        "mean": 6009.765227021041,
+        "min": 4323
+      },
+      "kept_rows": 903
+    },
+    "complete-no-ask-v1": {
+      "assistant_tokens": {
+        "max": 1802,
+        "mean": 261.2455118874333,
+        "min": 114
+      },
+      "drop_reasons": {
+        "chat_template_or_length": 3
+      },
+      "dropped_rows": 3,
+      "input_rows": 2064,
+      "input_tokens": {
+        "max": 23005,
+        "mean": 5970.131004366812,
+        "min": 3894
+      },
+      "kept_rows": 2061
+    },
+    "composite-replay-v1": {
+      "assistant_tokens": {
+        "max": 884,
+        "mean": 200.65728580362727,
+        "min": 147
+      },
+      "drop_reasons": {
+        "chat_template_or_length": 4
+      },
+      "dropped_rows": 4,
+      "input_rows": 1603,
+      "input_tokens": {
+        "max": 24073,
+        "mean": 6181.67292057536,
+        "min": 4207
+      },
+      "kept_rows": 1599
+    }
+  },
+  "validation_ratio": 0.1
+}

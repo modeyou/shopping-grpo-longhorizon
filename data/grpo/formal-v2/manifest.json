@@ -1,0 +1,151 @@
+{
+  "artifacts": {
+    "train": {
+      "path": "data/grpo/formal-v2/multiturn-train.parquet",
+      "rows": 2000,
+      "sha256": "38f41370264277c76c106f5970a7d0560f745ad77dcfee6bfc108fa9c1720f41",
+      "tasks": 1000
+    },
+    "validation": {
+      "path": "data/grpo/formal-v2/multiturn-validation.parquet",
+      "rows": 400,
+      "sha256": "575fe9b20ae6c24259144b05ad130fd032d260d171a68c95294566521fc7cae4",
+      "tasks": 200
+    }
+  },
+  "audit": {
+    "all_selected_tasks_reward_reachable": true,
+    "selected_exclusion_overlap_count": 0,
+    "train_mode_counts": {
+      "complete": 1000,
+      "gap": 1000
+    },
+    "train_validation_overlap_count": 0,
+    "validation_mode_counts": {
+      "complete": 200,
+      "gap": 200
+    }
+  },
+  "environment": {
+    "path": "data/environment-v4.json",
+    "sha256": "fadcb2b9eee75e7d986b3eb0b32b9f475002090cc75a07e68a66c9a3ec17ea0e"
+  },
+  "exclusions": [
+    {
+      "label": "sft-train",
+      "path": "data/sft/formal-v2/train.jsonl",
+      "reservoir_overlap_count": 0,
+      "reservoir_overlap_task_ids": [],
+      "sha256": "bbfd477b5f4a776d64dd0c6e338829e8b76cd6529ca7806bef3def7c119ac9ae",
+      "tasks": 1620
+    },
+    {
+      "label": "sft-validation",
+      "path": "data/sft/formal-v2/validation.jsonl",
+      "reservoir_overlap_count": 0,
+      "reservoir_overlap_task_ids": [],
+      "sha256": "40d648d4e8cf2f47bb1af6ef330907da25e2e7cbf45fe7e8856aad833652ab8b",
+      "tasks": 180
+    },
+    {
+      "label": "dev500",
+      "path": "data/multiturn/evaluation-dev-v2/tasks.jsonl",
+      "reservoir_overlap_count": 0,
+      "reservoir_overlap_task_ids": [],
+      "sha256": "93fda78a7a69b1ca68262a5821571055ed26d217791542723e2503fb4bc5fc3b",
+      "tasks": 500
+    },
+    {
+      "label": "final200",
+      "path": "data/evaluation/tasks.jsonl",
+      "reservoir_overlap_count": 0,
+      "reservoir_overlap_task_ids": [],
+      "sha256": "d99112a20ef47534c27a32e4b38229bf048dcc6b06fef2e3e919aac3093662f5",
+      "tasks": 200
+    }
+  ],
+  "opening_generation": {
+    "models": [
+      "qwen3.8-27b"
+    ],
+    "prompt_hashes": [
+      "9fac425b31f44721e95d9bc1bb1a5d42da79ee305cbd5356001368de8ed0769b"
+    ],
+    "temperature": 0.0,
+    "thinking": false
+  },
+  "openings": {
+    "train_complete": {
+      "path": "data/grpo/formal-v2/multiturn-train-complete-openings.jsonl",
+      "rows": 1000,
+      "sha256": "ec22fe989ab7f3e73392f7a0d499019c7d070526a47787ea187f73173128164e",
+      "tasks": 1000
+    },
+    "train_gap": {
+      "path": "data/grpo/formal-v2/multiturn-train-gap-openings.jsonl",
+      "rows": 1000,
+      "sha256": "4411ec491cc392a08660c710ee85ed3328467f700b6629f42f95625e0c4703ad",
+      "tasks": 1000
+    },
+    "validation_complete": {
+      "path": "data/grpo/formal-v2/multiturn-validation-complete-openings.jsonl",
+      "rows": 200,
+      "sha256": "18b17cdfd0de896eab9028099df7eff54f21db8491067264747e39f0f608104e",
+      "tasks": 200
+    },
+    "validation_gap": {
+      "path": "data/grpo/formal-v2/multiturn-validation-gap-openings.jsonl",
+      "rows": 200,
+      "sha256": "414dfbb50822166fcd9cf30b881143fec05af884447d4c867a28a99fbf7591ef",
+      "tasks": 200
+    }
+  },
+  "reward_reachability_audit": {
+    "path": "data/grpo/formal-v2/selection/reward-audit.jsonl",
+    "reachable_tasks": 3916,
+    "rejected_tasks": 1084,
+    "rejection_reasons": {
+      "explicit_price_not_compiled": 833,
+      "gold_purchase_not_reachable": 176,
+      "gold_reward_invalid": 40,
+      "gold_variant_price_unresolved": 149,
+      "unresolved_option_requirements": 74
+    },
+    "rows": 5000,
+    "sha256": "b75882737c67bbd3eb148627c7ea2d6928445862027da4b8f6bf2eacb920f575"
+  },
+  "reward_version": "shopsimulator-reward-v4",
+  "schema_version": "shopping-multiturn-grpo-dataset-v2",
+  "selection": {
+    "train": {
+      "path": "data/grpo/formal-v2/multiturn-train-tasks.jsonl",
+      "sha256": "5651dc55f1c1cb6c5a905c8e2071c4f9b1cf44e5d4e60ab7b885f11e07e68af4",
+      "tasks": 1000
+    },
+    "unused_tasks": 2716,
+    "validation": {
+      "path": "data/grpo/formal-v2/multiturn-validation-tasks.jsonl",
+      "sha256": "4e84731f533722019c6dea850e5803f1e0a6e9328389016b040870e815b9fa2a",
+      "tasks": 200
+    }
+  },
+  "selection_method": {
+    "method": "sha256(seed:task_id) ascending, then retain Reward v4 reachable tasks",
+    "seed": 20260823,
+    "split_order": [
+      "validation",
+      "train",
+      "unused"
+    ]
+  },
+  "selection_source": {
+    "path": "data/grpo/formal-v2/selection/selection-manifest.json",
+    "sha256": "aee063159c01cd682a41c175031e015031fa8de105f7b31ad75a42f71d24b0bd"
+  },
+  "source_reservoir": {
+    "path": "data/multiturn/tasks/grpo_train.jsonl",
+    "sha256": "c5aecc973fb15bd6e37b90c7fa0c4c292573f3fe14aff5d1f27ce9eb3c446c5b",
+    "tasks": 5000
+  },
+  "status": "accepted"
+}
