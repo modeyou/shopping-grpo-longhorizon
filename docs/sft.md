@@ -1,5 +1,7 @@
 # 多轮 Reward v4 LoRA SFT
 
+数据目录身份与禁止混用规则见 `docs/data-layout.md`。
+
 ## 目标
 
 当前 SFT 阶段用于训练 Qwen3.5-2B 遵循 ShopSimulator 多轮动作协议：只在信息确实缺失时向 Shopper 提问，只调用合法购物工具，以当前可见观察为依据执行动作，正确选择商品变体，并以有效购买或停止决策结束轨迹。
@@ -30,11 +32,13 @@ Baseline → SFT → GRPO → Evaluation
 
 802 条 complete 样本中，401 条仅提供购物工具，401 条提供包含 `ask_shopper` 的完整多轮工具 schema，但目标轨迹仍保持零提问。这一 schema augmentation 用于学习“工具可用不等于必须调用”。
 
-正式数据目录：
+正式数据的仓库内规范目录：
 
 ```text
-outputs/multiturn-sft/mix-formal-1800-v4-seed20260822
+data/sft/formal-v2
 ```
+
+原始构建产物仍保留在 `outputs/multiturn-sft/mix-formal-1800-v4-seed20260822`。规范目录中的 `train.jsonl`、`validation.jsonl` 和 `manifest.json` 必须由 `promote_formal_sft_data.py` 校验后逐字节复制，不能手工改写；`promotion.json` 额外记录来源与复制审计。原参考项目数据已隔离到 `data/reference/sft-v1`，不得作为本项目正式 SFT 输入。
 
 冻结哈希：
 
@@ -68,6 +72,15 @@ outputs/multiturn-sft/mix-formal-1800-v4-seed20260822
   --autonomous-token-ratio 0.2 \
   --token-share-tolerance 0.05
 ```
+
+构建完成后执行一次规范数据晋升：
+
+~~~bash
+"$GRPO_PYTHON" scripts/promote_formal_sft_data.py \
+  --source outputs/multiturn-sft/mix-formal-1800-v4-seed20260822 \
+  --destination data/sft/formal-v2 \
+  --expected-manifest-sha256 11be05b2d4e2cfb49529542a23030988e21ea59266cad97b48598302e56e4eeb
+~~~
 
 ## SwanLab 配置
 
@@ -139,9 +152,9 @@ export SWANLAB_MODE=online
 
 "$TORCHRUN" --standalone --nnodes=1 --nproc_per_node=4 scripts/train_lora_sft.py \
   --model "$MODEL_DIR" \
-  --train outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/train.jsonl \
-  --validation outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/validation.jsonl \
-  --data-manifest outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/manifest.json \
+  --train data/sft/formal-v2/train.jsonl \
+  --validation data/sft/formal-v2/validation.jsonl \
+  --data-manifest data/sft/formal-v2/manifest.json \
   --evaluation-tasks data/evaluation/tasks.jsonl \
   --output outputs/models/multiturn-sft-v4-1800-e2-seed20260822-r2 \
   --max-length 24576 \

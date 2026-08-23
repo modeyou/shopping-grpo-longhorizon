@@ -93,5 +93,5 @@ python scripts/generate_multiturn_tasks.py \
 A/B/C Teacher 采集均使用 `sft_candidates` 派生的 frozen opening 或完整 task manifest。GRPO 只使用
 新 `grpo_train` 和 `grpo_validation`。新 `evaluation` 只在模型、prompt、Reward 和超参数冻结后运行。
 
-此前基于 `data/grpo/train.jsonl` 生成的 opening 和轨迹保留在 `outputs/` 作为 pipeline pilot，
+此前基于 `data/reference/grpo-v1/train.jsonl` 生成的 opening 和轨迹保留在 `outputs/` 作为 pipeline pilot，
 不合并到正式项目 SFT。

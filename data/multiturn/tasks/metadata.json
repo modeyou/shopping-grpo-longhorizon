@@ -26,12 +26,12 @@
     "policy": "exclude all reference SFT/GRPO/evaluation task IDs",
     "sources": [
       {
-        "path": "data/sft/train.jsonl",
+        "path": "data/reference/sft-v1/train.jsonl",
         "sha256": "8c3a6ff0033f6ea672af609891e747d60652ddc17e8d3c8eacb19e9d96dd9477",
         "unique_task_ids": 800
       },
       {
-        "path": "data/sft/validation.jsonl",
+        "path": "data/reference/sft-v1/validation.jsonl",
         "sha256": "9525cc2fb04a1d8d38ae2db959397da908dde3fea766f580fdcf77d1239533cc",
         "unique_task_ids": 200
       },
@@ -41,12 +41,12 @@
         "unique_task_ids": 1192
       },
       {
-        "path": "data/grpo/train.jsonl",
+        "path": "data/reference/grpo-v1/train.jsonl",
         "sha256": "4e6d441e1a432223741b2968d1622d1e77ab855a7d8fe9275cd7df2bbf5565bf",
         "unique_task_ids": 1000
       },
       {
-        "path": "data/grpo/validation.jsonl",
+        "path": "data/reference/grpo-v1/validation.jsonl",
         "sha256": "11e0e15ec9fe6911c7c5b8e8525ad06a0b020367e58461e6ab1baa3cdbe73d61",
         "unique_task_ids": 50
       },

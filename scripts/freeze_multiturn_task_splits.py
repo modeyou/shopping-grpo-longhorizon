@@ -10,11 +10,11 @@ from shopping_grpo.multiturn.splits import freeze_task_splits
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EXCLUSIONS = (
-    ROOT / "data/sft/train.jsonl",
-    ROOT / "data/sft/validation.jsonl",
+    ROOT / "data/reference/sft-v1/train.jsonl",
+    ROOT / "data/reference/sft-v1/validation.jsonl",
     ROOT / "data/sft_pure_v4/all.jsonl",
-    ROOT / "data/grpo/train.jsonl",
-    ROOT / "data/grpo/validation.jsonl",
+    ROOT / "data/reference/grpo-v1/train.jsonl",
+    ROOT / "data/reference/grpo-v1/validation.jsonl",
     ROOT / "data/evaluation/tasks.jsonl",
     ROOT / "src/shopping_grpo/resources/blind_final_task_ids.json",
 )

@@ -29,15 +29,17 @@ The frozen subset was split into 800 training and 200 validation rows. The two
 splits are task-disjoint and also have zero task-ID overlap with GRPO and the
 Final-200 evaluation set.
 
-## Frozen deliverables
+## Frozen reference-v1 deliverables
 
 | File | Rows | SHA-256 |
 |---|---:|---|
-| `data/sft/train.jsonl` | 800 | `8c3a6ff0033f6ea672af609891e747d60652ddc17e8d3c8eacb19e9d96dd9477` |
-| `data/sft/validation.jsonl` | 200 | `9525cc2fb04a1d8d38ae2db959397da908dde3fea766f580fdcf77d1239533cc` |
+| `data/reference/sft-v1/train.jsonl` | 800 | `8c3a6ff0033f6ea672af609891e747d60652ddc17e8d3c8eacb19e9d96dd9477` |
+| `data/reference/sft-v1/validation.jsonl` | 200 | `9525cc2fb04a1d8d38ae2db959397da908dde3fea766f580fdcf77d1239533cc` |
 
 Raw teacher responses are intentionally not committed; their collection path
-is retained in `data/sft/metadata.json` as provenance.
+is retained in `data/reference/sft-v1/metadata.json` as provenance. These
+Reward v3 files are reference-only and are not the current formal multi-turn
+SFT inputs.
 
 ## Run a new collection
 
@@ -48,7 +50,7 @@ export OPENAI_BASE_URL=https://your-provider.example/v1
 export OPENAI_API_KEY=your-key
 
 python scripts/collect_sft_data.py \
-  --tasks data/grpo/train.jsonl \
+  --tasks data/reference/grpo-v1/train.jsonl \
   --output-dir outputs/sft-collection \
   --model deepseek-v4-flash \
   --target-accepted 1000 \

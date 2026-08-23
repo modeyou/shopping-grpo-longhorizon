@@ -69,9 +69,11 @@ flowchart LR
 | GRPO | 在真实环境 Rollout 中优化 Reward v3 | `bash scripts/grpo.sh` | [GRPO](docs/grpo.md) |
 | Evaluation | 使用同一批 Final-200 Clean 留出任务公平比较模型 | `bash scripts/evaluate.sh NAME` | [评估](docs/evaluation.md) |
 
-### SFT 数据是怎么收集的？
+### 原参考项目的 SFT 数据是怎么收集的？
 
-当前数据使用 `deepseek-v4-flash` 作为教师模型，在 ShopSimulator
+本节只说明隔离在 `data/reference/sft-v1` 的原参考数据，不是当前多轮 Reward v4 正式 SFT。当前正式数据合同见[多轮 SFT 文档](docs/sft.md)和[数据目录合同](docs/data-layout.md)。
+
+原参考数据使用 `deepseek-v4-flash` 作为教师模型，在 ShopSimulator
 Environment v2.1 中采集：
 
 - 共获得 2,498 条原始任务轨迹；
@@ -84,7 +86,7 @@ Environment v2.1 中采集：
 
 ```bash
 python scripts/collect_sft_data.py \
-  --tasks data/grpo/train.jsonl \
+  --tasks data/reference/grpo-v1/train.jsonl \
   --output-dir outputs/sft-collection \
   --target-accepted 1000 \
   --workers 4
@@ -94,9 +96,11 @@ SFT 只在 Assistant 动作 token 上计算 Loss，用户指令和环境 Observa
 Mask。这样模型学习的是可执行的工具策略，而不是背诵环境返回内容。数据哈希、接受率
 和采集审计见[数据采集文档](docs/data-collection.md)。
 
-### GRPO 是怎么训练的？
+### 原参考项目的 GRPO 是怎么训练的？
 
-GRPO 从合并后的 SFT 模型开始。veRL 在 ShopSimulator 中为每个 Prompt 在线生成
+本节的 Reward v3 内容只对应 `data/reference/grpo-v1`。当前 Reward v4 GRPO 方案见[GRPO 文档](docs/grpo.md)。
+
+原参考 GRPO 从合并后的 SFT 模型开始。veRL 在 ShopSimulator 中为每个 Prompt 在线生成
 四条轨迹，环境用确定性的 Reward v3 评估最终购买结果、约束满足程度和终止行为。
 训练不使用额外的 LLM-as-a-Judge Reward Model。
 

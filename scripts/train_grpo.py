@@ -20,11 +20,11 @@ DEFAULT_AGENT_CONFIG = ROOT / "configs/agent_loop.yaml"
 DEFAULT_TOOL_CONFIG = ROOT / "configs/tools.json"
 DEFAULT_MANIFEST = ROOT / "data/environment-v4.json"
 DEFAULT_MODEL = ROOT / "outputs/models/sft-merged"
-DEFAULT_TRAIN_DATA = ROOT / "data/grpo/multiturn-train.parquet"
-DEFAULT_VAL_DATA = ROOT / "data/grpo/multiturn-validation.parquet"
+DEFAULT_TRAIN_DATA = ROOT / "data/grpo/formal-v2/multiturn-train.parquet"
+DEFAULT_VAL_DATA = ROOT / "data/grpo/formal-v2/multiturn-validation.parquet"
 
 
-DEFAULT_DATA_MANIFEST = ROOT / "data/grpo/manifest.json"
+DEFAULT_DATA_MANIFEST = ROOT / "data/grpo/formal-v2/manifest.json"
 
 
 def _model_has_weights(path: Path) -> bool:

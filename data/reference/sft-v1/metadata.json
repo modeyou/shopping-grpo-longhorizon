@@ -46,12 +46,12 @@
     "path": "data/evaluation/tasks.jsonl"
   },
   "train": {
-    "path": "data/sft/train.jsonl",
+    "path": "data/reference/sft-v1/train.jsonl",
     "rows": 800,
     "sha256": "8c3a6ff0033f6ea672af609891e747d60652ddc17e8d3c8eacb19e9d96dd9477"
   },
   "validation": {
-    "path": "data/sft/validation.jsonl",
+    "path": "data/reference/sft-v1/validation.jsonl",
     "rows": 200,
     "sha256": "9525cc2fb04a1d8d38ae2db959397da908dde3fea766f580fdcf77d1239533cc"
   }

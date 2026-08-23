@@ -9,8 +9,10 @@ MERGED_DIR="${SFT_MERGED_DIR:-$ROOT/outputs/models/sft-merged}"
 cd "$ROOT"
 "$ROOT/.venv/bin/python" scripts/train_lora_sft.py \
   --model "$BASE_MODEL" \
-  --train data/sft/train.jsonl \
-  --validation data/sft/validation.jsonl \
+  --train data/sft/formal-v2/train.jsonl \
+  --validation data/sft/formal-v2/validation.jsonl \
+  --data-manifest data/sft/formal-v2/manifest.json \
+  --evaluation-tasks data/evaluation/tasks.jsonl \
   --output "$ADAPTER_DIR" \
   --dtype auto \
   --gradient-checkpointing \

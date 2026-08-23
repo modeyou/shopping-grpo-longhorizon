@@ -147,8 +147,14 @@ def build_experiment(
             _python(root),
             "scripts/train_lora_sft.py",
             "--model", str(model or "Qwen/Qwen3.5-2B"),
-            "--train", str(train_data or root / "data/sft/train.jsonl"),
-            "--validation", str(validation_data or root / "data/sft/validation.jsonl"),
+            "--train", str(train_data or root / "data/sft/formal-v2/train.jsonl"),
+            "--validation", str(
+                validation_data or root / "data/sft/formal-v2/validation.jsonl"
+            ),
+            "--data-manifest",
+            str(root / "data/sft/formal-v2/manifest.json"),
+            "--evaluation-tasks",
+            str(root / "data/evaluation/tasks.jsonl"),
             "--output", str(output),
             "--learning-rate", str(settings["learning_rate"]),
             "--epochs", str(settings["epochs"]),
@@ -180,8 +186,13 @@ def build_experiment(
         _python(root),
         "scripts/train_grpo.py",
         "--model", str(model or root / "outputs/models/sft-merged"),
-        "--train-data", str(train_data or root / "data/grpo/train.parquet"),
-        "--val-data", str(validation_data or root / "data/grpo/validation.parquet"),
+        "--train-data", str(
+            train_data or root / "data/grpo/formal-v2/multiturn-train.parquet"
+        ),
+        "--val-data", str(
+            validation_data
+            or root / "data/grpo/formal-v2/multiturn-validation.parquet"
+        ),
         "--output", str(output),
         "--experiment-name", experiment["name"],
         "--",

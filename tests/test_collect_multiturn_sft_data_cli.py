@@ -31,7 +31,7 @@ class CollectMultiturnSftDataCliTests(unittest.TestCase):
             [
                 "collect_multiturn_sft_data.py",
                 "--tasks",
-                "data/grpo/train.jsonl",
+                "data/reference/grpo-v1/train.jsonl",
                 "--output-dir",
                 "outputs/complete",
                 "--complete-no-ask",
@@ -50,7 +50,7 @@ class CollectMultiturnSftDataCliTests(unittest.TestCase):
             [
                 "collect_multiturn_sft_data.py",
                 "--tasks",
-                "data/grpo/train.jsonl",
+                "data/reference/grpo-v1/train.jsonl",
                 "--output-dir",
                 "outputs/v4",
                 "--reward-version",

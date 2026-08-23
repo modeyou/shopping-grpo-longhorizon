@@ -62,7 +62,7 @@ Strict-success task IDs：
 
 ### 数据与复现绑定
 
-正式 SFT 使用 `outputs/multiturn-sft/mix-formal-1800-v4-seed20260822`，共 1,800 条样本，按 task 隔离为 1,620 条训练和 180 条验证。训练与 `data/evaluation/tasks.jsonl` 的 task ID 重叠数为 0。
+正式 SFT 的规范输入目录为 `data/sft/formal-v2`；它由 `outputs/multiturn-sft/mix-formal-1800-v4-seed20260822` 通过固定 manifest SHA-256 校验后逐字节晋升。共 1,800 条样本，按 task 隔离为 1,620 条训练和 180 条验证。训练与 `data/evaluation/tasks.jsonl` 的 task ID 重叠数为 0。
 
 | 策略 | 行数 | Assistant tokens | Token 份额 |
 |---|---:|---:|---:|

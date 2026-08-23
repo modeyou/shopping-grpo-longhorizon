@@ -126,7 +126,11 @@ def main() -> None:
         type=Path,
         default=ROOT / "data/environment-v4.json",
     )
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "data/grpo")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=ROOT / "data/grpo/formal-v2",
+    )
     args = parser.parse_args()
 
     selection_path = args.selection_manifest.resolve()

@@ -10,10 +10,10 @@
     "torch": "2.11.0"
   },
   "training": {
-    "train_file": "data/grpo/train.parquet",
+    "train_file": "data/reference/grpo-v1/train.parquet",
     "train_tasks": 1000,
     "train_sha256": "e4b4765b67efcc064ba4e656db625a812a34cbcff00da0e23d6a3df8aac5fdd4",
-    "validation_file": "data/grpo/validation.parquet",
+    "validation_file": "data/reference/grpo-v1/validation.parquet",
     "validation_tasks": 50,
     "validation_sha256": "9aa370f00d7ead942e47cf9aed4ab0c55cd7426220f4603f4fed5dc949ea2788",
     "algorithm": "grpo",

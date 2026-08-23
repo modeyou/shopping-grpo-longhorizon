@@ -69,9 +69,13 @@ flowchart LR
     E --> H
 ```
 
-### How the SFT data was collected
+### How the reference-v1 SFT data was collected
 
-The current collection used `deepseek-v4-flash` as a teacher in ShopSimulator
+This section describes only the original Reward v3 data isolated under
+`data/reference/sft-v1`. It is not the current formal multi-turn SFT input; see
+[the SFT guide](docs/sft.md) and [the data layout contract](docs/data-layout.md).
+
+The reference collection used `deepseek-v4-flash` as a teacher in ShopSimulator
 Environment v2.1. It produced 2,498 raw trajectories, of which 1,026 passed the
 strict acceptance filter. This frozen revision uses 1,000 trajectories split
 into 800 training and 200 validation rows. SFT, GRPO and Final-200 Clean task IDs are
@@ -82,15 +86,18 @@ The resumable collection entry point is:
 
 ```bash
 python scripts/collect_sft_data.py \
-  --tasks data/grpo/train.jsonl \
+  --tasks data/reference/grpo-v1/train.jsonl \
   --output-dir outputs/sft-collection \
   --target-accepted 1000 \
   --workers 4
 ```
 
-### How GRPO is trained
+### How the reference-v1 GRPO was trained
 
-GRPO starts from the merged SFT model. veRL generates four online trajectories
+The Reward v3 description below applies only to `data/reference/grpo-v1`. The
+current Reward v4 design is defined in the [GRPO guide](docs/grpo.md).
+
+The reference GRPO starts from the merged SFT model. veRL generates four online trajectories
 per prompt in ShopSimulator, while deterministic Reward v3 scores the terminal
 purchase, constraint satisfaction and termination behavior. No additional
 LLM-as-a-Judge reward model is used for training.
