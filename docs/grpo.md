@@ -74,7 +74,7 @@ GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
   --output-dir data/grpo/formal-v2/selection
 ~~~
 
-selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原因计数，以及商品数据的压缩/解压哈希。2026-08-23 的真实 5,000-task 本地验证得到 3,916 个 Reward v4 可达任务、1,084 个不可达任务；预期 train task SHA-256 为 `7b1a3dc5bad4f2af5a66b6f1b36bed34ddab059d5b890563b79674686c607498`，validation task SHA-256 为 `651a2815d1770c5b5d456cdc5b673c9437fa75b839fc79746f27eb9eb19d9a65`，reward audit SHA-256 为 `44fb157ce78f9233689eb410785127bdd255b44dfe111ab9314d5db1226f36f2`。正式服务器运行必须独立复现这些计数与哈希后才能继续。
+selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原因计数，以及商品数据的压缩/解压哈希。所有 JSON/JSONL artifact 固定使用 UTF-8 + LF，确保 Windows/Linux 逐字节一致。2026-08-23 的真实 5,000-task 审计得到 3,916 个 Reward v4 可达任务、1,084 个不可达任务；预期 train task SHA-256 为 `c8dedc11f4bc0f22e6b7776d80f9e9b17c82447c6389d1b6e1837d68803f3826`，validation task SHA-256 为 `85df9a00cdf4c8b56514eb8ce621266bb84f2cd52fede471ac8c7500e0deeb66`，reward audit SHA-256 为 `b75882737c67bbd3eb148627c7ea2d6928445862027da4b8f6bf2eacb920f575`。正式服务器运行必须独立复现这些计数与哈希后才能继续。
 
 随后分别用 `generate_multiturn_tasks.py` 为 `train-tasks.jsonl` 和 `validation-tasks.jsonl` 生成冻结 gap openings。为保持与 DEV-500 一致，opening generator 固定使用 `qwen3.8-27b`、temperature 0、thinking 关闭，以及仓库当前 `OPENING_PROMPT_HASH`（DEV-500 为 `9fac425b31f44721e95d9bc1bb1a5d42da79ee305cbd5356001368de8ed0769b`）。再用 `freeze_multiturn_openings.py` 确定性派生 complete openings。最后仅通过以下命令发布正式 Parquet 与 accepted manifest：
 

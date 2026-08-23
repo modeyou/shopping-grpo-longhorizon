@@ -135,6 +135,7 @@ def atomic_jsonl_writer(
     temporary = tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
+        newline="\n",
         dir=output.parent,
         prefix=f".{output.name}.",
         suffix=".tmp",
@@ -187,7 +188,7 @@ def append_jsonl_fsync(path: str | Path, row: Mapping) -> None:
         raise ArtifactError("JSONL output row must be an object")
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("a", encoding="utf-8") as stream:
+    with output.open("a", encoding="utf-8", newline="\n") as stream:
         stream.write(
             json.dumps(
                 dict(row),
@@ -211,6 +212,7 @@ def write_json_atomic(
     temporary = tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
+        newline="\n",
         dir=output.parent,
         prefix=f".{output.name}.",
         suffix=".tmp",

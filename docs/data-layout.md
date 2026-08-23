@@ -63,3 +63,5 @@ data/grpo/formal-v2/
 - `data/grpo/validation.parquet`
 
 判断数据身份必须依赖规范目录与 manifest schema/status/hash，不能仅依据文件名或 `v1`、`v2` 后缀猜测。
+
+所有由项目 artifact helper 发布的 JSON/JSONL 均固定为 UTF-8 编码和 LF 换行；哈希是跨平台字节合同，不允许按操作系统改写换行符。
