@@ -85,6 +85,9 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
     infrastructure_invalid = []
     reward_unverifiable = []
     terminal_utilities = []
+    native_terminal_utilities = []
+    behavior_penalties = []
+    model_failures = []
     purchase_success = []
     sampling_invalid = []
     match_scores = []
@@ -114,6 +117,16 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         terminal_utilities.append(
             float(reward.get("terminal_utility", reward["total"]))
         )
+        native_terminal_utilities.append(
+            float(
+                reward.get(
+                    "native_terminal_utility",
+                    reward.get("terminal_utility", reward["total"]),
+                )
+            )
+        )
+        behavior_penalties.append(float(reward.get("penalty_behavior", 0.0)))
+        model_failures.append(float(bool(reward.get("model_failure", False))))
         purchase_success.append(
             float(bool(reward.get("purchase_success", reward["full"])))
         )
@@ -150,6 +163,9 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         "reward/terminal_utility_min": min(terminal_utilities),
         "reward/terminal_utility_mean": mean(terminal_utilities),
         "reward/terminal_utility_max": max(terminal_utilities),
+        "reward/native_terminal_utility_mean": mean(native_terminal_utilities),
+        "reward/behavior_penalty_mean": mean(behavior_penalties),
+        "reward/model_failure_rate": mean(model_failures),
         "reward/purchase_success_rate": mean(purchase_success),
         "reward/partial_purchase_rate": mean(partial_purchase),
         "reward/match_score_mean": mean(match_scores),

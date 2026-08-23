@@ -12,6 +12,7 @@ data:
   val_files: ${oc.env:GRPO_VAL_FILE}
   train_batch_size: 2
   val_batch_size: 2
+  seed: ${oc.env:GRPO_SEED,20260823}
   max_prompt_length: 4096
   max_response_length: 20480
   return_raw_chat: true
@@ -33,6 +34,7 @@ actor_rollout_ref:
       attn_implementation: sdpa
   actor:
     ppo_mini_batch_size: 2
+    data_loader_seed: ${oc.env:GRPO_SEED,20260823}
     ppo_micro_batch_size_per_gpu: 1
     ppo_max_token_len_per_gpu: 24576
     use_dynamic_bsz: false

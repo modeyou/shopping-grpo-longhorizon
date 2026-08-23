@@ -304,6 +304,29 @@ def validate_swanlab_tracking(config):
     )
 
 
+def validate_reward_shaping_profile():
+    """Reject ambiguous or unsupported training-only reward profiles."""
+    from shopping_grpo.training.grpo.adapter.runtime import reward_shaping_config
+
+    profile = os.environ.get("SHOPPING_REWARD_SHAPING_PROFILE", "none")
+    try:
+        config = reward_shaping_config(profile)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    legacy_length_enabled = (
+        os.environ.get("SHOPPING_LENGTH_SHAPING_ENABLE", "false").lower()
+        == "true"
+    )
+    if profile != "none" and legacy_length_enabled:
+        raise SystemExit(
+            "bounded reward shaping and legacy length shaping cannot be combined"
+        )
+    print(
+        "GRPO reward profile preflight passed: "
+        + json.dumps(config, sort_keys=True)
+    )
+
+
 def ppo_gradient_accumulation_steps(mini_batch_size: int, micro_batch_size: int) -> int:
     mini = int(mini_batch_size)
     micro = int(micro_batch_size)
@@ -312,6 +335,19 @@ def ppo_gradient_accumulation_steps(mini_batch_size: int, micro_batch_size: int)
     if mini % micro:
         raise ValueError("PPO mini batch size must be divisible by micro batch size")
     return mini // micro
+
+
+def validate_grpo_seeds(config):
+    data_seed = int(config.data.seed)
+    actor_seed = int(config.actor_rollout_ref.actor.data_loader_seed)
+    environment_seed = int(os.environ.get("GRPO_SEED", data_seed))
+    if data_seed < 0 or actor_seed < 0:
+        raise SystemExit("GRPO seeds must be non-negative")
+    if len({data_seed, actor_seed, environment_seed}) != 1:
+        raise SystemExit(
+            "data.seed, actor.data_loader_seed and GRPO_SEED must match"
+        )
+    print(f"GRPO seed preflight passed: {data_seed}")
 
 
 def validate_training_memory_budget(config):
@@ -400,6 +436,8 @@ def validate_training_memory_budget(config):
 def main():
     config = compose_runtime_config(sys.argv[1:])
     validate_environment_contract()
+    validate_reward_shaping_profile()
+    validate_grpo_seeds(config)
     required_paths = {
         "GRPO_TRAIN_FILE": os.environ.get("GRPO_TRAIN_FILE"),
         "GRPO_VAL_FILE": os.environ.get("GRPO_VAL_FILE"),

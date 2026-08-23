@@ -16,6 +16,7 @@ from shopping_grpo.environment.projection import (
     project_observation,
 )
 from shopping_grpo.training.grpo.adapter.runtime import (
+    apply_bounded_reward_shaping,
     apply_reward_length_shaping,
     current_runtime_state,
     record_observation_projection,
@@ -49,6 +50,7 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         observation_detail_token_budget=4096,
         observation_generic_token_budget=768,
         observation_search_top_k=20,
+        reward_shaping_profile="none",
         reward_length_shaping_enable=False,
         reward_length_soft_threshold=20,
         reward_length_penalty_per_step=0.01,
@@ -81,6 +83,7 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         self.observation_detail_token_budget = int(observation_detail_token_budget)
         self.observation_generic_token_budget = int(observation_generic_token_budget)
         self.observation_search_top_k = int(observation_search_top_k)
+        self.reward_shaping_profile = str(reward_shaping_profile).strip().lower()
         self.reward_length_shaping_enable = (
             reward_length_shaping_enable
             if isinstance(reward_length_shaping_enable, bool)
@@ -123,8 +126,18 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             raise ValueError("observation_search_top_k must be positive")
         if self.reward_mode not in {"native", "constraint_aware"}:
             raise ValueError(f"unknown shopping reward mode: {self.reward_mode!r}")
+        if self.reward_shaping_profile not in {"none", "bounded-v1"}:
+            raise ValueError(
+                f"unknown reward shaping profile: {self.reward_shaping_profile!r}"
+            )
+        if self.reward_shaping_profile != "none" and self.reward_mode != "constraint_aware":
+            raise ValueError("reward shaping requires constraint_aware reward mode")
         if self.reward_length_shaping_enable and self.reward_mode != "constraint_aware":
             raise ValueError("reward length shaping requires constraint_aware reward mode")
+        if self.reward_length_shaping_enable and self.reward_shaping_profile != "none":
+            raise ValueError(
+                "bounded reward shaping and legacy length shaping cannot be combined"
+            )
         if not 0 < self.reward_length_soft_threshold < self.max_steps:
             raise ValueError("reward_length_soft_threshold must be between 1 and max_steps")
         if min(self.reward_length_penalty_per_step, self.reward_length_max_penalty) < 0:
@@ -321,7 +334,11 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
                 state["terminate"] = True
             # 父类结束后统一从环境状态结算，避免把中途异常当作正常终局奖励。
             breakdown = apply_reward_length_shaping(
-                reward_breakdown(state),
+                apply_bounded_reward_shaping(
+                    reward_breakdown(state),
+                    state,
+                    profile=getattr(self, "reward_shaping_profile", "none"),
+                ),
                 state,
                 enabled=getattr(self, "reward_length_shaping_enable", False),
                 soft_threshold=getattr(self, "reward_length_soft_threshold", 20),
@@ -353,6 +370,9 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
                 "repeat_actions": int(state["repeat_action_count"]),
                 "overlong": bool(breakdown.get("overlong", False)),
                 "reward_mode": self.reward_mode,
+                "reward_shaping_profile": getattr(
+                    self, "reward_shaping_profile", "none"
+                ),
                 "reward_version": state.get("reward_version"),
                 "reward_type": state.get("reward_type"),
                 "reward_valid": bool(state.get("reward_valid", True)),

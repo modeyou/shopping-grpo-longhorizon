@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import subprocess
@@ -45,6 +47,17 @@ def parse_args() -> argparse.Namespace:
         default="console",
     )
     parser.add_argument("--experiment-name", default="shopping-agent-grpo")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=int(os.environ.get("GRPO_SEED", "20260823")),
+    )
+    parser.add_argument(
+        "--reward-profile",
+        choices=("none", "bounded-v1"),
+        default=os.environ.get("SHOPPING_REWARD_SHAPING_PROFILE", "none"),
+        help="training-only reward profile; Reward v4 itself is never changed",
+    )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     execution = parser.add_mutually_exclusive_group()
     execution.add_argument(
@@ -127,6 +140,8 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
             "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
             "SHOPPING_ENV_MANIFEST": str(DEFAULT_MANIFEST),
             "SHOP_REWARD_VERSION": "shopsimulator-reward-v4",
+            "GRPO_SEED": str(args.seed),
+            "SHOPPING_REWARD_SHAPING_PROFILE": str(args.reward_profile),
             "SHOPPER_MODEL": str(args.shopper_model),
             "SHOPPER_BASE_URL": str(args.shopper_base_url or ""),
             "SHOPPER_API_KEY": shopper_api_key or "",
@@ -162,6 +177,71 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     return command, environment
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
+    """Persist a secret-free, machine-verifiable GRPO launch contract."""
+    git_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        text=True,
+    ).strip()
+    git_status = subprocess.check_output(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=ROOT,
+    )
+    git_diff = subprocess.check_output(
+        ["git", "diff", "--binary", "HEAD"],
+        cwd=ROOT,
+    )
+    input_paths = {
+        "train_data": Path(environment["GRPO_TRAIN_FILE"]),
+        "validation_data": Path(environment["GRPO_VAL_FILE"]),
+        "grpo_config": Path(audit["config"]),
+        "agent_loop_config": Path(environment["SHOPPING_AGENT_LOOP_CONFIG"]),
+        "tool_config": Path(environment["SHOPPING_TOOL_CONFIG"]),
+        "environment_manifest": Path(environment["SHOPPING_ENV_MANIFEST"]),
+        "model_config": Path(environment["GRPO_MODEL_PATH"]) / "config.json",
+    }
+    contract = {
+        "schema_version": "shopping-grpo-run-contract-v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "git": {
+            "commit": git_commit,
+            "dirty": bool(git_status),
+            "diff_sha256": hashlib.sha256(git_diff).hexdigest(),
+        },
+        "launch": audit,
+        "runtime_contract": {
+            "environment_version": environment["SHOPPING_ENVIRONMENT_VERSION"],
+            "reward_version": environment["SHOP_REWARD_VERSION"],
+            "reward_profile": environment["SHOPPING_REWARD_SHAPING_PROFILE"],
+            "seed": int(environment["GRPO_SEED"]),
+            "shopper_model": environment["SHOPPER_MODEL"],
+            "shopper_base_url": environment["SHOPPER_BASE_URL"],
+        },
+        "inputs": {
+            name: {
+                "path": str(path.resolve()),
+                "sha256": _sha256_file(path),
+            }
+            for name, path in input_paths.items()
+        },
+    }
+    destination = Path(environment["GRPO_OUTPUT_DIR"]) / "run_contract.json"
+    destination.write_text(
+        json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return destination
+
+
 def main() -> None:
     args = parse_args()
     command, environment = build_command(args)
@@ -173,6 +253,10 @@ def main() -> None:
         "env_url": environment["SHOPSIM_BASE_URL"],
         "output": environment["GRPO_OUTPUT_DIR"],
         "logger": args.logger,
+        "reward_profile": environment["SHOPPING_REWARD_SHAPING_PROFILE"],
+        "seed": int(environment["GRPO_SEED"]),
+        "shopper_model": environment["SHOPPER_MODEL"],
+        "shopper_base_url": environment["SHOPPER_BASE_URL"],
         "config": str(args.config.resolve()),
     }
     print(json.dumps(audit, ensure_ascii=False, indent=2))
@@ -191,6 +275,8 @@ def main() -> None:
     if args.preflight_only:
         print("GRPO runtime preflight-only passed")
         return
+    contract_path = write_run_contract(audit, environment)
+    print(f"GRPO run contract written: {contract_path}")
     raise SystemExit(subprocess.call(command, cwd=ROOT, env=environment))
 
 

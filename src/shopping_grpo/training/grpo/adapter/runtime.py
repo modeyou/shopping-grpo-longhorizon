@@ -28,6 +28,25 @@ SUPPORTED_REWARD_VERSIONS = {
     "shopsimulator-reward-v3",
     "shopsimulator-reward-v4",
 }
+SUPPORTED_REWARD_SHAPING_PROFILES = {"none", "bounded-v1"}
+BOUNDED_REWARD_SHAPING_V1 = {
+    "unfinished_penalty": 0.75,
+    "extra_question_penalty": 0.02,
+    "shopper_rejection_penalty": 0.03,
+    "guard_rejection_penalty": 0.005,
+    "repeat_action_penalty": 0.01,
+    "behavior_penalty_cap": 0.10,
+}
+
+
+def reward_shaping_config(profile: str) -> dict[str, float | str]:
+    """Return the frozen, public training-only reward profile."""
+    normalized = str(profile).strip().lower()
+    if normalized not in SUPPORTED_REWARD_SHAPING_PROFILES:
+        raise ValueError(f"unknown reward shaping profile: {profile!r}")
+    if normalized == "none":
+        return {"profile": "none"}
+    return {"profile": normalized, **BOUNDED_REWARD_SHAPING_V1}
 
 
 def make_runtime_state(task_id: int, max_steps: int, *, interaction_mode="single") -> dict:
@@ -295,7 +314,7 @@ def _normal_terminal(state: dict) -> bool:
     )
 
 
-def reward_breakdown(state: dict) -> dict[str, float | bool]:
+def reward_breakdown(state: dict) -> dict[str, object]:
     """计算约束感知终局奖励；基础设施无效轨迹只返回诊断，不制造学习信号。"""
     invalid = bool(state.get("infrastructure_invalid"))
     normal_terminal = _normal_terminal(state)
@@ -381,10 +400,17 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
             ),
             "total": terminal_utility,
             "terminal_utility": terminal_utility,
+            "native_terminal_utility": terminal_utility,
             "purchase_success": float(purchase_success),
             "sampling_invalid": bool(invalid or invalid_reward),
             "infrastructure_invalid": invalid,
             "reward_unverifiable": invalid_reward,
+            "model_failure": False,
+            "shaping_profile": "none",
+            "penalty_behavior": 0.0,
+            "penalty_extra_questions": 0.0,
+            "penalty_shopper_rejections": 0.0,
+            "penalty_guard_rejections": 0.0,
         }
 
     action_attempts = max(int(state.get("action_attempt_count", 0)), 1)
@@ -411,11 +437,89 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
         "repeat_action_rate": repeat_action_rate,
         "total": 0.0,
         "terminal_utility": 0.0,
+        "native_terminal_utility": 0.0,
         "purchase_success": 0.0,
-        "sampling_invalid": True,
-        "infrastructure_invalid": True,
-        "reward_unverifiable": True,
+        "sampling_invalid": bool(
+            invalid or state.get("reward_unverifiable")
+        ),
+        "infrastructure_invalid": invalid,
+        "reward_unverifiable": bool(state.get("reward_unverifiable")),
+        "model_failure": bool(
+            not invalid and not state.get("reward_unverifiable")
+        ),
+        "shaping_profile": "none",
+        "penalty_behavior": 0.0,
+        "penalty_extra_questions": 0.0,
+        "penalty_shopper_rejections": 0.0,
+        "penalty_guard_rejections": 0.0,
     }
+
+
+def apply_bounded_reward_shaping(
+    reward: Mapping,
+    state: Mapping,
+    *,
+    profile: str,
+) -> dict:
+    """Apply a frozen bounded training profile without changing Reward v4.
+
+    Infrastructure-invalid and unverifiable trajectories remain excluded. A
+    model-caused unfinished trajectory becomes a finite negative example only
+    in bounded-v1. Valid terminals retain their native utility as the dominant
+    signal and receive at most 0.10 behavior cost.
+    """
+    config = reward_shaping_config(profile)
+    shaped = dict(reward)
+    shaped.setdefault(
+        "native_terminal_utility",
+        float(shaped.get("terminal_utility", shaped.get("total", 0.0))),
+    )
+    shaped["shaping_profile"] = str(config["profile"])
+    if config["profile"] == "none":
+        return shaped
+
+    infrastructure_invalid = bool(
+        shaped.get("infrastructure_invalid")
+        or state.get("infrastructure_invalid")
+    )
+    reward_unverifiable = bool(
+        shaped.get("reward_unverifiable")
+        or state.get("reward_unverifiable")
+    )
+    if infrastructure_invalid or reward_unverifiable:
+        return shaped
+
+    if bool(shaped.get("model_failure")):
+        penalty = float(config["unfinished_penalty"])
+        shaped["penalty_unfinished"] = penalty
+        shaped["total"] = -penalty
+        shaped["terminal_utility"] = -penalty
+        shaped["sampling_invalid"] = False
+        return shaped
+
+    extra_questions = max(int(state.get("shopper_question_count", 0)) - 1, 0)
+    shopper_rejections = max(int(state.get("shopper_rejection_count", 0)), 0)
+    guard_rejections = max(int(state.get("guard_rejection_count", 0)), 0)
+    repeat_actions = max(int(state.get("repeat_action_count", 0)), 0)
+    components = {
+        "penalty_extra_questions": (
+            extra_questions * float(config["extra_question_penalty"])
+        ),
+        "penalty_shopper_rejections": (
+            shopper_rejections * float(config["shopper_rejection_penalty"])
+        ),
+        "penalty_guard_rejections": (
+            guard_rejections * float(config["guard_rejection_penalty"])
+        ),
+        "penalty_repeat": repeat_actions * float(config["repeat_action_penalty"]),
+    }
+    raw_penalty = sum(components.values())
+    penalty = min(raw_penalty, float(config["behavior_penalty_cap"]))
+    shaped.update(components)
+    shaped["penalty_behavior"] = penalty
+    shaped["total"] = float(shaped["total"]) - penalty
+    shaped["terminal_utility"] = float(shaped["terminal_utility"]) - penalty
+    return shaped
 
 
 def apply_reward_length_shaping(

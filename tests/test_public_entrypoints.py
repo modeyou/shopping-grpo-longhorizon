@@ -10,7 +10,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.train_grpo import build_command, main as grpo_main, parse_args
+from scripts.train_grpo import (
+    build_command,
+    main as grpo_main,
+    parse_args,
+    write_run_contract,
+)
 from shopping_grpo.cli import main as cli_main
 from shopping_grpo.smoke import run_cpu_smoke
 
@@ -97,7 +102,67 @@ class PublicEntrypointTest(unittest.TestCase):
             environment["SHOPPING_GRPO_DIAGNOSTICS_PATH"],
             str(output.resolve() / "training_diagnostics.jsonl"),
         )
+        self.assertEqual(environment["SHOPPING_REWARD_SHAPING_PROFILE"], "none")
+        self.assertEqual(environment["GRPO_SEED"], "20260823")
         self.assertIn("trainer.logger=[console]", command)
+
+    def test_grpo_run_contract_is_hashed_and_secret_free(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            model = temporary / "model"
+            model.mkdir()
+            (model / "config.json").write_text("{}", encoding="utf-8")
+            files = {}
+            for name in (
+                "train.parquet",
+                "validation.parquet",
+                "grpo.yaml",
+                "agent.yaml",
+                "tools.json",
+                "environment.json",
+            ):
+                path = temporary / name
+                path.write_text(name, encoding="utf-8")
+                files[name] = path
+            output = temporary / "output"
+            output.mkdir()
+            environment = {
+                "GRPO_TRAIN_FILE": str(files["train.parquet"]),
+                "GRPO_VAL_FILE": str(files["validation.parquet"]),
+                "SHOPPING_AGENT_LOOP_CONFIG": str(files["agent.yaml"]),
+                "SHOPPING_TOOL_CONFIG": str(files["tools.json"]),
+                "SHOPPING_ENV_MANIFEST": str(files["environment.json"]),
+                "GRPO_MODEL_PATH": str(model),
+                "GRPO_OUTPUT_DIR": str(output),
+                "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
+                "SHOP_REWARD_VERSION": "shopsimulator-reward-v4",
+                "GRPO_SEED": "20260823",
+                "SHOPPING_REWARD_SHAPING_PROFILE": "bounded-v1",
+                "SHOPPER_MODEL": "shopper",
+                "SHOPPER_BASE_URL": "https://shopper.example.test/v1",
+                "SHOPPER_API_KEY": "must-not-be-written",
+            }
+            audit = {
+                "command": ["python", "-m", "verl.trainer.main_ppo"],
+                "config": str(files["grpo.yaml"]),
+                "reward_profile": "bounded-v1",
+            }
+            with patch(
+                "scripts.train_grpo.subprocess.check_output",
+                side_effect=["abc123\n", b"?? local-artifact", b"local diff"],
+            ):
+                destination = write_run_contract(audit, environment)
+
+            contract = json.loads(destination.read_text(encoding="utf-8"))
+
+        self.assertEqual(contract["git"]["commit"], "abc123")
+        self.assertTrue(contract["git"]["dirty"])
+        self.assertEqual(
+            contract["runtime_contract"]["reward_profile"],
+            "bounded-v1",
+        )
+        self.assertIn("sha256", contract["inputs"]["train_data"])
+        self.assertNotIn("must-not-be-written", json.dumps(contract))
 
     def test_grpo_preflight_only_never_launches_training(self):
         root = Path(__file__).resolve().parents[1]
