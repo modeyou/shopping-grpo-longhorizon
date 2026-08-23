@@ -338,8 +338,16 @@ def ppo_gradient_accumulation_steps(mini_batch_size: int, micro_batch_size: int)
 
 
 def validate_grpo_seeds(config):
-    data_seed = int(config.data.seed)
-    actor_seed = int(config.actor_rollout_ref.actor.data_loader_seed)
+    data_seed = config.data.seed
+    actor_seed = config.actor_rollout_ref.actor.data_loader_seed
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (data_seed, actor_seed)
+    ):
+        raise SystemExit(
+            "data.seed and actor.data_loader_seed must resolve to integers, "
+            f"got {type(data_seed).__name__} and {type(actor_seed).__name__}"
+        )
     environment_seed = int(os.environ.get("GRPO_SEED", data_seed))
     if data_seed < 0 or actor_seed < 0:
         raise SystemExit("GRPO seeds must be non-negative")

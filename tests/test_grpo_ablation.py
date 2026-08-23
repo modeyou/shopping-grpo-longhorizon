@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from scripts.check_grpo_runtime import (
     ppo_gradient_accumulation_steps,
@@ -18,6 +19,13 @@ from shopping_grpo.training.grpo.dynamic_sampling import (
 
 
 class GrpoAblationTest(unittest.TestCase):
+    def test_grpo_yaml_decodes_environment_seed_as_integer(self):
+        config = (
+            Path(__file__).resolve().parents[1] / "configs" / "grpo.yaml"
+        ).read_text(encoding="utf-8")
+        decoded_seed = "${oc.decode:${oc.env:GRPO_SEED,20260823}}"
+        self.assertEqual(config.count(decoded_seed), 2)
+
     def test_ppo_mini_and_micro_batches_define_gradient_accumulation(self):
         self.assertEqual(ppo_gradient_accumulation_steps(4, 2), 2)
         with self.assertRaisesRegex(ValueError, "divisible"):
@@ -39,6 +47,21 @@ class GrpoAblationTest(unittest.TestCase):
         config.actor_rollout_ref.actor.data_loader_seed = 7
         with patch.dict(os.environ, {"GRPO_SEED": "20260823"}, clear=False):
             with self.assertRaisesRegex(SystemExit, "must match"):
+                validate_grpo_seeds(config)
+
+    def test_grpo_seeds_must_resolve_to_integers(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        config = SimpleNamespace(
+            data=SimpleNamespace(seed="20260823"),
+            actor_rollout_ref=SimpleNamespace(
+                actor=SimpleNamespace(data_loader_seed="20260823")
+            ),
+        )
+        with patch.dict(os.environ, {"GRPO_SEED": "20260823"}, clear=False):
+            with self.assertRaisesRegex(SystemExit, "must resolve to integers"):
                 validate_grpo_seeds(config)
 
     def test_reward_profiles_are_frozen_and_reject_unknown_values(self):
