@@ -235,9 +235,12 @@ SFT 后使用冻结的 `data/multiturn/evaluation-dev-v2` 比较模型，主指�
 
 | 模型 | Gap+Ask strict | Gap-NoAsk strict | Complete+Ask strict | 总 strict |
 |---|---:|---:|---:|---:|
-| Base Qwen3.5-2B | 0.4% | 0.2% | 0.6% | 0.4% |
-| checkpoint-200 | 66.4% | 49.2% | 73.4% | 63.0% |
-| final-2epoch | 69.2% | 49.0% | 38.2% | 52.13% |
+| Base Qwen3.5-2B | 2/500（0.4%） | 1/500（0.2%） | 3/500（0.6%） | 6/1500（0.4%） |
+| checkpoint-200 | 332/500（66.4%） | 246/500（49.2%） | 367/500（73.4%） | 945/1500（63.0%） |
+| **checkpoint-325** | **345/500（69.0%）** | **264/500（52.8%）** | **361/500（72.2%）** | **970/1500（64.67%）** |
+| checkpoint-350 | 348/500（69.6%） | 248/500（49.6%） | 355/500（71.0%） | 951/1500（63.40%） |
+| checkpoint-375 | 343/500（68.6%） | 251/500（50.2%） | 346/500（69.2%） | 940/1500（62.67%） |
+| checkpoint-406（final-2epoch） | 346/500（69.2%） | 245/500（49.0%） | 191/500（38.2%） | 782/1500（52.13%） |
 
 为定位第二个 epoch 内的行为拐点，随后在同一个冻结 dev200 子集上评测全部 10 个保留 checkpoint。每个 checkpoint 固定执行 Gap+Ask、Gap-NoAsk、Complete+Ask 三个条件，各 200 个任务，共 600 条轨迹。全部候选通过 Reward v4、轨迹数量、模型名和基础设施错误审计；最终 200-task 评测集未使用。dev200 sweep manifest SHA-256：
 
@@ -260,6 +263,21 @@ SFT 后使用冻结的 `data/multiturn/evaluation-dev-v2` 比较模型，主指�
 
 checkpoint-325 是 dev200 的领先候选：总 strict、Gap-NoAsk、平均奖励、Done 和 Reward-valid 均为最佳，Complete 接近最佳，guards 与最低值并列。checkpoint-350/375 的 Gap+Ask 略高，但总体更不均衡。所有候选在 Complete 条件仍有 91%–99% 的不必要提问率，说明 SFT 已建立澄清能力但尚未学会充分抑制多余提问；这是 Reward v4 GRPO 需要继续优化的主要行为。
 
-checkpoint-325 仍需执行完整 dev500×3 同协议复核，才能正式冻结为 `selected-for-grpo`。复核前不启动 GRPO，最终 200-task 评测集继续封存。
+dev200 排名前三的 checkpoint-325/350/375 随后完成同一份冻结 dev500×3 复核。冻结资产 manifest SHA-256 为
+`b363a64628f68a588292832f6d01a5a2c5687f29e2f8f119714a46140f5fe03f`；三者均完成 1,500 条轨迹并通过 Reward v4、模型名、轨迹数量和 Shopper 基础设施错误审计，最终 200-task 评测集未使用。
+
+| Checkpoint | 总 strict | Gap gain | Complete 至少一次提问 | Mean reward | Done | Reward valid | Guards |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **325** | **64.67%** | +16.2pp | **93.8%** | **0.6010** | **1490/1500** | **1486/1500** | 32 |
+| 350 | 63.40% | +20.0pp | 95.4% | 0.5886 | 1486/1500 | 1476/1500 | **27** |
+| 375 | 62.67% | +18.4pp | 95.6% | 0.5669 | 1485/1500 | 1482/1500 | 42 |
+
+checkpoint-325 在 dev200 与完整 dev500 上都取得最高总 strict，并在 dev500 上同时取得最高 Gap-NoAsk、最高 Complete、最高平均奖励、最高 Done 和最高 Reward-valid。checkpoint-350 的 Gap+Ask 只高 0.6pp，但其更大的 Gap gain 主要来自较低的 Gap-NoAsk，而不是更高的绝对成功率；因此 checkpoint-325 是当前开发集选择的 GRPO 基座候选。它相对 checkpoint-200 增加 25 个严格成功（+1.67pp），同时减少 31 次 guards；Complete 仅下降 1.2pp。
+
+Complete“至少一次提问率”只是严格的行为诊断，不是失败率，也不从 strict success 中直接扣分。五个完整 dev500 结果的轨迹细分显示，checkpoint-325 的 500 个 Complete 任务中有 31 个零问、461 个一问、8 个两问；一问组 strict 为 336/461（72.9%），两问组为 3/8（37.5%）。它没有完全重复问题，只有 2 个近似重复、2 个触发问题上限，而且所有 Complete 回答的 `used_facts` 都为空。也就是说当前主要问题是“默认先确认一次”，不是普遍陷入重复问答。
+
+checkpoint-406 的退化机制尤其明确：251 个零问任务只有 12 个 strict（4.8%），而 246 个一问任务有 179 个 strict（72.8%）。由于 Complete 的 Shopper 回答不提供任何新事实，这只是行为相关性，不能解释为提问带来了信息；更可能表示模型把一次 `ask_shopper` 当成继续执行购物策略的过渡动作。GRPO 不应对第一次 Complete 提问设置压倒终局质量的硬惩罚，应保留 Reward v4 strict success 为主目标，对第二次提问、重复问题、触发问题上限和无后续购物动作施加更强约束，再用较轻的效率成本逐步降低第一次无信息提问。
+
+未经用户单独授权，不执行模型合并、不启动 GRPO，最终 200-task 评测集继续封存。
 
 GRPO 只能使用经过开发集审查并显式选定的 merged model，不能直接使用 LoRA adapter。模型合并与 GRPO 训练都属于单独授权步骤。
