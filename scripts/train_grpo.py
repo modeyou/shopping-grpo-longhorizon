@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from shopping_grpo.training.grpo.data_manifest import validate_grpo_data_manifest
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "configs/grpo.yaml"
 DEFAULT_AGENT_CONFIG = ROOT / "configs/agent_loop.yaml"
@@ -20,6 +22,9 @@ DEFAULT_MANIFEST = ROOT / "data/environment-v4.json"
 DEFAULT_MODEL = ROOT / "outputs/models/sft-merged"
 DEFAULT_TRAIN_DATA = ROOT / "data/grpo/multiturn-train.parquet"
 DEFAULT_VAL_DATA = ROOT / "data/grpo/multiturn-validation.parquet"
+
+
+DEFAULT_DATA_MANIFEST = ROOT / "data/grpo/manifest.json"
 
 
 def _model_has_weights(path: Path) -> bool:
@@ -59,6 +64,12 @@ def parse_args() -> argparse.Namespace:
         help="training-only reward profile; Reward v4 itself is never changed",
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument(
+        "--data-manifest",
+        type=Path,
+        default=DEFAULT_DATA_MANIFEST,
+        help="已验收的 Reward v4 GRPO 数据 manifest",
+    )
     execution = parser.add_mutually_exclusive_group()
     execution.add_argument(
         "--dry-run",
@@ -113,6 +124,19 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     train_data = _validated_path(args.train_data, "train parquet")
     val_data = _validated_path(args.val_data, "validation parquet")
     config = _validated_path(args.config, "GRPO example config")
+    data_manifest = args.data_manifest.expanduser().resolve()
+    if not data_manifest.is_file():
+        raise SystemExit(f"GRPO data manifest is missing: {data_manifest}")
+    try:
+        validate_grpo_data_manifest(
+            data_manifest,
+            train_data=train_data,
+            validation_data=val_data,
+            environment_manifest=DEFAULT_MANIFEST,
+            root=ROOT,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"invalid GRPO data manifest: {exc}") from exc
     output = args.output.expanduser().resolve()
     if output.exists():
         if not output.is_dir():
@@ -165,6 +189,7 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
                 "SWANLAB_LOG_DIR": str(output / "swanlab"),
             }
         )
+    environment["SHOPPING_GRPO_DATA_MANIFEST"] = str(data_manifest)
     overrides = _hydra_overrides(args)
     command = [
         sys.executable,
@@ -209,6 +234,9 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
         "environment_manifest": Path(environment["SHOPPING_ENV_MANIFEST"]),
         "model_config": Path(environment["GRPO_MODEL_PATH"]) / "config.json",
     }
+    input_paths["data_manifest"] = Path(
+        environment["SHOPPING_GRPO_DATA_MANIFEST"]
+    )
     contract = {
         "schema_version": "shopping-grpo-run-contract-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -259,6 +287,7 @@ def main() -> None:
         "shopper_base_url": environment["SHOPPER_BASE_URL"],
         "config": str(args.config.resolve()),
     }
+    audit["data_manifest"] = environment["SHOPPING_GRPO_DATA_MANIFEST"]
     print(json.dumps(audit, ensure_ascii=False, indent=2))
     if args.dry_run:
         return

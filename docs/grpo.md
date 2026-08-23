@@ -37,7 +37,53 @@ GRPO 输入必须满足：
 - ask_shopper 使用独立的 OpenAI-compatible Shopper endpoint，不占用 35 个购物动作预算。
 - 每条 rollout 有隔离的 Shopper history，澄清回答只通过公开 observation 投影进入 Actor 上下文。
 
-规范数据仍通过 prepare_multiturn_grpo_dataset.py 从冻结的 GRPO task split 与匹配 openings 生成 parquet，并使用所有开发/正式评测任务作为 exclude-tasks。生成物的 manifest、task 计数、task-disjoint 审计和 SHA-256 必须在训练前冻结。
+正式 GRPO 数据不再直接沿用旧 `data/grpo/train.parquet`、`validation.parquet` 或其 Reward v3 metadata。旧 `data/multiturn/tasks/grpo_train.jsonl` 只作为 5,000 个 task ID 的候选池，固定 SHA-256 为 `c5aecc973fb15bd6e37b90c7fa0c4c292573f3fe14aff5d1f27ce9eb3c446c5b`。旧 `grpo_validation.jsonl` 与当前 DEV-500 重叠 395/500，因此不进入正式流程。
+
+### 正式 GRPO 数据冻结协议
+
+当前协议固定如下：
+
+- 从旧 5,000-task reservoir 重新排除正式 SFT train/validation、冻结 DEV-500 和 sealed Final-200。
+- seed 固定为 `20260823`，按 `sha256(seed:task_id)` 升序排列。
+- 排序后前 200 个 task 作为 validation，随后 1,000 个 task 作为 train，其余仅记录为 unused。
+- 每个 task 生成一个经过审计的 gap opening；complete opening 从同一个 ShopSimulator 私有目标确定性派生。
+- train 因此包含 1,000 gap + 1,000 complete，共 2,000 条 prompt；validation 包含 200 gap + 200 complete，共 400 条 prompt。
+- 任务选择、排除集、opening、Environment v2.1 / Reward v4 manifest、Parquet 和全部 SHA-256 都写入 `data/grpo/manifest.json`。
+- `train_grpo.py` 会强制验证 `shopping-multiturn-grpo-dataset-v2`、`status=accepted`、Reward v4、路径、哈希、行数和 task-disjoint 审计；不满足时拒绝启动。
+
+第一步只冻结 active task，不调用 LLM：
+
+~~~bash
+export PYTHONPATH=./src
+GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
+
+"$GRPO_PYTHON" scripts/select_multiturn_grpo_tasks.py \
+  --reservoir data/multiturn/tasks/grpo_train.jsonl \
+  --expected-reservoir-sha256 c5aecc973fb15bd6e37b90c7fa0c4c292573f3fe14aff5d1f27ce9eb3c446c5b \
+  --exclude sft-train=outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/train.jsonl \
+  --exclude sft-validation=outputs/multiturn-sft/mix-formal-1800-v4-seed20260822/validation.jsonl \
+  --exclude dev500=data/multiturn/evaluation-dev-v2/tasks.jsonl \
+  --exclude final200=data/evaluation/tasks.jsonl \
+  --seed 20260823 \
+  --train-count 1000 \
+  --validation-count 200 \
+  --output-dir data/grpo/selection-v2
+~~~
+
+随后分别用 `generate_multiturn_tasks.py` 为 `train-tasks.jsonl` 和 `validation-tasks.jsonl` 生成冻结 gap openings，再用 `freeze_multiturn_openings.py` 派生 complete openings。最后仅通过以下命令发布正式 Parquet 与 accepted manifest：
+
+~~~bash
+"$GRPO_PYTHON" scripts/finalize_multiturn_grpo_dataset.py \
+  --selection-manifest data/grpo/selection-v2/selection-manifest.json \
+  --train-gap-openings data/grpo/selection-v2/train-gap-openings.jsonl \
+  --train-complete-openings data/grpo/selection-v2/train-openings/complete_openings.jsonl \
+  --validation-gap-openings data/grpo/selection-v2/validation-gap-openings.jsonl \
+  --validation-complete-openings data/grpo/selection-v2/validation-openings/complete_openings.jsonl \
+  --environment-manifest data/environment-v4.json \
+  --output-dir data/grpo
+~~~
+
+这些命令定义来源与验收合同；只有 task selection 是本地确定性操作，opening 生成仍需单独确认 Shopper endpoint 后执行。本节不表示已经生成或启动训练。
 
 ## 默认优化配置
 

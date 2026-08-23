@@ -67,6 +67,8 @@ class PublicEntrypointTest(unittest.TestCase):
             train.write_bytes(b"example")
             validation = temporary / "validation.parquet"
             validation.write_bytes(b"example")
+            data_manifest = temporary / "manifest.json"
+            data_manifest.write_text("{}", encoding="utf-8")
             output = temporary / "output"
             with patch.object(
                 sys,
@@ -79,6 +81,8 @@ class PublicEntrypointTest(unittest.TestCase):
                     str(train),
                     "--val-data",
                     str(validation),
+                    "--data-manifest",
+                    str(data_manifest),
                     "--output",
                     str(output),
                     "--config",
@@ -89,7 +93,11 @@ class PublicEntrypointTest(unittest.TestCase):
                 ],
             ):
                 args = parse_args()
-            command, environment = build_command(args)
+            with patch(
+                "scripts.train_grpo.validate_grpo_data_manifest",
+                return_value={},
+            ):
+                command, environment = build_command(args)
 
         self.assertIn("verl.trainer.main_ppo", command)
         self.assertEqual(environment["GRPO_MODEL_PATH"], str(model.resolve()))
@@ -120,6 +128,7 @@ class PublicEntrypointTest(unittest.TestCase):
                 "agent.yaml",
                 "tools.json",
                 "environment.json",
+                "data-manifest.json",
             ):
                 path = temporary / name
                 path.write_text(name, encoding="utf-8")
@@ -132,6 +141,7 @@ class PublicEntrypointTest(unittest.TestCase):
                 "SHOPPING_AGENT_LOOP_CONFIG": str(files["agent.yaml"]),
                 "SHOPPING_TOOL_CONFIG": str(files["tools.json"]),
                 "SHOPPING_ENV_MANIFEST": str(files["environment.json"]),
+                "SHOPPING_GRPO_DATA_MANIFEST": str(files["data-manifest.json"]),
                 "GRPO_MODEL_PATH": str(model),
                 "GRPO_OUTPUT_DIR": str(output),
                 "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
@@ -162,6 +172,7 @@ class PublicEntrypointTest(unittest.TestCase):
             "bounded-v1",
         )
         self.assertIn("sha256", contract["inputs"]["train_data"])
+        self.assertIn("sha256", contract["inputs"]["data_manifest"])
         self.assertNotIn("must-not-be-written", json.dumps(contract))
 
     def test_grpo_preflight_only_never_launches_training(self):
@@ -176,6 +187,8 @@ class PublicEntrypointTest(unittest.TestCase):
             train.write_bytes(b"example")
             validation = temporary / "validation.parquet"
             validation.write_bytes(b"example")
+            data_manifest = temporary / "manifest.json"
+            data_manifest.write_text("{}", encoding="utf-8")
             output = temporary / "output"
             argv = [
                 "train_grpo.py",
@@ -185,6 +198,8 @@ class PublicEntrypointTest(unittest.TestCase):
                 str(train),
                 "--val-data",
                 str(validation),
+                "--data-manifest",
+                str(data_manifest),
                 "--output",
                 str(output),
                 "--config",
@@ -199,6 +214,10 @@ class PublicEntrypointTest(unittest.TestCase):
                 patch.object(sys, "argv", argv),
                 patch.dict(os.environ, {"SHOPPER_API_KEY": "secret"}),
                 patch("scripts.train_grpo.subprocess.call", return_value=0) as call,
+                patch(
+                    "scripts.train_grpo.validate_grpo_data_manifest",
+                    return_value={},
+                ),
                 patch("builtins.print"),
             ):
                 grpo_main()
