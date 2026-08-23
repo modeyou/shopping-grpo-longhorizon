@@ -57,7 +57,7 @@ GRPO 输入必须满足：
 
 ~~~bash
 export PYTHONPATH=./src
-GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
+GRPO_PYTHON="${GRPO_PYTHON:-$(command -v python)}"
 
 "$GRPO_PYTHON" scripts/select_multiturn_grpo_tasks.py \
   --reservoir data/multiturn/tasks/grpo_train.jsonl \
@@ -82,14 +82,22 @@ selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原
 "$GRPO_PYTHON" scripts/finalize_multiturn_grpo_dataset.py \
   --selection-manifest data/grpo/formal-v2/selection/selection-manifest.json \
   --train-gap-openings data/grpo/formal-v2/selection/train-gap-openings.jsonl \
-  --train-complete-openings data/grpo/formal-v2/selection/train-openings/complete_openings.jsonl \
+  --train-complete-openings data/grpo/formal-v2/openings/train/complete_openings.jsonl \
   --validation-gap-openings data/grpo/formal-v2/selection/validation-gap-openings.jsonl \
-  --validation-complete-openings data/grpo/formal-v2/selection/validation-openings/complete_openings.jsonl \
+  --validation-complete-openings data/grpo/formal-v2/openings/validation/complete_openings.jsonl \
   --environment-manifest data/environment-v4.json \
   --output-dir data/grpo/formal-v2
 ~~~
 
-这些命令定义来源与验收合同；task selection 与 Reward v4 可达性审计都是本地确定性操作，opening 生成仍需单独确认 `qwen3.8-27b` endpoint 后执行。GRPO 训练期的 `ask_shopper` 仍使用独立 DeepSeek API，两者不能混为一个模型来源。本节不表示已经生成 opening 或启动训练。
+正式数据已经发布并由仓库验证器接受。唯一训练入口为 `data/grpo/formal-v2/manifest.json`，其中绑定：
+
+- train：1,000 tasks / 2,000 rows，Parquet SHA-256 `38f41370264277c76c106f5970a7d0560f745ad77dcfee6bfc108fa9c1720f41`；
+- validation：200 tasks / 400 rows，Parquet SHA-256 `575fe9b20ae6c24259144b05ad130fd032d260d171a68c95294566521fc7cae4`；
+- opening generator：`qwen3.8-27b`、temperature 0、thinking 关闭、prompt SHA-256 `9fac425b31f44721e95d9bc1bb1a5d42da79ee305cbd5356001368de8ed0769b`；
+- Reward v4 reachability：3,916/5,000 可达，正式选择的 1,200 个任务全部可达；
+- SFT train/validation、DEV-500 与 sealed Final-200 overlap 均为 0。
+
+这些命令定义来源与验收合同；task selection 与 Reward v4 可达性审计都是本地确定性操作。GRPO 训练期的 `ask_shopper` 仍使用独立 DeepSeek API，不能与 opening generator 混为同一模型来源。正式数据已经完成，但本节不表示已经启动训练。
 
 ## 默认优化配置
 
@@ -212,6 +220,7 @@ Rubric 不是另一个 reward。它把任务要求冻结成可核对维度；Jud
 先检查解析结果：
 
 ~~~bash
+export GRPO_PYTHON="$(command -v python)"
 bash scripts/grpo.sh --reward-profile none --dry-run
 ~~~
 
