@@ -29,6 +29,7 @@ def test_bpo_loo_advantage_and_upstream_action_weighting():
     )
     expected = torch.tensor([2 / 3, -2 / 3, -2.0, 2.0])
     assert torch.allclose(advantages[:, 2], expected)
+    assert torch.isclose(advantages[:, 2].sum(), torch.tensor(0.0))
     assert torch.allclose(advantages[:, 0], expected * 0.5)
     assert torch.all(advantages[:, 1] == 0)
     assert torch.equal(advantages, returns)

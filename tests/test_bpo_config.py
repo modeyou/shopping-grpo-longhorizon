@@ -19,6 +19,8 @@ def test_formal_bpo_config_is_independent_and_frozen():
         "selection": "maximum_exact_entropy",
         "entropy_tie_break": "earliest_action",
         "entropy_probe": "exact-full-vocabulary",
+        "entropy_state": "action-boundary-first-token",
+        "rollout_audit": "exact-tree-v1",
     }
     assert rollout["n"] == 4
     assert rollout["agent"]["num_workers"] == 2

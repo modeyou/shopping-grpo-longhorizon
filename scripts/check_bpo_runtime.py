@@ -193,15 +193,22 @@ def validate_snapshot_fidelity():
     source = ShopAgentEnv(base_url=base_url, timeout=60, multiturn=True)
     clones = []
     snapshot_id = None
+    source_released = False
     try:
         source.reset(3, initial_request="")
         snapshot_id = source.snapshot()
+        source_env_idx = source.env_idx
+        action = "search[bpo snapshot fidelity probe]"
+        source_transition = source.step(action)
+        # Match formal rollout: release the completed backbone lease before
+        # restoring K-1 siblings from the still-live opaque snapshot.
+        source.release()
+        source_released = True
         clones = [source.clone(snapshot_id) for _ in range(3)]
-        env_indices = [source.env_idx, *[clone.env_idx for clone in clones]]
+        env_indices = [source_env_idx, *[clone.env_idx for clone in clones]]
         if len(set(env_indices[1:])) != 3:
             raise SystemExit("BPO snapshot preflight clone leases are not isolated")
-        action = "search[bpo snapshot fidelity probe]"
-        transitions = [source.step(action), *[clone.step(action) for clone in clones]]
+        transitions = [source_transition, *[clone.step(action) for clone in clones]]
         comparable = []
         for transition in transitions:
             normalized = dict(transition)
@@ -234,7 +241,8 @@ def validate_snapshot_fidelity():
     finally:
         for env in reversed(clones):
             env.release()
-        source.release()
+        if not source_released:
+            source.release()
         if snapshot_id is not None:
             source.drop_snapshot(snapshot_id)
 
