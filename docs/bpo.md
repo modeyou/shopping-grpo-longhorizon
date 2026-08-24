@@ -199,15 +199,22 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 | 正式 optimizer updates | 10 |
 | checkpoint / validation | 每 5 updates |
 | GPU | 4 张 |
-| vLLM max sequences | 8 |
+| vLLM GPU memory utilization | 0.40 |
+| vLLM max sequences（每个单卡引擎） | 4 |
 | AgentLoop workers | 2 |
 
 正式显存方案冻结为 `use_fused_kernels=false`、`use_liger=true`、
-`use_remove_padding=true`。这是 GRPO A1U/B1 在同一 SFT checkpoint-325、四张 4090 上
+`use_remove_padding=true`、`gpu_memory_utilization=0.40` 和 `max_num_seqs=4`。这是 GRPO A1U/B1 在同一 SFT checkpoint-325、四张 4090 上
 真正完成一次 optimizer update 的已验证组合；其 actor 汇总峰值约为 18.15 GiB allocated、
 20.2 GiB reserved。它们改变算子、吞吐和显存占用，但不改变 BPO 分叉、Reward、advantage
 或评测定义。BPO 仍增加快照和精确熵探针，因此必须用自己的 1-step smoke 验证 loss 有限、
 四卡工作且没有 OOM，不能把 GRPO smoke 直接当作 BPO smoke。
+
+首次 BPO live smoke 在 rollout 前的 `checkpoint_manager.update_weights` 阶段暴露了额外峰值：
+FSDP 需要临时召集完整参数，把 LoRA 合并后同步给 vLLM。旧配置 `0.45/8` 下某张卡只剩约
+146 MiB，而该步骤还需申请约 226 MiB，因此尚未进入 snapshot clone、四 sibling、advantage
+或 optimizer update 就 OOM。`0.40/4` 为这次全参数同步留下稳定余量；降低的是 vLLM KV cache
+容量和瞬时并发上限，K=4 sibling 仍会全部生成，超出的请求只会排队，所以不改变算法样本预算。
 
 全词表 logits 只在单 token entropy probe 中产生，并立即在 vLLM 服务进程中归约成
 一个标量；完整向量不会进入 AgentLoop output 或训练 batch。
@@ -267,7 +274,7 @@ bash scripts/bpo.sh \
 ```
 
 预检会拒绝非 Reward v4、错误 manifest、非四卡、非 K=4/M=1、worker 分组错误、
-缺少精确熵补丁、显存组合不是 `fused=false + Liger=true + remove-padding=true`、
+缺少精确熵补丁、显存组合不是 `fused=false + Liger=true + remove-padding=true + vLLM 0.40/4`、
 动态采样补丁缺失和监控配置错误。
 
 ## 6. 1-step smoke

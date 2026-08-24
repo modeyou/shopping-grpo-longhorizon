@@ -39,6 +39,10 @@ def validate_bpo_config(config):
         raise SystemExit("BPO workers must equal train_batch_size so K siblings stay together")
     if int(rollout.engine_kwargs.vllm.max_logprobs) != -1:
         raise SystemExit("exact BPO entropy requires vLLM max_logprobs=-1")
+    if float(rollout.gpu_memory_utilization) != 0.40:
+        raise SystemExit("formal BPO requires vLLM gpu_memory_utilization=0.40")
+    if int(rollout.max_num_seqs) != 4:
+        raise SystemExit("formal BPO requires vLLM max_num_seqs=4")
     if bool(model.use_fused_kernels):
         raise SystemExit("formal BPO requires use_fused_kernels=false")
     if not bool(model.use_liger) or not bool(model.use_remove_padding):
@@ -300,6 +304,8 @@ def main():
                 "sibling_count": 4,
                 "return_budget": 4,
                 "upstream_lambda": 0.95,
+                "gpu_memory_utilization": 0.40,
+                "max_num_seqs": 4,
                 "use_fused_kernels": False,
                 "use_liger": True,
                 "use_remove_padding": True,

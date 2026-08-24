@@ -202,6 +202,8 @@ def write_contract(environment, audit):
             "rollout_audit": "exact-tree-v1",
             "upstream_lambda": 0.95,
             "ppo_clip": 0.2,
+            "gpu_memory_utilization": 0.40,
+            "max_num_seqs": 4,
             "use_fused_kernels": False,
             "use_liger": True,
             "use_remove_padding": True,

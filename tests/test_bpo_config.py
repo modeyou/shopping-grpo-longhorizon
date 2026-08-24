@@ -25,6 +25,8 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert rollout["n"] == 4
     assert rollout["agent"]["num_workers"] == 2
     assert rollout["engine_kwargs"]["vllm"]["max_logprobs"] == -1
+    assert rollout["gpu_memory_utilization"] == 0.40
+    assert rollout["max_num_seqs"] == 4
     assert model["use_fused_kernels"] is False
     assert model["use_liger"] is True
     assert model["use_remove_padding"] is True
