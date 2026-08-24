@@ -123,6 +123,8 @@ shopping_bpo:
   selection: maximum_exact_entropy
   entropy_tie_break: earliest_action
   entropy_probe: exact-full-vocabulary
+  entropy_state: action-boundary-first-token
+  rollout_audit: exact-tree-v1
 
 shopping_dynamic_sampling:
   enable: true

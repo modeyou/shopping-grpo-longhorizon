@@ -43,9 +43,9 @@ Parquet 已冻结绑定的数据/Reward 契约，保持原字节与 SHA256 不�
 
 1. 每个 prompt 先生成一条 backbone trajectory；
 2. 每次 assistant action 生成前，在 ShopSimulator 服务端保存快照；
-3. 正常生成 action，并定位第一个非固定协议的语义 token；
-4. 在该位置执行一次 `max_tokens=1`、`top_p=1`、`temperature=1` 的全词表
-   log-prob 探针，计算精确 Shannon entropy；
+3. 在与快照完全相同的 action 起始边界执行一次 `max_tokens=1`、`top_p=1`、
+   `temperature=1` 的全词表 log-prob 探针，计算首 token 的精确 Shannon entropy；
+4. 再从这个边界正常生成 backbone action；熵探针不得预先条件化任何 backbone action token；
 5. 每条 backbone 只保留 entropy 最大的一个 action 边界，熵相同选择更早边界；
 6. 从同一个环境、Shopper history、运行诊断和 token 前缀克隆三条 continuation；
 7. backbone 与三个 clone 构成 K=4 sibling returns；
@@ -81,8 +81,10 @@ Shopper 响应下在线生成一条完整轨迹。它既用于提供一条 sibli
 
 候选点是每次 assistant 即将生成下一次 action 的边界，例如获得搜索结果、商品详情、
 Shopper 回答或其他工具 observation 之后。实现不会预先指定“必须在询问之后”或“必须在
-某种工具之后”分叉，而是在 backbone 的所有有效 action 边界上测量第一个语义决策 token
-的精确全词表熵，选择熵最大的边界；并过滤固定协议 token、空 action 和不可恢复状态。
+某种工具之后”分叉，而是在 backbone 的所有有效 action 边界上测量下一 action 首 token
+的精确全词表熵，选择熵最大的边界。这里严格采用论文的“first-token distribution at every
+decision boundary”：熵计算、环境快照和三条 clone 使用同一个条件状态，不再跳过协议 token
+后用已经生成的 backbone 前缀重新条件化。
 
 不同 backbone 独立选择，所以不同 prompt、不同训练时刻乃至同一任务的不同在线 rollout
 都可能落在不同位置。在同一个 sibling group 内，4 条 continuation 必须共享完全相同的
@@ -148,8 +150,28 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 - Shopper history、问题次数和调用计数。
 
 每个 clone 会申请独立 ShopSimulator slot。正式 train batch 为 2，每组最多同时占用
-一条 backbone 和三个 clone，因此最多需要 8 个 slot。AgentLoop worker 固定为 2，
+三个 clone；backbone slot 会在 clone 前释放，允许被某个 clone 安全复用。两个 prompt
+并行恢复时最多有 6 个 clone slot。AgentLoop worker 固定为 2，
 确保 veRL 按 K=4 重复后，每组 sibling 不会被切分给不同 worker。
+
+预检会实际执行一次 source snapshot、三次 clone 和四次相同搜索动作，只有四条恢复路径产生
+字节等价的去 session-id transition 时才通过。完整 rollout 还会在两个位置 fail-closed：
+
+- AgentLoop 返回前验证 sibling 0–3、同一 group/branch/entropy、完全相同的分叉前 token 与 mask，
+  以及三个并发 clone 的独立 lease；
+- advantage 计算前在 veRL `DataProto` 上再次验证这些字段，并输出每组 return、LOO advantage
+  及其零和审计；任一不一致都不会进入 optimizer。
+
+### 3.1 与原论文逐项对齐及项目适配
+
+论文算法要求：先完成一条 backbone；在 action 边界按首 token 全词表熵选点；从同一 `s_t`
+恢复并得到 K 个条件独立 sibling；用其他 K−1 个 return 的均值作 LOO baseline；以
+`lambda=0.95` 向分叉前传播；最后进入 PPO clip tree loss。当前实现逐项对应这些接口。
+
+项目与论文实验规模的差异是有意冻结的资源适配，不冒充论文原配置：论文主实验使用多分叉、
+更大的 return budget、8 张 A100 和数千次更新；本项目首版固定 `M=1, K=4`、四张 4090 和
+10 次更新，只用于验证 Shopping 场景下是否有方向性收益。论文没有公开可核对的官方实现仓库，
+因此“对齐”以论文公式、算法 1 和 veRL 0.8 官方数据流为准，而不是依据同名但不同算法的仓库。
 
 更新代码后必须重启 ShopSimulator；旧服务进程没有 `snapshot`、`clone` 和
 `drop_snapshot` 接口，不能运行 BPO。
@@ -165,6 +187,8 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 | branch count M | 1 |
 | return budget | 4 / prompt |
 | 分叉选择 | 最大精确全词表 entropy，最早边界打破平局 |
+| entropy 状态 | action 起始边界的首 token 分布；不得条件化已生成 action token |
+| rollout 审计 | `exact-tree-v1`，不通过则禁止 advantage/optimizer |
 | upstream lambda | 0.95 |
 | PPO clip | 0.20 |
 | rollout temperature / top-p | 0.7 / 0.9 |

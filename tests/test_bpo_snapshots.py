@@ -45,18 +45,29 @@ def test_snapshot_store_clones_server_and_browser_state():
         idx=3,
         history=["search"],
     )
-    target = SimpleNamespace(
-        server=server,
-        browser=SimpleNamespace(),
-        get_available_actions=lambda: None,
-    )
     store = SnapshotStore()
     snapshot_id = store.create(source, 0)
-    result = store.clone_into(snapshot_id, target, 1)
-    assert result["env_idx"] == 1
-    assert target.session == "slot-1-abc"
-    assert target.browser.current_url == "http://shop/slot-1-abc/item"
-    target.history.append("click")
+    targets = [
+        SimpleNamespace(
+            server=server,
+            browser=SimpleNamespace(),
+            get_available_actions=lambda: None,
+        )
+        for _ in range(3)
+    ]
+    results = [
+        store.clone_into(snapshot_id, target, index)
+        for index, target in enumerate(targets, start=1)
+    ]
+    assert [result["env_idx"] for result in results] == [1, 2, 3]
+    assert [target.session for target in targets] == [
+        "slot-1-abc", "slot-2-abc", "slot-3-abc"
+    ]
+    assert targets[0].browser.current_url == "http://shop/slot-1-abc/item"
+    targets[0].history.append("click")
     assert source.history == ["search"]
+    assert targets[1].history == ["search"]
+    targets[0].server.user_sessions[targets[0].session]["cart"].append(2)
+    assert targets[1].server.user_sessions[targets[1].session]["cart"] == [1]
     assert store.drop(snapshot_id) is True
     assert store.drop(snapshot_id) is False

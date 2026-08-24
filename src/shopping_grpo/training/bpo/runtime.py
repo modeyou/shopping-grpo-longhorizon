@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
-from shopping_grpo.training.bpo.advantage import compute_bpo_advantage
+from shopping_grpo.training.bpo.advantage import (
+    audit_bpo_rollout_batch,
+    compute_bpo_advantage,
+)
 from shopping_grpo.training.grpo.compat import install_torch_padding_fallback
 
 _INSTALLED = False
@@ -138,8 +142,19 @@ def install_bpo_runtime():
                 "bpo_sibling_index",
                 "bpo_branch_action",
                 "bpo_action_token_starts",
+                "bpo_branch_entropy",
+                "bpo_return_budget",
+                "bpo_env_idx",
+                "bpo_branch_prefix_sha256",
             )
         }
+        audits = audit_bpo_rollout_batch(
+            data.batch["prompts"],
+            data.batch["responses"],
+            data.batch["response_mask"],
+            metadata=metadata,
+            sibling_count=int(bpo_config.get("sibling_count", 4)),
+        )
         advantages, returns = compute_bpo_advantage(
             data.batch["token_level_rewards"],
             data.batch["response_mask"],
@@ -149,6 +164,25 @@ def install_bpo_runtime():
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+        scores = (
+            data.batch["token_level_rewards"] * data.batch["response_mask"]
+        ).sum(dim=-1)
+        for audit in audits:
+            rows = [
+                index
+                for index, value in enumerate(metadata["bpo_group_id"])
+                if str(value) == audit["group_id"]
+            ]
+            group_returns = [float(scores[index]) for index in rows]
+            total_return = sum(group_returns)
+            loo = [
+                value - (total_return - value) / (len(group_returns) - 1)
+                for value in group_returns
+            ]
+            audit["returns"] = group_returns
+            audit["loo_advantages"] = loo
+            audit["loo_sum"] = sum(loo)
+        print("BPO tree audit passed: " + json.dumps(audits, sort_keys=True))
         return data
 
     agent_module.AgentLoopWorker.generate_sequences = generate_sequences

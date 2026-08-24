@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import copy, deepcopy
+import hashlib
 import math
 from uuid import uuid4
 
@@ -12,8 +13,8 @@ from verl.experimental.agent_loop.tool_agent_loop import AgentData, AgentState
 
 from shopping_grpo.training.bpo.branching import (
     BranchCandidate,
-    first_decision_token,
     select_branch_candidate,
+    validate_tree_outputs,
 )
 from shopping_grpo.training.bpo.session import ClonedBranchSession
 from shopping_grpo.training.grpo.adapter.agent_loop import ShoppingToolAgentLoop
@@ -199,13 +200,26 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 action_starts,
                 sibling_index,
                 payload["group_id"],
+                session.env.env_idx,
             )
             return output
         finally:
             await session.close()
 
     @staticmethod
-    def _attach_bpo_metadata(output, candidate, action_starts, sibling_index, group_id):
+    def _attach_bpo_metadata(
+        output,
+        candidate,
+        action_starts,
+        sibling_index,
+        group_id,
+        env_idx,
+    ):
+        branch_start = int(action_starts[int(candidate.action_index)])
+        prefix_ids = [int(value) for value in output.response_ids[:branch_start]]
+        prefix_digest = hashlib.sha256(
+            ",".join(str(value) for value in prefix_ids).encode("ascii")
+        ).hexdigest()
         output.extra_fields.update(
             {
                 "bpo_group_id": group_id,
@@ -214,6 +228,8 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 "bpo_branch_entropy": float(candidate.entropy),
                 "bpo_action_token_starts": list(action_starts),
                 "bpo_return_budget": 4,
+                "bpo_env_idx": int(env_idx),
+                "bpo_branch_prefix_sha256": prefix_digest,
             }
         )
 
@@ -255,21 +271,17 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                         prefix_state = deepcopy(state)
                         prefix_shopper = current_shopper.get().clone()
                         prompt_before = list(data.prompt_ids)
-                        current = await self._handle_generating_state(
-                            data, sampling_params
-                        )
                         try:
-                            pieces = self.tokenizer.convert_ids_to_tokens(
-                                data.response_ids
-                            )
-                            token_offset = first_decision_token(pieces)
+                            # The paper defines H_t from the first-token
+                            # distribution at the exact action boundary s_t.
+                            # The snapshot and every sibling resume from this
+                            # same prompt, without any backbone action token.
                             entropy = await self._probe_entropy(
-                                prompt_before + data.response_ids[:token_offset],
+                                prompt_before,
                                 sampling_params,
                             )
-                        except ValueError:
-                            await asyncio.to_thread(
-                                source_env.drop_snapshot, snapshot_id
+                            current = await self._handle_generating_state(
+                                data, sampling_params
                             )
                         except Exception:
                             await asyncio.to_thread(
@@ -279,7 +291,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                         else:
                             proposed = BranchCandidate(
                                 action_index=action_index,
-                                token_offset=token_offset,
+                                token_offset=0,
                                 entropy=entropy,
                                 snapshot_id=snapshot_id,
                                 payload={
@@ -316,7 +328,12 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                     self._make_output(data), state, task_id
                 )
                 self._attach_bpo_metadata(
-                    backbone, candidate, action_starts, 0, group_id
+                    backbone,
+                    candidate,
+                    action_starts,
+                    0,
+                    group_id,
+                    source_env.env_idx,
                 )
             finally:
                 await session.close()
@@ -327,7 +344,9 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                     for sibling in range(1, self.sibling_count)
                 ]
             )
-            return [backbone, *branches]
+            outputs = [backbone, *branches]
+            validate_tree_outputs(outputs, sibling_count=self.sibling_count)
+            return outputs
         finally:
             if candidate is not None:
                 await asyncio.to_thread(

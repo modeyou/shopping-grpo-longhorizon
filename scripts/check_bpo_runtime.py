@@ -27,6 +27,8 @@ def validate_bpo_config(config):
         "return_budget": 4,
         "selection": "maximum_exact_entropy",
         "entropy_probe": "exact-full-vocabulary",
+        "entropy_state": "action-boundary-first-token",
+        "rollout_audit": "exact-tree-v1",
     }
     for key, value in expected.items():
         if bpo.get(key) != value:
@@ -125,6 +127,11 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
             {
                 "token_level_rewards": rewards,
                 "response_mask": response_mask,
+                "responses": torch.tensor(
+                    [[10, 11, 20 + row, 0] for row in range(4)],
+                    dtype=torch.long,
+                ),
+                "prompts": torch.tensor([[1, 2]] * 4, dtype=torch.long),
             },
             batch_size=[4],
         ),
@@ -133,6 +140,10 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
             "bpo_sibling_index": np.asarray([0, 1, 2, 3]),
             "bpo_branch_action": np.asarray([1] * 4),
             "bpo_action_token_starts": np.asarray([[0, 2]] * 4, dtype=object),
+            "bpo_branch_entropy": np.asarray([2.0] * 4),
+            "bpo_return_budget": np.asarray([4] * 4),
+            "bpo_env_idx": np.asarray([0, 0, 1, 2]),
+            "bpo_branch_prefix_sha256": np.asarray(["same"] * 4, dtype=object),
         },
     )
     try:
@@ -174,6 +185,60 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     )
 
 
+def validate_snapshot_fidelity():
+    """Exercise one source plus three restores before model weights are loaded."""
+    from shopping_grpo.environment.client import ShopAgentEnv
+
+    base_url = os.environ.get("SHOPSIM_BASE_URL", "http://127.0.0.1:5700")
+    source = ShopAgentEnv(base_url=base_url, timeout=60, multiturn=True)
+    clones = []
+    snapshot_id = None
+    try:
+        source.reset(3, initial_request="")
+        snapshot_id = source.snapshot()
+        clones = [source.clone(snapshot_id) for _ in range(3)]
+        env_indices = [source.env_idx, *[clone.env_idx for clone in clones]]
+        if len(set(env_indices[1:])) != 3:
+            raise SystemExit("BPO snapshot preflight clone leases are not isolated")
+        action = "search[bpo snapshot fidelity probe]"
+        transitions = [source.step(action), *[clone.step(action) for clone in clones]]
+        comparable = []
+        for transition in transitions:
+            normalized = dict(transition)
+            normalized.pop("env_idx", None)
+            normalized.pop("idx", None)
+            comparable.append(normalized)
+        canonical = json.dumps(
+            comparable[0], ensure_ascii=False, sort_keys=True, default=str
+        )
+        if any(
+            json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+            != canonical
+            for value in comparable[1:]
+        ):
+            raise SystemExit(
+                "BPO snapshot fidelity failed: identical actions from one snapshot "
+                "produced different transitions"
+            )
+        print(
+            "BPO ShopSimulator snapshot fidelity preflight passed: "
+            + json.dumps(
+                {
+                    "source_env_idx": env_indices[0],
+                    "clone_env_indices": env_indices[1:],
+                    "identical_transition_count": len(transitions),
+                },
+                sort_keys=True,
+            )
+        )
+    finally:
+        for env in reversed(clones):
+            env.release()
+        source.release()
+        if snapshot_id is not None:
+            source.drop_snapshot(snapshot_id)
+
+
 def validate_swanlab(config):
     backends = list(config.trainer.get("logger", []))
     if "swanlab" not in backends:
@@ -187,6 +252,7 @@ def validate_swanlab(config):
 def main():
     config = common.compose_runtime_config(__import__("sys").argv[1:])
     common.validate_environment_contract()
+    validate_snapshot_fidelity()
     common.validate_reward_shaping_profile()
     common.validate_grpo_seeds(
         config, label="BPO", environment_name="BPO_SEED"

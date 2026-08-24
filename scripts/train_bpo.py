@@ -198,6 +198,8 @@ def write_contract(environment, audit):
             "sibling_count": 4,
             "return_budget": 4,
             "branch_selection": "maximum_exact_entropy",
+            "entropy_state": "action-boundary-first-token",
+            "rollout_audit": "exact-tree-v1",
             "upstream_lambda": 0.95,
             "ppo_clip": 0.2,
             "use_fused_kernels": False,

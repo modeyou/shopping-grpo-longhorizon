@@ -3,7 +3,10 @@ import torch
 from omegaconf import OmegaConf
 
 from scripts.check_bpo_runtime import validate_bpo_runtime_hooks
-from shopping_grpo.training.bpo.advantage import compute_bpo_advantage
+from shopping_grpo.training.bpo.advantage import (
+    audit_bpo_rollout_batch,
+    compute_bpo_advantage,
+)
 
 
 def test_bpo_loo_advantage_and_upstream_action_weighting():
@@ -42,6 +45,40 @@ def test_bpo_rejects_incomplete_sibling_group():
         compute_bpo_advantage(
             torch.zeros(3, 2),
             torch.ones(3, 2),
+            metadata=metadata,
+            sibling_count=4,
+        )
+
+
+def test_bpo_rollout_batch_audit_rejects_prefix_drift():
+    responses = torch.tensor(
+        [[10, 11, 20 + row, 0] for row in range(4)], dtype=torch.long
+    )
+    mask = torch.tensor([[1, 1, 1, 0]] * 4)
+    metadata = {
+        "bpo_group_id": ["g"] * 4,
+        "bpo_sibling_index": [0, 1, 2, 3],
+        "bpo_branch_action": [1] * 4,
+        "bpo_action_token_starts": [[0, 2]] * 4,
+        "bpo_branch_entropy": [2.0] * 4,
+        "bpo_return_budget": [4] * 4,
+        "bpo_env_idx": [0, 0, 1, 2],
+        "bpo_branch_prefix_sha256": ["same"] * 4,
+    }
+    audits = audit_bpo_rollout_batch(
+        torch.tensor([[1, 2]] * 4),
+        responses,
+        mask,
+        metadata=metadata,
+        sibling_count=4,
+    )
+    assert audits[0]["prefix_tokens"] == 2
+    responses[2, 1] = 99
+    with pytest.raises(ValueError, match="token prefixes"):
+        audit_bpo_rollout_batch(
+            torch.tensor([[1, 2]] * 4),
+            responses,
+            mask,
             metadata=metadata,
             sibling_count=4,
         )

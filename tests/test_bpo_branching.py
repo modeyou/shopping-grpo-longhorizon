@@ -7,6 +7,7 @@ from shopping_grpo.training.bpo.branching import (
     first_decision_token,
     full_vocabulary_entropy,
     select_branch_candidate,
+    validate_tree_outputs,
 )
 from shopping_grpo.training.bpo.runtime import sibling_group_starts
 
@@ -41,3 +42,35 @@ def test_sibling_groups_must_be_contiguous_repeats():
     assert sibling_group_starts([7, 7, 7, 7, 9, 9, 9, 9], 4) == [0, 4]
     with pytest.raises(ValueError, match="contiguous"):
         sibling_group_starts([7, 7, 9, 7], 4)
+
+
+def test_tree_outputs_share_exact_prefix_and_isolated_clone_leases():
+    from types import SimpleNamespace
+
+    outputs = []
+    for sibling, env_idx, suffix in zip(
+        range(4), (0, 0, 1, 2), ((20, 21), (30, 31), (40, 41), (50, 51)), strict=True
+    ):
+        outputs.append(
+            SimpleNamespace(
+                prompt_ids=[1, 2],
+                response_ids=[10, 11, *suffix],
+                response_mask=[1, 1, 1, 1],
+                extra_fields={
+                    "bpo_group_id": "tree",
+                    "bpo_sibling_index": sibling,
+                    "bpo_branch_action": 1,
+                    "bpo_branch_entropy": 2.5,
+                    "bpo_action_token_starts": [0, 2],
+                    "bpo_return_budget": 4,
+                    "bpo_env_idx": env_idx,
+                    "bpo_branch_prefix_sha256": "same",
+                },
+            )
+        )
+    audit = validate_tree_outputs(outputs)
+    assert audit["prefix_tokens"] == 2
+    assert audit["env_indices"] == [0, 0, 1, 2]
+    outputs[3].response_ids[1] = 99
+    with pytest.raises(ValueError, match="token prefixes"):
+        validate_tree_outputs(outputs)

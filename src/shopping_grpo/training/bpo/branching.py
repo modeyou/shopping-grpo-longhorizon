@@ -60,3 +60,56 @@ def select_branch_candidate(candidates):
     if any(not math.isfinite(float(item.entropy)) for item in values):
         raise ValueError("BPO branch entropy must be finite")
     return min(values, key=lambda item: (-float(item.entropy), int(item.action_index)))
+
+
+def validate_tree_outputs(outputs, *, sibling_count=4):
+    """Fail before PPO if restored siblings do not share one exact prefix/state."""
+    values = list(outputs)
+    if len(values) != int(sibling_count):
+        raise ValueError("BPO tree must contain exactly K sibling outputs")
+    metadata = [value.extra_fields for value in values]
+    expected_indices = list(range(int(sibling_count)))
+    actual_indices = [int(item.get("bpo_sibling_index", -1)) for item in metadata]
+    if actual_indices != expected_indices:
+        raise ValueError("BPO tree siblings must be ordered 0..K-1")
+
+    invariant_keys = (
+        "bpo_group_id",
+        "bpo_branch_action",
+        "bpo_branch_entropy",
+        "bpo_return_budget",
+        "bpo_branch_prefix_sha256",
+    )
+    for key in invariant_keys:
+        if len({str(item.get(key)) for item in metadata}) != 1:
+            raise ValueError(f"BPO siblings disagree on {key}")
+    if int(metadata[0]["bpo_return_budget"]) != int(sibling_count):
+        raise ValueError("BPO return budget must equal sibling count for M=1")
+
+    env_indices = [int(item.get("bpo_env_idx", -1)) for item in metadata]
+    clone_env_indices = env_indices[1:]
+    if min(env_indices) < 0 or len(set(clone_env_indices)) != int(sibling_count) - 1:
+        raise ValueError("BPO clone siblings must use K-1 distinct leases")
+
+    branch_action = int(metadata[0]["bpo_branch_action"])
+    prompts = [tuple(output.prompt_ids) for output in values]
+    if len(set(prompts)) != 1:
+        raise ValueError("BPO siblings do not share one original prompt")
+    shared_prefixes = []
+    shared_masks = []
+    for output, item in zip(values, metadata, strict=True):
+        starts = [int(value) for value in item.get("bpo_action_token_starts", [])]
+        if branch_action < 0 or branch_action >= len(starts):
+            raise ValueError("BPO branch action is outside action boundaries")
+        branch_start = starts[branch_action]
+        shared_prefixes.append(tuple(output.response_ids[:branch_start]))
+        shared_masks.append(tuple(output.response_mask[:branch_start]))
+    if len(set(shared_prefixes)) != 1 or len(set(shared_masks)) != 1:
+        raise ValueError("BPO sibling token prefixes differ before the branch boundary")
+    return {
+        "group_id": str(metadata[0]["bpo_group_id"]),
+        "branch_action": branch_action,
+        "branch_entropy": float(metadata[0]["bpo_branch_entropy"]),
+        "prefix_tokens": len(shared_prefixes[0]),
+        "env_indices": env_indices,
+    }
