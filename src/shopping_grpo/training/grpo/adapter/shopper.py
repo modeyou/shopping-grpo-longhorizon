@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 
 from shopping_grpo.multiturn.shopper import _parse_json_object
@@ -88,6 +89,26 @@ class ControlledShopper:
         record = {"question": question, "answer": answer, "used_facts": list(used)}
         self.history.append(record)
         return record
+
+    def snapshot_state(self):
+        return {"history": deepcopy(self.history), "call_count": int(self.call_count)}
+
+    def restore_state(self, state):
+        history = deepcopy(state.get("history") or [])
+        if len(history) > self.max_questions:
+            raise ValueError("shopper snapshot exceeds max_questions")
+        self.history = history
+        self.call_count = int(state.get("call_count", 0))
+        return self
+
+    def clone(self):
+        cloned = type(self)(
+            self.client,
+            initial_request=self.initial_request,
+            allowed_facts=self.allowed_facts,
+            max_questions=self.max_questions,
+        )
+        return cloned.restore_state(self.snapshot_state())
 
 
 def clarified_constraints_block(constraints) -> str:

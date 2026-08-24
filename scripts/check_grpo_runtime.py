@@ -28,6 +28,7 @@ MAX_SAFE_SEQUENCE_LENGTH = 24576
 COMMON_RUNTIME_FILES = {
     "observation.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/observation.py",
     "pack_api.py": "environments/ShopSimulator/shop_env/shop_env/pack_api.py",
+    "snapshot_store.py": "environments/ShopSimulator/shop_env/shop_env/snapshot_store.py",
     "slot_lease_pool.py": "environments/ShopSimulator/shop_env/shop_env/slot_lease_pool.py",
     "web_agent_text_env.py": "environments/ShopSimulator/shop_env/web_agent_site/envs/web_agent_text_env.py",
 }
@@ -337,7 +338,7 @@ def ppo_gradient_accumulation_steps(mini_batch_size: int, micro_batch_size: int)
     return mini // micro
 
 
-def validate_grpo_seeds(config):
+def validate_grpo_seeds(config, *, label="GRPO", environment_name="GRPO_SEED"):
     data_seed = config.data.seed
     actor_seed = config.actor_rollout_ref.actor.data_loader_seed
     if any(
@@ -348,17 +349,17 @@ def validate_grpo_seeds(config):
             "data.seed and actor.data_loader_seed must resolve to integers, "
             f"got {type(data_seed).__name__} and {type(actor_seed).__name__}"
         )
-    environment_seed = int(os.environ.get("GRPO_SEED", data_seed))
+    environment_seed = int(os.environ.get(environment_name, data_seed))
     if data_seed < 0 or actor_seed < 0:
         raise SystemExit("GRPO seeds must be non-negative")
     if len({data_seed, actor_seed, environment_seed}) != 1:
         raise SystemExit(
-            "data.seed, actor.data_loader_seed and GRPO_SEED must match"
+            f"data.seed, actor.data_loader_seed and {environment_name} must match"
         )
-    print(f"GRPO seed preflight passed: {data_seed}")
+    print(f"{label} seed preflight passed: {data_seed}")
 
 
-def validate_training_memory_budget(config):
+def validate_training_memory_budget(config, *, label="GRPO"):
     prompt_length = int(config.data.max_prompt_length)
     response_length = int(config.data.max_response_length)
     total_length = prompt_length + response_length
@@ -368,12 +369,12 @@ def validate_training_memory_budget(config):
 
     if response_length > MAX_SAFE_RESPONSE_LENGTH:
         raise SystemExit(
-            "unsafe GRPO response budget: "
+            f"unsafe {label} response budget: "
             f"max_response_length={response_length} exceeds {MAX_SAFE_RESPONSE_LENGTH}"
         )
     if total_length > MAX_SAFE_SEQUENCE_LENGTH:
         raise SystemExit(
-            "unsafe GRPO sequence budget: "
+            f"unsafe {label} sequence budget: "
             f"max_prompt_length + max_response_length = {total_length}, "
             f"limit is {MAX_SAFE_SEQUENCE_LENGTH}"
         )
@@ -389,7 +390,7 @@ def validate_training_memory_budget(config):
     ):
         if value != MAX_SAFE_SEQUENCE_LENGTH:
             raise SystemExit(
-                f"unsafe or inconsistent GRPO memory budget: {name} must equal "
+                f"unsafe or inconsistent {label} memory budget: {name} must equal "
                 f"{MAX_SAFE_SEQUENCE_LENGTH}, got {value}"
             )
     if bool(actor.use_dynamic_bsz):
@@ -421,7 +422,7 @@ def validate_training_memory_budget(config):
         raise SystemExit("ref.log_prob_micro_batch_size_per_gpu must equal 1")
 
     print(
-        "GRPO training memory budget preflight passed: "
+        f"{label} training memory budget preflight passed: "
         + json.dumps(
             {
                 "max_prompt_length": prompt_length,
