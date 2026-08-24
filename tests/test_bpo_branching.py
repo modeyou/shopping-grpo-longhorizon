@@ -13,8 +13,15 @@ from shopping_grpo.training.bpo.runtime import sibling_group_starts
 
 def test_full_vocabulary_entropy_requires_normalized_distribution():
     assert full_vocabulary_entropy([math.log(0.25)] * 4) == pytest.approx(math.log(4))
+    assert full_vocabulary_entropy([math.log(0.5), math.log(0.5), -math.inf]) == (
+        pytest.approx(math.log(2))
+    )
     with pytest.raises(ValueError, match="sum to one"):
         full_vocabulary_entropy([math.log(0.2), math.log(0.2)])
+    with pytest.raises(ValueError, match="NaN/\\+Inf"):
+        full_vocabulary_entropy([0.0, math.nan])
+    with pytest.raises(ValueError, match="NaN/\\+Inf"):
+        full_vocabulary_entropy([0.0, math.inf])
 
 
 def test_first_decision_token_skips_protocol_tokens():

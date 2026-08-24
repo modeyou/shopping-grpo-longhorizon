@@ -1,6 +1,7 @@
 """Deterministic source transform for the pinned veRL vLLM entropy probe."""
 
-PATCH_MARKER = "SHOPPING_BPO_EXACT_ENTROPY_PATCH_V1"
+PATCH_MARKER = "SHOPPING_BPO_EXACT_ENTROPY_PATCH_V2"
+LEGACY_PATCH_MARKERS = ("SHOPPING_BPO_EXACT_ENTROPY_PATCH_V1",)
 
 
 def patch_source(source: str) -> str:
@@ -43,7 +44,15 @@ def patch_source(source: str) -> str:
         + "            vocabulary_logprobs = [\n"
         + "                float(item.logprob) for item in distributions[0].values()\n"
         + "            ]\n"
-        + "            probabilities = [math.exp(value) for value in vocabulary_logprobs]\n"
+        + "            if any(\n"
+        + "                math.isnan(value) or value == math.inf\n"
+        + "                for value in vocabulary_logprobs\n"
+        + "            ):\n"
+        + '                raise RuntimeError("BPO entropy probe received NaN/+Inf logprobs")\n'
+        + "            probabilities = [\n"
+        + "                0.0 if value == -math.inf else math.exp(value)\n"
+        + "                for value in vocabulary_logprobs\n"
+        + "            ]\n"
         + "            probability_mass = sum(probabilities)\n"
         + "            if not 0.999 <= probability_mass <= 1.001:\n"
         + "                raise RuntimeError(\n"
@@ -54,6 +63,7 @@ def patch_source(source: str) -> str:
         + "                for probability, logprob in zip(\n"
         + "                    probabilities, vocabulary_logprobs, strict=True\n"
         + "                )\n"
+        + "                if probability > 0.0\n"
         + "            )\n",
         1,
     )

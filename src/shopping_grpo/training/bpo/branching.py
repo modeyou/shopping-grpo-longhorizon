@@ -18,15 +18,23 @@ class BranchCandidate:
 def full_vocabulary_entropy(logprobs):
     """Return entropy after validating complete normalized log-probabilities."""
     values = [float(value) for value in logprobs]
-    if not values or any(not math.isfinite(value) for value in values):
-        raise ValueError("full-vocabulary logprobs must be finite and non-empty")
-    probabilities = [math.exp(value) for value in values]
+    if not values or any(math.isnan(value) or value == math.inf for value in values):
+        raise ValueError(
+            "full-vocabulary logprobs must be non-empty and exclude NaN/+Inf"
+        )
+    # A masked or impossible token is represented by log(p) == -Inf.  Its
+    # Shannon contribution is defined by continuity as 0 * log(0) == 0;
+    # multiplying the IEEE values directly would instead manufacture NaN.
+    probabilities = [
+        0.0 if value == -math.inf else math.exp(value) for value in values
+    ]
     probability_mass = sum(probabilities)
     if not 0.999 <= probability_mass <= 1.001:
         raise ValueError("full-vocabulary probabilities must sum to one")
     return -sum(
         probability * logprob
         for probability, logprob in zip(probabilities, values, strict=True)
+        if probability > 0.0
     )
 
 

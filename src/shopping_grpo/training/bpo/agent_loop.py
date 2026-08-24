@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import copy, deepcopy
+import math
 from uuid import uuid4
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopOutput
@@ -152,7 +153,12 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
             raise RuntimeError(
                 "BPO entropy probe metadata is missing; apply the pinned veRL BPO patch"
             )
-        return float(entropy)
+        entropy = float(entropy)
+        if not math.isfinite(entropy):
+            raise RuntimeError(
+                "BPO entropy probe produced NaN/Inf; verify the V2 entropy patch"
+            )
+        return entropy
 
     async def _drive(self, data, sampling_params, *, action_starts):
         state = AgentState.GENERATING

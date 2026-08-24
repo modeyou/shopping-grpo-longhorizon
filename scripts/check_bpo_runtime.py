@@ -52,16 +52,20 @@ def validate_bpo_config(config):
 
 
 def validate_entropy_patch(verl_source):
-    from scripts.apply_verl_bpo_patch import EXPECTED_PATCHED_SHA256
+    from scripts.apply_verl_bpo_patch import expected_patched_sha256
 
     target = verl_source.parent / "workers/rollout/vllm_rollout/vllm_async_server.py"
     if not target.is_file():
         raise SystemExit(f"BPO exact-entropy patch target is missing: {target}")
     actual_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
-    if actual_sha256 != EXPECTED_PATCHED_SHA256:
+    try:
+        expected_sha256 = expected_patched_sha256(target)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if actual_sha256 != expected_sha256:
         raise SystemExit(
             "BPO exact-entropy patch hash mismatch: "
-            f"expected {EXPECTED_PATCHED_SHA256}, got {actual_sha256}; "
+            f"expected {expected_sha256}, got {actual_sha256}; "
             "run scripts/apply_verl_bpo_patch.py first"
         )
     if PATCH_MARKER not in target.read_text(encoding="utf-8"):

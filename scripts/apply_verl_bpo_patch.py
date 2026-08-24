@@ -11,16 +11,28 @@ import shutil
 import sys
 from pathlib import Path
 
-from shopping_grpo.training.bpo.entropy_patch import PATCH_MARKER, patch_source
+from shopping_grpo.training.bpo.entropy_patch import (
+    LEGACY_PATCH_MARKERS,
+    PATCH_MARKER,
+    patch_source,
+)
 
 EXPECTED_VERL_VERSION = "0.8.0"
 EXPECTED_ORIGINAL_SHA256 = "c7aafaa923edb7ab19c6a3d147643013be687df76d79ef38e855958d8382c68c"
-EXPECTED_PATCHED_SHA256 = "f99cd883946cdae4ade97871ef8b44c063529f21232f446d22e0e2b9ad701570"
 BACKUP_SUFFIX = ".shopping-bpo-entropy.orig"
 
 
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def expected_patched_sha256(target):
+    """Derive the one accepted V2 hash from the verified pinned source backup."""
+    backup = Path(str(Path(target).resolve()) + BACKUP_SUFFIX)
+    if not backup.is_file() or sha256(backup) != EXPECTED_ORIGINAL_SHA256:
+        raise RuntimeError(f"verified BPO patch backup is missing: {backup}")
+    patched = patch_source(backup.read_text(encoding="utf-8"))
+    return hashlib.sha256(patched.encode("utf-8")).hexdigest()
 
 
 def resolve_target():
@@ -39,10 +51,11 @@ def resolve_target():
 
 def verify(target):
     actual = sha256(target)
-    if actual != EXPECTED_PATCHED_SHA256:
+    expected = expected_patched_sha256(target)
+    if actual != expected:
         raise RuntimeError(
             "patched vllm_async_server.py hash mismatch: "
-            f"expected {EXPECTED_PATCHED_SHA256}, got {actual}"
+            f"expected {expected}, got {actual}"
         )
     source = target.read_text(encoding="utf-8")
     if PATCH_MARKER not in source:
@@ -56,12 +69,17 @@ def apply(target):
     target = Path(target).resolve()
     source = target.read_text(encoding="utf-8")
     backup = Path(str(target) + BACKUP_SUFFIX)
-    has_marker = PATCH_MARKER in source
-    if has_marker:
-        if sha256(target) == EXPECTED_PATCHED_SHA256:
+    has_current_marker = PATCH_MARKER in source
+    has_legacy_marker = any(marker in source for marker in LEGACY_PATCH_MARKERS)
+    if has_current_marker:
+        try:
             verify(target)
+        except RuntimeError:
+            pass
+        else:
             print(f"veRL BPO entropy patch already applied: {target}")
             return
+    if has_current_marker or has_legacy_marker:
         if not backup.is_file() or sha256(backup) != EXPECTED_ORIGINAL_SHA256:
             raise RuntimeError(
                 "cannot upgrade an unknown BPO entropy patch without its "
@@ -70,7 +88,7 @@ def apply(target):
         source = backup.read_text(encoding="utf-8")
         print(f"upgrading BPO entropy patch from verified backup: {target}")
     actual = sha256(target)
-    if not has_marker and actual != EXPECTED_ORIGINAL_SHA256:
+    if not (has_current_marker or has_legacy_marker) and actual != EXPECTED_ORIGINAL_SHA256:
         raise RuntimeError(
             "refusing to patch unknown vllm_async_server.py: "
             f"expected {EXPECTED_ORIGINAL_SHA256}, got {actual}"
