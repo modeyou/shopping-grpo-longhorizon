@@ -334,3 +334,33 @@ final200；只有最终方法和 checkpoint 完全冻结后，才执行一次正
 出现以下任一情况立即停止，不能解释为算法效果：快照状态不一致、sibling 前缀不同、
 全词表概率质量不约等于 1、Reward 非 v4、数据重叠、OOM、NaN/Inf、连续动态采样
 跳过或 ShopSimulator slot 泄漏。
+
+## 9. 与 GRPO 分支安全切换
+
+不要在当前 GRPO 分支上直接执行 `git pull origin feat/bpo2`，否则 Git 会尝试把 BPO
+提交合并进当前分支。先确认 tracked worktree 干净，再切换目标分支：
+
+```bash
+git status --short --branch
+git fetch origin
+git switch feat/bpo2
+git pull --ff-only origin feat/bpo2
+```
+
+从 BPO 返回 GRPO 时，先停止 BPO/Ray 进程，并在仍位于 `feat/bpo2` 时恢复仓库外的
+veRL entropy patch，然后再切换代码：
+
+```bash
+"$GRPO_PYTHON" scripts/apply_verl_bpo_patch.py --restore
+git switch feat/multiturn-clarification-agent
+git pull --ff-only origin feat/multiturn-clarification-agent
+"$GRPO_PYTHON" scripts/apply_verl_dynamic_sampling_patch.py
+```
+
+反向进入 BPO 时，在切到 `feat/bpo2` 后重新应用两个补丁。`data/`、`outputs/` 中被
+Git 忽略的本地产物通常会跨分支保留；若未跟踪文件与目标分支文件同名，Git 会拒绝切换，
+此时必须先核对和归档，不能强制覆盖。
+
+ShopSimulator 进程会继续使用启动时已加载的 Python 代码，不会随 `git switch` 自动刷新。
+两个方向切换后都要重启服务：BPO 需要含 `snapshot`、`clone`、`drop_snapshot` 的版本；
+GRPO 为严格复现也应重启到对应分支代码。切换 Git 分支不等于切换完整运行环境。
