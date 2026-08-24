@@ -202,6 +202,12 @@ export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
 BPO 补丁只修改固定 `verl==0.8.0` 的 `vllm_async_server.py`。脚本校验官方源码
 SHA256、创建备份、执行幂等检查，并拒绝未知版本。
 
+动态采样补丁同样固定 `verl==0.8.0`：先应用已经过 GRPO A1U/B1 验证的 V4 patch，
+再执行唯一、确定性的 estimator guard 重写，使它显式接受 `GRPO` 或 `BPO`。最终
+`ray_trainer.py` SHA256 固定为
+`a2132ecbce6ca55fcd3a61f615b925b4a0c7a2192c69cd3e4faf8046124b334b`；
+旧 `9fc8...` 版本只能在存在已验证原始备份时升级，未知源码仍拒绝修改。
+
 配置 Shopper API：
 
 ```bash

@@ -163,6 +163,16 @@ class VerlPatchScriptTest(unittest.TestCase):
                 fit_source[skipped:ready],
             )
             self.assertIn("dynamic_consecutive_skips", fit_source)
+            self.assertIn("dynamic_adv_estimator = (", fit_source)
+            self.assertIn('and dynamic_adv_estimator != "bpo"', fit_source)
+            self.assertIn(
+                "shopping_dynamic_sampling only supports GRPO or BPO",
+                fit_source,
+            )
+            self.assertNotIn(
+                "shopping_dynamic_sampling only supports Vanilla GRPO",
+                fit_source,
+            )
             self.assertIn(">= dynamic_max_consecutive_skips", fit_source)
             self.assertNotIn(
                 "exhausted max_num_gen_batches=",

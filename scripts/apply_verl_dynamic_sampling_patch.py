@@ -15,9 +15,10 @@ from pathlib import Path
 
 EXPECTED_VERL_VERSION = "0.8.0"
 EXPECTED_ORIGINAL_SHA256 = "de58d295cf86656a28196b0718168d4a11666f3e30957b7e166914496c2a6d66"
-EXPECTED_PATCHED_SHA256 = "9fc8bff440199e062236fc86f2a6f01eae4238e3cd8026f87e88d9c93fc4da82"
+EXPECTED_PATCHED_SHA256 = "a2132ecbce6ca55fcd3a61f615b925b4a0c7a2192c69cd3e4faf8046124b334b"
 SUPERSEDED_PATCHED_SHA256S = frozenset(
     {
+        "9fc8bff440199e062236fc86f2a6f01eae4238e3cd8026f87e88d9c93fc4da82",
         "684b491e20ba9d41e91d5010186d4d08b01a01fc67f8a77d17c086b0381e00a3",
         "fc3564cc5680a9fa92ca7b0a9bc3ae87ccdc90c498ab1bfe34c6796d6c54fb5a",
     }
@@ -26,6 +27,22 @@ PATCH_MARKER = "SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V4"
 BACKUP_SUFFIX = ".shopping-grpo-dynamic-sampling.orig"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PATCH_FILE = PROJECT_ROOT / "patches/verl-0.8.0-shopping-dynamic-sampling.patch"
+BPO_COMPATIBILITY_OLD = '''            if self.config.algorithm.adv_estimator != AdvantageEstimator.GRPO:
+                raise ValueError("shopping_dynamic_sampling only supports Vanilla GRPO")
+'''
+BPO_COMPATIBILITY_NEW = '''            dynamic_adv_estimator = (
+                str(self.config.algorithm.adv_estimator)
+                .rsplit(".", 1)[-1]
+                .lower()
+            )
+            if (
+                self.config.algorithm.adv_estimator != AdvantageEstimator.GRPO
+                and dynamic_adv_estimator != "bpo"
+            ):
+                raise ValueError(
+                    "shopping_dynamic_sampling only supports GRPO or BPO"
+                )
+'''
 
 
 def sha256(path: Path) -> str:
@@ -73,9 +90,29 @@ def verify_patched(target: Path) -> None:
             "patched ray_trainer.py hash mismatch: "
             f"expected {EXPECTED_PATCHED_SHA256}, got {target_hash}"
         )
-    if PATCH_MARKER not in target.read_text(encoding="utf-8"):
+    source = target.read_text(encoding="utf-8")
+    if PATCH_MARKER not in source:
         raise RuntimeError(f"patched ray_trainer.py is missing marker {PATCH_MARKER}")
+    if BPO_COMPATIBILITY_OLD in source or source.count(BPO_COMPATIBILITY_NEW) != 1:
+        raise RuntimeError("patched ray_trainer.py is missing BPO compatibility")
     py_compile.compile(str(target), doraise=True)
+
+
+def add_bpo_compatibility(target: Path) -> None:
+    """Extend the pinned GRPO patch without weakening its source/hash checks."""
+    source = target.read_text(encoding="utf-8")
+    if source.count(BPO_COMPATIBILITY_OLD) != 1:
+        raise RuntimeError(
+            "the pinned dynamic-sampling patch has an unexpected estimator guard"
+        )
+    upgraded = source.replace(BPO_COMPATIBILITY_OLD, BPO_COMPATIBILITY_NEW, 1)
+    temporary = target.with_name(target.name + ".shopping-bpo-compat.tmp")
+    shutil.copy2(target, temporary)
+    try:
+        temporary.write_text(upgraded, encoding="utf-8", newline="\n")
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def apply_patch(target: Path) -> None:
@@ -117,6 +154,7 @@ def apply_patch(target: Path) -> None:
             check=True,
             cwd=PROJECT_ROOT,
         )
+        add_bpo_compatibility(target)
         verify_patched(target)
     except Exception:
         shutil.copy2(rollback_source, target)
