@@ -170,9 +170,12 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 | vLLM max sequences | 8 |
 | AgentLoop workers | 2 |
 
-`use_fused_kernels=true` 和 `use_liger=true` 是正式显存方案。两者改变算子、吞吐和
-显存占用，但不改变 BPO 分叉、Reward、advantage 或评测定义。由于 fused kernel 与
-Liger 依赖固定软件版本，仍必须用 1-step smoke 验证 loss 有限、四卡工作且没有 OOM。
+正式显存方案冻结为 `use_fused_kernels=false`、`use_liger=true`、
+`use_remove_padding=true`。这是 GRPO A1U/B1 在同一 SFT checkpoint-325、四张 4090 上
+真正完成一次 optimizer update 的已验证组合；其 actor 汇总峰值约为 18.15 GiB allocated、
+20.2 GiB reserved。它们改变算子、吞吐和显存占用，但不改变 BPO 分叉、Reward、advantage
+或评测定义。BPO 仍增加快照和精确熵探针，因此必须用自己的 1-step smoke 验证 loss 有限、
+四卡工作且没有 OOM，不能把 GRPO smoke 直接当作 BPO smoke。
 
 全词表 logits 只在单 token entropy probe 中产生，并立即在 vLLM 服务进程中归约成
 一个标量；完整向量不会进入 AgentLoop output 或训练 batch。
@@ -215,7 +218,8 @@ bash scripts/bpo.sh \
 ```
 
 预检会拒绝非 Reward v4、错误 manifest、非四卡、非 K=4/M=1、worker 分组错误、
-缺少精确熵补丁、未启用 fused kernels/Liger、动态采样补丁缺失和监控配置错误。
+缺少精确熵补丁、显存组合不是 `fused=false + Liger=true + remove-padding=true`、
+动态采样补丁缺失和监控配置错误。
 
 ## 6. 1-step smoke
 

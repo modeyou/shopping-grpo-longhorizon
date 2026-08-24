@@ -198,8 +198,9 @@ def write_contract(environment, audit):
             "branch_selection": "maximum_exact_entropy",
             "upstream_lambda": 0.95,
             "ppo_clip": 0.2,
-            "use_fused_kernels": True,
+            "use_fused_kernels": False,
             "use_liger": True,
+            "use_remove_padding": True,
         },
         "inputs": {
             name: {"path": str(Path(path).resolve()), "sha256": _sha256(path)}
