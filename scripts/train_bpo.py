@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/bpo.yaml"
 AGENT_CONFIG = ROOT / "configs/bpo_agent_loop.yaml"
 TOOL_CONFIG = ROOT / "configs/tools.json"
-ENVIRONMENT_MANIFEST = ROOT / "data/environment-v4.json"
+DATA_ENVIRONMENT_MANIFEST = ROOT / "data/environment-v4.json"
+BPO_RUNTIME_MANIFEST = ROOT / "data/environment-bpo-v1.json"
 DATA_MANIFEST = ROOT / "data/grpo/formal-v2/manifest.json"
 TRAIN_DATA = ROOT / "data/grpo/formal-v2/multiturn-train.parquet"
 VALIDATION_DATA = ROOT / "data/grpo/formal-v2/multiturn-validation.parquet"
@@ -91,7 +92,7 @@ def build(args):
             manifest,
             train_data=train_data,
             validation_data=val_data,
-            environment_manifest=ENVIRONMENT_MANIFEST,
+            environment_manifest=DATA_ENVIRONMENT_MANIFEST,
             root=ROOT,
         )
     except ValueError as exc:
@@ -113,7 +114,7 @@ def build(args):
             "SHOPPING_BPO_ROOT": str(ROOT),
             "SHOPPING_GRPO_ROOT": str(ROOT),
             "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
-            "SHOPPING_ENV_MANIFEST": str(ENVIRONMENT_MANIFEST),
+            "SHOPPING_ENV_MANIFEST": str(BPO_RUNTIME_MANIFEST),
             "SHOP_REWARD_VERSION": "shopsimulator-reward-v4",
             "SHOPPING_REWARD_SHAPING_PROFILE": "none",
             "SHOPPING_LENGTH_SHAPING_ENABLE": "false",
@@ -175,7 +176,8 @@ def write_contract(environment, audit):
         "bpo_config": CONFIG,
         "bpo_agent_config": AGENT_CONFIG,
         "tool_config": TOOL_CONFIG,
-        "environment_manifest": ENVIRONMENT_MANIFEST,
+        "data_environment_manifest": DATA_ENVIRONMENT_MANIFEST,
+        "bpo_runtime_manifest": BPO_RUNTIME_MANIFEST,
         "model_config": Path(audit["model"]) / "config.json",
     }
     status = subprocess.check_output(

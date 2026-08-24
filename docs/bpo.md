@@ -31,6 +31,12 @@ data/grpo/formal-v2/multiturn-validation.parquet
 二者必须由 `data/grpo/formal-v2/manifest.json` 绑定，并与
 `data/evaluation/tasks.jsonl` 保持零重叠。
 
+这里有两份用途不同、不得混用的环境清单：`data/environment-v4.json` 是 formal-v2
+Parquet 已冻结绑定的数据/Reward 契约，保持原字节与 SHA256 不变；
+`data/environment-bpo-v1.json` 是 BPO 运行时契约，额外绑定快照接口修改后的
+`pack_api.py` 和 `snapshot_store.py`。训练入口先用前者验证数据血缘，再用后者验证
+当前运行时代码，不能通过改写 formal manifest 或跳过哈希来迁移数据。
+
 ## 2. 冻结的算法方案
 
 实现采用完整 one-boundary BPO，而不是 BPO-lite：
@@ -314,7 +320,7 @@ bash scripts/bpo.sh \
 ```
 
 正式启动会写入 `shopping-bpo-run-contract-v1`，记录 Git commit、模型、数据与配置
-SHA256、seed、分叉参数和两项显存配置，但不会记录 API key。
+SHA256、seed、分叉参数、数据环境清单、BPO 运行时清单和显存配置，但不会记录 API key。
 
 BPO 与 GRPO 不得同时占用 GPU 0–3、同一 Ray runtime 或同一批 ShopSimulator slots。
 可以在 GRPO 运行期间开发 BPO 代码，但 BPO smoke 必须等 GRPO 完全退出后执行。

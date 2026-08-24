@@ -37,5 +37,8 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
     assert environment["SHOPPING_REWARD_SHAPING_PROFILE"] == "none"
     assert environment["SHOP_REWARD_VERSION"] == "shopsimulator-reward-v4"
     assert environment["GRPO_CONFIG_NAME"] == "bpo"
+    assert environment["SHOPPING_ENV_MANIFEST"].endswith(
+        "data/environment-bpo-v1.json"
+    )
     assert audit["algorithm"] == "full-bpo-v1"
     assert audit["reward_profile"] == "none"
