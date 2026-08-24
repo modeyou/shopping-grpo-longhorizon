@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shopper-base-url", default=os.environ.get("OPENAI_BASE_URL"))
     parser.add_argument("--output", type=Path, default=Path("outputs/models/grpo"))
     parser.add_argument(
+        "--resume-from-checkpoint",
+        type=Path,
+        help="resume optimizer/scheduler/model state from a checkpoint inside --output",
+    )
+    parser.add_argument(
         "--logger",
         choices=("console", "swanlab"),
         default="console",
@@ -105,9 +110,16 @@ def _hydra_overrides(args: argparse.Namespace) -> list[str]:
     extra = list(args.hydra_overrides)
     if extra[:1] == ["--"]:
         extra = extra[1:]
+    resume_overrides = []
+    if args.resume_from_checkpoint is not None:
+        resume_overrides = [
+            "trainer.resume_mode=resume_path",
+            f"trainer.resume_from_path={args.resume_from_checkpoint.expanduser().resolve()}",
+        ]
     return [
         logger_override,
         f"trainer.experiment_name={args.experiment_name}",
+        *resume_overrides,
         *extra,
     ]
 
@@ -138,10 +150,25 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     except ValueError as exc:
         raise SystemExit(f"invalid GRPO data manifest: {exc}") from exc
     output = args.output.expanduser().resolve()
+    resume_checkpoint = None
+    if args.resume_from_checkpoint is not None:
+        resume_checkpoint = _validated_path(
+            args.resume_from_checkpoint,
+            "resume checkpoint",
+        )
+        if not resume_checkpoint.is_dir():
+            raise SystemExit(f"resume checkpoint must be a directory: {resume_checkpoint}")
+        if not output.exists() or not output.is_dir():
+            raise SystemExit("resume requires an existing --output directory")
+        if not resume_checkpoint.is_relative_to(output):
+            raise SystemExit(
+                "resume checkpoint must be inside the same --output directory: "
+                f"{resume_checkpoint}"
+            )
     if output.exists():
         if not output.is_dir():
             raise SystemExit(f"output must be a directory: {output}")
-        if any(output.iterdir()):
+        if any(output.iterdir()) and resume_checkpoint is None:
             raise SystemExit(f"output directory must be new or empty: {output}")
     if args.logger == "swanlab" and not os.environ.get("SWANLAB_API_KEY"):
         raise SystemExit("--logger swanlab requires SWANLAB_API_KEY")
@@ -180,6 +207,7 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
             "SHOPPING_AGENT_LOOP_CONFIG": str(DEFAULT_AGENT_CONFIG),
             "SHOPPING_TOOL_CONFIG": str(DEFAULT_TOOL_CONFIG),
             "GRPO_CONFIG_NAME": config.stem,
+            "GRPO_RESUME_FROM_CHECKPOINT": str(resume_checkpoint or ""),
         }
     )
     if args.logger == "swanlab":
@@ -210,6 +238,32 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _model_artifact_paths(model: Path) -> list[Path]:
+    """Return every file needed to identify the exact merged model weights."""
+    index = model / "model.safetensors.index.json"
+    if not index.is_file():
+        index = model / "pytorch_model.bin.index.json"
+    if index.is_file():
+        metadata = json.loads(index.read_text(encoding="utf-8"))
+        shard_names = sorted(set((metadata.get("weight_map") or {}).values()))
+        if not shard_names:
+            raise ValueError(f"model weight index has no shards: {index}")
+        paths = [index, *(model / name for name in shard_names)]
+    else:
+        paths = [
+            path
+            for name in ("model.safetensors", "pytorch_model.bin")
+            if (path := model / name).is_file()
+        ]
+    missing = [path for path in paths if not path.is_file()]
+    if not paths or missing:
+        raise ValueError(f"model artifact inventory is incomplete: {missing or model}")
+    merge_manifest = model / "merge_manifest.json"
+    if merge_manifest.is_file():
+        paths.append(merge_manifest)
+    return paths
+
+
 def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
     """Persist a secret-free, machine-verifiable GRPO launch contract."""
     git_commit = subprocess.check_output(
@@ -237,8 +291,9 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
     input_paths["data_manifest"] = Path(
         environment["SHOPPING_GRPO_DATA_MANIFEST"]
     )
+    model_artifacts = _model_artifact_paths(Path(environment["GRPO_MODEL_PATH"]))
     contract = {
-        "schema_version": "shopping-grpo-run-contract-v1",
+        "schema_version": "shopping-grpo-run-contract-v2",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "git": {
             "commit": git_commit,
@@ -262,7 +317,22 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
             for name, path in input_paths.items()
         },
     }
-    destination = Path(environment["GRPO_OUTPUT_DIR"]) / "run_contract.json"
+    contract["inputs"]["model_artifacts"] = [
+        {
+            "path": str(path.resolve()),
+            "sha256": _sha256_file(path),
+        }
+        for path in model_artifacts
+    ]
+    resume_checkpoint = environment.get("GRPO_RESUME_FROM_CHECKPOINT")
+    filename = (
+        f"run_contract.resume-{Path(resume_checkpoint).name}.json"
+        if resume_checkpoint
+        else "run_contract.json"
+    )
+    destination = Path(environment["GRPO_OUTPUT_DIR"]) / filename
+    if destination.exists():
+        raise FileExistsError(f"refusing to overwrite run contract: {destination}")
     destination.write_text(
         json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -286,6 +356,7 @@ def main() -> None:
         "shopper_model": environment["SHOPPER_MODEL"],
         "shopper_base_url": environment["SHOPPER_BASE_URL"],
         "config": str(args.config.resolve()),
+        "resume_from_checkpoint": environment["GRPO_RESUME_FROM_CHECKPOINT"] or None,
     }
     audit["data_manifest"] = environment["SHOPPING_GRPO_DATA_MANIFEST"]
     print(json.dumps(audit, ensure_ascii=False, indent=2))

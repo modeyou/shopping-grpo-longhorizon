@@ -120,6 +120,7 @@ class PublicEntrypointTest(unittest.TestCase):
             model = temporary / "model"
             model.mkdir()
             (model / "config.json").write_text("{}", encoding="utf-8")
+            (model / "model.safetensors").write_bytes(b"weights")
             files = {}
             for name in (
                 "train.parquet",
@@ -173,6 +174,8 @@ class PublicEntrypointTest(unittest.TestCase):
         )
         self.assertIn("sha256", contract["inputs"]["train_data"])
         self.assertIn("sha256", contract["inputs"]["data_manifest"])
+        self.assertEqual(len(contract["inputs"]["model_artifacts"]), 1)
+        self.assertIn("sha256", contract["inputs"]["model_artifacts"][0])
         self.assertNotIn("must-not-be-written", json.dumps(contract))
 
     def test_grpo_preflight_only_never_launches_training(self):
@@ -231,6 +234,58 @@ class PublicEntrypointTest(unittest.TestCase):
         self.assertIn("trainer.logger=[console]", preflight)
         self.assertIn("trainer.experiment_name=shopping-agent-grpo", preflight)
         self.assertIn("trainer.total_training_steps=1", preflight)
+
+    def test_grpo_resume_is_explicit_and_confined_to_output(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            model = temporary / "model"
+            model.mkdir()
+            (model / "config.json").write_text("{}", encoding="utf-8")
+            (model / "model.safetensors").write_bytes(b"weights")
+            train = temporary / "train.parquet"
+            train.write_bytes(b"train")
+            validation = temporary / "validation.parquet"
+            validation.write_bytes(b"validation")
+            manifest = temporary / "manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            output = temporary / "output"
+            checkpoint = output / "global_step_50"
+            checkpoint.mkdir(parents=True)
+            (output / "run_contract.json").write_text("{}", encoding="utf-8")
+            argv = [
+                "train_grpo.py",
+                "--model",
+                str(model),
+                "--train-data",
+                str(train),
+                "--val-data",
+                str(validation),
+                "--data-manifest",
+                str(manifest),
+                "--output",
+                str(output),
+                "--resume-from-checkpoint",
+                str(checkpoint),
+                "--dry-run",
+            ]
+            with patch.object(sys, "argv", argv):
+                args = parse_args()
+            with patch(
+                "scripts.train_grpo.validate_grpo_data_manifest",
+                return_value={},
+            ):
+                command, environment = build_command(args)
+
+        self.assertIn("trainer.resume_mode=resume_path", command)
+        self.assertIn(
+            f"trainer.resume_from_path={checkpoint.resolve()}",
+            command,
+        )
+        self.assertEqual(
+            environment["GRPO_RESUME_FROM_CHECKPOINT"],
+            str(checkpoint.resolve()),
+        )
 
 
 if __name__ == "__main__":

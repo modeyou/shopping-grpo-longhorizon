@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import py_compile
 import sys
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
@@ -193,7 +195,34 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
     ray_trainer = verl_source.parent / "trainer" / "ppo" / "ray_trainer.py"
     if not ray_trainer.is_file():
         raise SystemExit(f"cannot locate installed RayPPOTrainer source: {ray_trainer}")
-    if PATCH_MARKER not in ray_trainer.read_text(encoding="utf-8"):
+    try:
+        from scripts.apply_verl_dynamic_sampling_patch import EXPECTED_PATCHED_SHA256
+        from scripts.apply_verl_scheduler_horizon_patch import (
+            PATCH_MARKER as SCHEDULER_PATCH_MARKER,
+            verify_patched as verify_scheduler_patch,
+        )
+    except ImportError:  # Direct execution from the scripts directory.
+        from apply_verl_dynamic_sampling_patch import EXPECTED_PATCHED_SHA256
+        from apply_verl_scheduler_horizon_patch import (
+            PATCH_MARKER as SCHEDULER_PATCH_MARKER,
+            verify_patched as verify_scheduler_patch,
+        )
+
+    actual_patch_sha256 = hashlib.sha256(ray_trainer.read_bytes()).hexdigest()
+    ray_trainer_source = ray_trainer.read_text(encoding="utf-8")
+    scheduler_patch_enabled = SCHEDULER_PATCH_MARKER in ray_trainer_source
+    if scheduler_patch_enabled:
+        try:
+            verify_scheduler_patch(ray_trainer)
+        except (OSError, RuntimeError, py_compile.PyCompileError) as exc:
+            raise SystemExit(f"invalid scheduler-horizon patch: {exc}") from exc
+    elif actual_patch_sha256 != EXPECTED_PATCHED_SHA256:
+        raise SystemExit(
+            "shopping dynamic-sampling patch hash mismatch: "
+            f"expected {EXPECTED_PATCHED_SHA256}, got {actual_patch_sha256}; "
+            "run scripts/apply_verl_dynamic_sampling_patch.py first"
+        )
+    if PATCH_MARKER not in ray_trainer_source:
         raise SystemExit(
             "shopping dynamic sampling is enabled but the pinned veRL patch marker is missing; "
             "run scripts/apply_verl_dynamic_sampling_patch.py first"
@@ -259,6 +288,83 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
                 "reward_tolerance": reward_tolerance,
                 "ray_trainer": str(ray_trainer),
                 "marker": PATCH_MARKER,
+                "sha256": actual_patch_sha256,
+                "scheduler_horizon_patch": scheduler_patch_enabled,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def validate_scheduler_horizon(config, verl_source: Path):
+    """Bind a staged stopping point to one reproducible long-horizon schedule."""
+    scheduler = config.get("shopping_scheduler", {})
+    horizon = int(scheduler.get("total_training_steps", 0))
+    stage_end = int(config.trainer.total_training_steps)
+    optim = config.actor_rollout_ref.actor.optim
+    model = config.actor_rollout_ref.model
+    ray_trainer = verl_source.parent / "trainer" / "ppo" / "ray_trainer.py"
+    try:
+        from scripts.apply_verl_scheduler_horizon_patch import PATCH_MARKER as marker
+    except ImportError:  # Direct execution from the scripts directory.
+        from apply_verl_scheduler_horizon_patch import PATCH_MARKER as marker
+
+    if not ray_trainer.is_file() or marker not in ray_trainer.read_text(encoding="utf-8"):
+        raise SystemExit(
+            "formal GRPO scheduler horizon requires "
+            "scripts/apply_verl_scheduler_horizon_patch.py"
+        )
+
+    if horizon <= 0 or stage_end <= 0 or stage_end > horizon:
+        raise SystemExit(
+            "formal GRPO requires 0 < trainer.total_training_steps <= "
+            "shopping_scheduler.total_training_steps"
+        )
+    expected = {
+        "lr": 1.0e-6,
+        "lr_warmup_steps": 10,
+        "lr_warmup_steps_ratio": 0.0,
+        "lr_scheduler_type": "cosine",
+        "min_lr_ratio": 0.1,
+        "num_cycles": 0.5,
+    }
+    actual = {
+        "lr": float(optim.lr),
+        "lr_warmup_steps": int(optim.lr_warmup_steps),
+        "lr_warmup_steps_ratio": float(optim.lr_warmup_steps_ratio),
+        "lr_scheduler_type": str(optim.lr_scheduler_type),
+        "min_lr_ratio": float(optim.min_lr_ratio),
+        "num_cycles": float(optim.num_cycles),
+    }
+    for key, expected_value in expected.items():
+        actual_value = actual[key]
+        if isinstance(expected_value, float):
+            matches = math.isclose(actual_value, expected_value, rel_tol=0, abs_tol=1e-12)
+        else:
+            matches = actual_value == expected_value
+        if not matches:
+            raise SystemExit(
+                f"formal GRPO scheduler mismatch: {key} must be "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    if not bool(model.use_remove_padding):
+        raise SystemExit("formal GRPO requires model.use_remove_padding=true")
+    if not bool(model.use_liger) or bool(model.use_fused_kernels):
+        raise SystemExit(
+            "formal GRPO requires model.use_liger=true and use_fused_kernels=false"
+        )
+    if int(config.data.dataloader_num_workers) != 0:
+        raise SystemExit("formal GRPO requires data.dataloader_num_workers=0")
+    print(
+        "GRPO scheduler horizon preflight passed: "
+        + json.dumps(
+            {
+                **actual,
+                "stage_total_training_steps": stage_end,
+                "scheduler_total_training_steps": horizon,
+                "use_liger": True,
+                "use_remove_padding": True,
+                "dataloader_num_workers": 0,
             },
             sort_keys=True,
         )
@@ -454,7 +560,6 @@ def main():
     if missing:
         raise SystemExit("missing GRPO parquet file(s): " + ", ".join(missing))
     validate_training_memory_budget(config)
-
     if sys.version_info[:2] != (3, 12):
         raise SystemExit(f"incompatible Python: expected 3.12, got {sys.version.split()[0]}")
 
@@ -501,6 +606,7 @@ def main():
     if "swanlab" not in Tracking.supported_backend:
         raise SystemExit("veRL 0.8 SwanLab tracking backend is unavailable")
     validate_dynamic_sampling(config, verl_source, installed)
+    validate_scheduler_horizon(config, verl_source)
     validate_swanlab_tracking(config)
     install_torch_padding_fallback()
     print(

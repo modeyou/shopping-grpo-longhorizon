@@ -110,6 +110,8 @@ selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原
 | temperature / top-p | 0.7 / 0.9 |
 | train / validation batch | 2 / 2 |
 | 学习率 | 1e-6 |
+| warmup | 10 optimizer steps |
+| scheduler | cosine，500-step 固定 horizon，最低学习率 1e-7 |
 | data / PPO mini-batch seed | 20260823 / 20260823 |
 | LoRA rank / alpha | 16 / 32 |
 | 最大模型长度 | 24,576 |
@@ -117,6 +119,8 @@ selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原
 | entropy | 只记录，不直接加奖励 |
 | 动态采样最多生成批次 | 3 |
 | 连续跳过更新上限 | 10 |
+
+正式 A/B 把“本阶段停止位置”和“学习率调度总长度”分开：第一阶段都在 step 50 停止，但 optimizer scheduler 始终按 500 steps 计算。这样 step 50 是同一条长期训练曲线上的决策 checkpoint，而不是已经衰减到末端的短实验。veRL 0.8 原生会把两者绑定，因此正式运行必须先应用仓库的 scheduler-horizon 补丁；预检会验证补丁、10-step warmup、cosine、500-step horizon、Liger、SDPA、remove-padding 和零 DataLoader 子进程。
 
 动态采样只保留同一 prompt 内训练效用存在差异的组。全常数组可以跳过；真实基础设施或 Reward 不可验证轨迹会使对应组无效。模型失败不是基础设施失败：A 中为 0，B 中为 -0.75。
 
@@ -133,8 +137,8 @@ selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原
 - reward profile：none。
 - 模型自身未完成、非法动作上限和提前结束作为有效的 0 分失败样本参与组内比较。
 - 环境/API 失败和 Reward 不可验证轨迹仍排除。
-- 先做 1-step smoke，再运行到 step 10 和 step 50。
-- 保存 step 0、25、50；step 10 只做快速诊断，不要求永久保留模型。
+- A1 smoke 已完成一次 optimizer update；正式 A 从原始 checkpoint-325 独立运行到 step 50。
+- 保存 step 25 和 step 50；step 50 运行冻结 validation。
 
 ### B：bounded-v1
 
@@ -145,7 +149,7 @@ selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原
 - 第一次提问不罚；第二次及以后每次 0.02。
 - Shopper 拒绝每次 0.03，guard rejection 每次 0.005，重复动作每次 0.01。
 - 有效终局的行为成本总上限为 0.10，不能盖过 Reward v4 的商品决策信号。
-- 同样执行 1/10/50 step，并保存 step 0、25、50。
+- B1 smoke 已完成一次 optimizer update；正式 B 同样从原始 checkpoint-325 独立运行到 step 50，并保存 step 25/50。
 
 代码同时记录 native_terminal_utility 与实际 terminal_utility/total。前者用于回答“环境原生表现是否提升”，后者才是优化器和动态采样使用的训练信号。任何报告都必须同时展示两者，不能把 shaped reward 当作 Reward v4 原生结果。
 
@@ -153,7 +157,7 @@ selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原
 
 A/B 在 step 50 使用同一冻结开发子集配对比较。优先按总 strict、三条件最差项、原生平均效用和基础设施有效性选择；shaped reward 只能作为训练诊断，不能作为最终选择指标。
 
-胜者继续到 150–200 step，并在 100、150、200 做里程碑验证。只有当 200 附近仍稳定上升且 KL、熵、长度、无效组率没有恶化，才考虑延长到 300；当前不预先承诺 500 step。
+胜者从自己的 step-50 checkpoint 恢复 optimizer 与 scheduler 状态，继续到 150–200 step，并在 100、150、200 做里程碑验证。不能重新 warmup，也不能把 step 50 当作新的 scheduler step 0。只有当 200 附近仍稳定上升且 KL、熵、长度、无效组率没有恶化，才考虑延长到 300；500 只是固定调度 horizon，不等于预先承诺一定执行 500 次更新。
 
 ## Reward 边界
 
@@ -215,7 +219,75 @@ Rubric 不是另一个 reward。它把任务要求冻结成可核对维度；Jud
 
 正式比较要求 A/B 使用相同 task IDs、相同 opening、相同 data/PPO seed 和相同评测参数。异步 GPU rollout 不承诺 bitwise 完全确定，因此必须使用配对任务与重复审计判断差异。任何基础设施无效率异常的运行不能参与模型优劣结论。
 
-## 入口
+## 正式 A/B 入口
+
+先在项目 Python 环境中安装两个经过固定源校验的 veRL 补丁。第二个补丁可逆地恢复第一个补丁并校验其 SHA-256，因此未知或被手改的 veRL 文件会被拒绝：
+
+~~~bash
+"$GRPO_PYTHON" scripts/apply_verl_dynamic_sampling_patch.py
+"$GRPO_PYTHON" scripts/apply_verl_scheduler_horizon_patch.py
+"$GRPO_PYTHON" scripts/apply_verl_scheduler_horizon_patch.py --check
+~~~
+
+以下变量只存在于当前 shell/tmux，不写入仓库；API key 不会写入 run contract：
+
+~~~bash
+export PYTHONPATH=./src
+export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
+export GRPO_MODEL="$PWD/outputs/models/sft-checkpoint-sweep-dev200-v1/checkpoint-325"
+export SHOPPER_MODEL=deepseek-v4-flash-0731
+export SHOPPER_BASE_URL='你的 OpenAI-compatible endpoint'
+export SHOPPER_API_KEY='你的密钥'
+export SWANLAB_API_KEY='你的 SwanLab 密钥'
+~~~
+
+A/B 必须使用两个全新且不同的输出目录。先分别预检，不会加载模型或启动训练：
+
+~~~bash
+"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
+  --arm a \
+  --model "$GRPO_MODEL" \
+  --output outputs/models/grpo-a-native-v4-step50 \
+  --preflight-only
+
+"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
+  --arm b \
+  --model "$GRPO_MODEL" \
+  --output outputs/models/grpo-b-bounded-v1-step50 \
+  --preflight-only
+~~~
+
+确认预检输出同时包含 `scheduler_total_training_steps=500` 与 `stage_total_training_steps=50` 后，一次只启动一个 arm：
+
+~~~bash
+"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
+  --arm a \
+  --model "$GRPO_MODEL" \
+  --output outputs/models/grpo-a-native-v4-step50
+
+# A 完成并释放 Ray/GPU 后，才启动 B。
+"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
+  --arm b \
+  --model "$GRPO_MODEL" \
+  --output outputs/models/grpo-b-bounded-v1-step50
+~~~
+
+入口固定使用 4 张 GPU、formal-v2 数据、seed 20260823、SwanLab project `shopping-multiturn-agentic`、step 25/50 checkpoint、step 50 validation。A/B 唯一的训练语义差异是 `reward-profile=none` 与 `bounded-v1`；输出路径和 run name 只用于身份隔离。
+
+选出胜者后，使用同一 arm、同一输出目录和其中的 step-50 checkpoint 显式恢复，并把阶段终点改为 200；入口会拒绝跨输出目录 checkpoint，也不会覆盖初始 `run_contract.json`：
+
+~~~bash
+"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
+  --arm a \
+  --model "$GRPO_MODEL" \
+  --output outputs/models/grpo-a-native-v4-step50 \
+  --resume-from-checkpoint outputs/models/grpo-a-native-v4-step50/global_step_50 \
+  --stage-end 200
+~~~
+
+上例的 `--arm a` 只是格式示例；若 B 胜出，必须同时替换 arm、输出目录和 checkpoint。恢复启动会另写 `run_contract.resume-global_step_50.json`，并由 veRL 加载 model、optimizer、scheduler 和 dataloader 状态。
+
+## 通用调试入口
 
 先检查解析结果：
 
