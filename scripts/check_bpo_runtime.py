@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from importlib.metadata import PackageNotFoundError, version
@@ -51,12 +52,122 @@ def validate_bpo_config(config):
 
 
 def validate_entropy_patch(verl_source):
+    from scripts.apply_verl_bpo_patch import EXPECTED_PATCHED_SHA256
+
     target = verl_source.parent / "workers/rollout/vllm_rollout/vllm_async_server.py"
-    if not target.is_file() or PATCH_MARKER not in target.read_text(encoding="utf-8"):
+    if not target.is_file():
+        raise SystemExit(f"BPO exact-entropy patch target is missing: {target}")
+    actual_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    if actual_sha256 != EXPECTED_PATCHED_SHA256:
+        raise SystemExit(
+            "BPO exact-entropy patch hash mismatch: "
+            f"expected {EXPECTED_PATCHED_SHA256}, got {actual_sha256}; "
+            "run scripts/apply_verl_bpo_patch.py first"
+        )
+    if PATCH_MARKER not in target.read_text(encoding="utf-8"):
         raise SystemExit(
             "BPO exact-entropy patch is missing; run "
             "scripts/apply_verl_bpo_patch.py first"
         )
+    print(
+        "BPO exact-entropy patch preflight passed: "
+        + json.dumps(
+            {"path": str(target), "sha256": actual_sha256},
+            sort_keys=True,
+        )
+    )
+
+
+def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
+    """Exercise the real veRL dispatcher with a tiny CPU-only sibling group."""
+    import numpy as np
+    import torch
+    from tensordict import TensorDict
+    from verl import DataProto
+    from verl.experimental.agent_loop import agent_loop as agent_module
+    from verl.trainer.ppo import ray_trainer
+    from verl.trainer.ppo.utils import need_critic, need_reference_policy
+    from verl.utils.config import validate_config
+
+    from shopping_grpo.training.bpo.runtime import install_bpo_runtime
+
+    install_bpo_runtime()
+    use_critic = need_critic(config)
+    use_reference_policy = need_reference_policy(config)
+    if use_critic:
+        raise SystemExit("formal BPO unexpectedly enabled a critic")
+    if validate_official_config:
+        validate_config(
+            config=config,
+            use_reference_policy=use_reference_policy,
+            use_critic=use_critic,
+        )
+    expected_module = "shopping_grpo.training.bpo.runtime"
+    if agent_module.AgentLoopWorker.generate_sequences.__module__ != expected_module:
+        raise SystemExit("BPO AgentLoopWorker hook was not installed")
+    if ray_trainer.compute_advantage.__module__ != expected_module:
+        raise SystemExit("BPO advantage dispatcher hook was not installed")
+
+    rewards = torch.tensor(
+        [[0.0, 0.0, score, 0.0] for score in (1.0, 0.0, -1.0, 2.0)],
+        dtype=torch.float32,
+    )
+    response_mask = torch.tensor(
+        [[1.0, 0.0, 1.0, 1.0]] * 4,
+        dtype=torch.float32,
+    )
+    data = DataProto(
+        batch=TensorDict(
+            {
+                "token_level_rewards": rewards,
+                "response_mask": response_mask,
+            },
+            batch_size=[4],
+        ),
+        non_tensor_batch={
+            "bpo_group_id": np.asarray(["preflight"] * 4, dtype=object),
+            "bpo_sibling_index": np.asarray([0, 1, 2, 3]),
+            "bpo_branch_action": np.asarray([1] * 4),
+            "bpo_action_token_starts": np.asarray([[0, 2]] * 4, dtype=object),
+        },
+    )
+    try:
+        result = ray_trainer.compute_advantage(
+            data,
+            adv_estimator="bpo",
+            config=config.algorithm,
+        )
+    except Exception as exc:
+        raise SystemExit(
+            "BPO veRL dispatcher CPU preflight failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    advantages = result.batch.get("advantages")
+    returns = result.batch.get("returns")
+    if advantages is None or returns is None:
+        raise SystemExit("BPO veRL dispatcher did not produce advantages and returns")
+    if tuple(advantages.shape) != (4, 4) or tuple(returns.shape) != (4, 4):
+        raise SystemExit("BPO veRL dispatcher produced invalid tensor shapes")
+    if not torch.isfinite(advantages).all() or not torch.isfinite(returns).all():
+        raise SystemExit("BPO veRL dispatcher produced NaN or Inf")
+    if not torch.equal(advantages, returns):
+        raise SystemExit("BPO veRL dispatcher returns do not match BPO advantages")
+    print(
+        "BPO veRL dispatcher CPU preflight passed: "
+        + json.dumps(
+            {
+                "advantage_shape": list(advantages.shape),
+                "agent_hook": agent_module.AgentLoopWorker.generate_sequences.__module__,
+                "advantage_hook": ray_trainer.compute_advantage.__module__,
+                "finite": True,
+                "official_config_validation": bool(validate_official_config),
+                "use_critic": use_critic,
+                "use_reference_policy": use_reference_policy,
+                "sibling_count": 4,
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def validate_swanlab(config):
@@ -92,7 +203,6 @@ def main():
     import torch
     import verl
     from shopping_grpo.training.bpo.agent_loop import ShoppingBPOAgentLoop
-    from shopping_grpo.training.bpo.runtime import install_bpo_runtime
 
     if not torch.cuda.is_available() or torch.cuda.device_count() < 4:
         raise SystemExit("formal BPO requires four visible CUDA devices")
@@ -101,7 +211,7 @@ def main():
     validate_entropy_patch(verl_source)
     common.validate_dynamic_sampling(config, verl_source, installed)
     validate_swanlab(config)
-    install_bpo_runtime()
+    validate_bpo_runtime_hooks(config)
     print(
         "BPO runtime preflight passed: "
         + json.dumps(

@@ -15,6 +15,7 @@ from shopping_grpo.training.bpo.entropy_patch import PATCH_MARKER, patch_source
 
 EXPECTED_VERL_VERSION = "0.8.0"
 EXPECTED_ORIGINAL_SHA256 = "c7aafaa923edb7ab19c6a3d147643013be687df76d79ef38e855958d8382c68c"
+EXPECTED_PATCHED_SHA256 = "f99cd883946cdae4ade97871ef8b44c063529f21232f446d22e0e2b9ad701570"
 BACKUP_SUFFIX = ".shopping-bpo-entropy.orig"
 
 
@@ -37,6 +38,12 @@ def resolve_target():
 
 
 def verify(target):
+    actual = sha256(target)
+    if actual != EXPECTED_PATCHED_SHA256:
+        raise RuntimeError(
+            "patched vllm_async_server.py hash mismatch: "
+            f"expected {EXPECTED_PATCHED_SHA256}, got {actual}"
+        )
     source = target.read_text(encoding="utf-8")
     if PATCH_MARKER not in source:
         raise RuntimeError(f"BPO patch marker is missing: {PATCH_MARKER}")
@@ -48,24 +55,33 @@ def verify(target):
 def apply(target):
     target = Path(target).resolve()
     source = target.read_text(encoding="utf-8")
-    if PATCH_MARKER in source:
-        verify(target)
-        print(f"veRL BPO entropy patch already applied: {target}")
-        return
+    backup = Path(str(target) + BACKUP_SUFFIX)
+    has_marker = PATCH_MARKER in source
+    if has_marker:
+        if sha256(target) == EXPECTED_PATCHED_SHA256:
+            verify(target)
+            print(f"veRL BPO entropy patch already applied: {target}")
+            return
+        if not backup.is_file() or sha256(backup) != EXPECTED_ORIGINAL_SHA256:
+            raise RuntimeError(
+                "cannot upgrade an unknown BPO entropy patch without its "
+                f"verified original backup: {backup}"
+            )
+        source = backup.read_text(encoding="utf-8")
+        print(f"upgrading BPO entropy patch from verified backup: {target}")
     actual = sha256(target)
-    if actual != EXPECTED_ORIGINAL_SHA256:
+    if not has_marker and actual != EXPECTED_ORIGINAL_SHA256:
         raise RuntimeError(
             "refusing to patch unknown vllm_async_server.py: "
             f"expected {EXPECTED_ORIGINAL_SHA256}, got {actual}"
         )
-    backup = Path(str(target) + BACKUP_SUFFIX)
     if backup.exists() and sha256(backup) != EXPECTED_ORIGINAL_SHA256:
         raise RuntimeError(f"invalid BPO patch backup: {backup}")
     if not backup.exists():
         shutil.copy2(target, backup)
     patched = patch_source(source)
     temporary = target.with_name(target.name + ".shopping-bpo.tmp")
-    temporary.write_text(patched, encoding="utf-8")
+    temporary.write_text(patched, encoding="utf-8", newline="\n")
     try:
         py_compile.compile(str(temporary), doraise=True)
         temporary.replace(target)

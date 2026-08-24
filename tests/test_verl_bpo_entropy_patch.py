@@ -1,3 +1,6 @@
+import pytest
+
+from scripts.apply_verl_bpo_patch import EXPECTED_PATCHED_SHA256, verify
 from shopping_grpo.training.bpo.entropy_patch import PATCH_MARKER, patch_source
 
 
@@ -31,3 +34,13 @@ def test_exact_entropy_patch_rejects_unknown_source():
         assert "anchors mismatch" in str(exc)
     else:
         raise AssertionError("unknown veRL source must be rejected")
+
+
+def test_entropy_patch_verifier_rejects_marker_only_source(tmp_path):
+    target = tmp_path / "vllm_async_server.py"
+    target.write_text(f"# {PATCH_MARKER}\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        verify(target)
+    assert EXPECTED_PATCHED_SHA256 == (
+        "f99cd883946cdae4ade97871ef8b44c063529f21232f446d22e0e2b9ad701570"
+    )

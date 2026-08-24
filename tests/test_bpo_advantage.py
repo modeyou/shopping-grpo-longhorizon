@@ -1,6 +1,8 @@
 import pytest
 import torch
+from omegaconf import OmegaConf
 
+from scripts.check_bpo_runtime import validate_bpo_runtime_hooks
 from shopping_grpo.training.bpo.advantage import compute_bpo_advantage
 
 
@@ -43,3 +45,20 @@ def test_bpo_rejects_incomplete_sibling_group():
             metadata=metadata,
             sibling_count=4,
         )
+
+
+def test_real_verl_dispatcher_accepts_bpo_on_cpu():
+    config = OmegaConf.create(
+        {
+            "critic": {"enable": False},
+            "algorithm": {
+                "use_kl_in_reward": False,
+                "bpo": {
+                    "sibling_count": 4,
+                    "upstream_lambda": 0.95,
+                }
+            },
+            "actor_rollout_ref": {"actor": {"use_kl_loss": False}},
+        }
+    )
+    validate_bpo_runtime_hooks(config, validate_official_config=False)

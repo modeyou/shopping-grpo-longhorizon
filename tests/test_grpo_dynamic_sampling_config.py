@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.check_grpo_runtime import (
     PATCH_MARKER,
@@ -75,7 +77,7 @@ class DynamicSamplingConfigTest(unittest.TestCase):
         self.assertTrue(config.algorithm.rollout_correction.bypass_mode)
         self.assertTrue(config.actor_rollout_ref.rollout.calculate_log_probs)
 
-    def test_enabled_config_requires_installed_patch_marker(self):
+    def test_enabled_config_requires_exact_installed_patch(self):
         config = compose_runtime_config(["shopping_dynamic_sampling.enable=true"])
         with tempfile.TemporaryDirectory() as temp_dir:
             verl_source = Path(temp_dir) / "verl" / "__init__.py"
@@ -83,11 +85,18 @@ class DynamicSamplingConfigTest(unittest.TestCase):
             trainer_source.parent.mkdir(parents=True)
             verl_source.write_text("", encoding="utf-8")
             trainer_source.write_text("# unpatched\n", encoding="utf-8")
-            with self.assertRaisesRegex(SystemExit, "patch marker is missing"):
+            with self.assertRaisesRegex(SystemExit, "patch hash mismatch"):
                 validate_dynamic_sampling(config, verl_source, {"verl": "0.8.0"})
 
             trainer_source.write_text(f"# {PATCH_MARKER}\n", encoding="utf-8")
-            validate_dynamic_sampling(config, verl_source, {"verl": "0.8.0"})
+            marker_only_hash = hashlib.sha256(trainer_source.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(SystemExit, "patch hash mismatch"):
+                validate_dynamic_sampling(config, verl_source, {"verl": "0.8.0"})
+            with mock.patch(
+                "scripts.apply_verl_dynamic_sampling_patch.EXPECTED_PATCHED_SHA256",
+                marker_only_hash,
+            ):
+                validate_dynamic_sampling(config, verl_source, {"verl": "0.8.0"})
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -199,6 +199,15 @@ export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
 "$GRPO_PYTHON" scripts/apply_verl_bpo_patch.py
 ```
 
+预检不再只判断补丁 marker。动态采样补丁必须精确匹配冻结的
+`ray_trainer.py` SHA256；精确熵补丁必须精确匹配冻结的
+`vllm_async_server.py` SHA256
+`f99cd883946cdae4ade97871ef8b44c063529f21232f446d22e0e2b9ad701570`。
+此外，预检会在加载模型权重前，用真实 veRL `DataProto` 在 CPU 上执行一次
+K=4 BPO advantage 分发，确认 `AgentLoopWorker` 与 `compute_advantage` 两个
+运行时 hook 已生效，并验证 advantage/return 的形状与有限性。这样 estimator
+guard、错误补丁版本和 hook 未安装会在占用四张 GPU 之前直接失败。
+
 BPO 补丁只修改固定 `verl==0.8.0` 的 `vllm_async_server.py`。脚本校验官方源码
 SHA256、创建备份、执行幂等检查，并拒绝未知版本。
 

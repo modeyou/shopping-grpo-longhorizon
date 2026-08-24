@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -194,6 +195,15 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
     ray_trainer = verl_source.parent / "trainer" / "ppo" / "ray_trainer.py"
     if not ray_trainer.is_file():
         raise SystemExit(f"cannot locate installed RayPPOTrainer source: {ray_trainer}")
+    from scripts.apply_verl_dynamic_sampling_patch import EXPECTED_PATCHED_SHA256
+
+    actual_patch_sha256 = hashlib.sha256(ray_trainer.read_bytes()).hexdigest()
+    if actual_patch_sha256 != EXPECTED_PATCHED_SHA256:
+        raise SystemExit(
+            "shopping dynamic-sampling patch hash mismatch: "
+            f"expected {EXPECTED_PATCHED_SHA256}, got {actual_patch_sha256}; "
+            "run scripts/apply_verl_dynamic_sampling_patch.py first"
+        )
     if PATCH_MARKER not in ray_trainer.read_text(encoding="utf-8"):
         raise SystemExit(
             "shopping dynamic sampling is enabled but the pinned veRL patch marker is missing; "
@@ -260,6 +270,7 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
                 "reward_tolerance": reward_tolerance,
                 "ray_trainer": str(ray_trainer),
                 "marker": PATCH_MARKER,
+                "sha256": actual_patch_sha256,
             },
             sort_keys=True,
         )
