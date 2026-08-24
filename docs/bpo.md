@@ -60,6 +60,77 @@ A_i = R_i - mean(R_j, j != i)
 Reinforcement Learning*：<https://arxiv.org/abs/2607.14171>。项目进一步冻结了
 单边界、K=4 和服务端快照契约，以适配四张 24GB GPU 与 ShopSimulator。
 
+### 2.1 Backbone 从哪里来
+
+Backbone 不是离线人工构造的教师轨迹，也不是固定的数据文件。每次训练时，当前
+actor 从 Parquet 中的一条 prompt 出发，在当时的策略参数、ShopSimulator 状态和
+Shopper 响应下在线生成一条完整轨迹。它既用于提供一条 sibling continuation，也用于
+发现本题最值得探索的分叉位置。因此 actor 更新以后，即使再次抽到同一任务，backbone
+及其分叉点也可能改变。
+
+训练数据的单位仍是 prompt/task-condition；BPO 优化与比较的单位则是由该 prompt
+在线产生的一个 K=4 sibling group，而不是把 4 条轨迹视为互不相关的样本。
+
+### 2.2 分叉点怎样确定
+
+候选点是每次 assistant 即将生成下一次 action 的边界，例如获得搜索结果、商品详情、
+Shopper 回答或其他工具 observation 之后。实现不会预先指定“必须在询问之后”或“必须在
+某种工具之后”分叉，而是在 backbone 的所有有效 action 边界上测量第一个语义决策 token
+的精确全词表熵，选择熵最大的边界；并过滤固定协议 token、空 action 和不可恢复状态。
+
+不同 backbone 独立选择，所以不同 prompt、不同训练时刻乃至同一任务的不同在线 rollout
+都可能落在不同位置。在同一个 sibling group 内，4 条 continuation 必须共享完全相同的
+快照、Shopper history 和 token 前缀，只从选中的边界开始重新采样。
+
+K=4 不是四种预定义行为类别。它是一次 backbone continuation 加三次独立随机 continuation；
+它们可能表现为不同的提问、搜索、点击或购买路径，也可能偶然重复。我们比较的是同一起点
+下实际采样出的四个终局回报。
+
+### 2.3 Backbone 的过滤与异常处理
+
+正式数据首先受 manifest、Reward v4 可达性、train/validation/final 零重叠约束。运行时还受
+4096 prompt、20480 response、35 个购物步骤、最多 2 次 Shopper 提问以及 tool schema、guard、
+session 隔离约束。正常的错误动作、无购买、错误购买和终止失败属于策略结果，应保留为训练
+信号；HTTP/API 故障、状态恢复不一致、快照泄漏、非 Reward v4 和其他基础设施无效组不得当作
+负奖励进入优化。
+
+若一个 group 的四个 return 没有可辨别差异，组内相对 advantage 为零。动态采样可以继续抽取
+新 group，但最多尝试 3 个生成 batch，并在连续 10 次无法形成有效更新时停止，避免无界重试。
+
+### 2.4 BPO、GRPO、critic 与 PPO 的关系
+
+当前两条路线都没有训练 critic/value model，也都不是用绝对 return 直接更新 actor。二者都在
+组内构造相对 advantage，并使用相同类型的 PPO clipped policy loss 稳定 LoRA actor 更新：
+
+| 项目 | GRPO | 当前 BPO |
+|---|---|---|
+| critic/value model | 无 | 无 |
+| 比较组 | 同一原始 prompt 的 K 条完整轨迹 | 同一分叉快照的 K 条 continuation |
+| baseline | 组内相对基线 | sibling leave-one-out 均值 |
+| 主要归因范围 | 整条轨迹 | 分叉 action 及分叉后的差异行为 |
+| actor loss 外壳 | PPO clip | PPO clip |
+
+所以 BPO 的主要创新在 rollout 拓扑与信用分配，不是另换一个带 critic 的优化器。配置中的
+`upstream_lambda=0.95` 会给分叉前 action 写入衰减权重；但同组共享前缀完全相同，LOO advantage
+之和为零时，这部分梯度在理想条件下会大幅抵消。第一版应把它理解为保留的上游信用接口，
+实际主要学习信号仍来自分叉 action 和分叉后的不同 continuation，不能夸大前缀传播效果。
+
+### 2.5 K=4、显存和速度预期
+
+K 增大不仅增加采样，还增加完整序列的 log-prob、reference forward 和 actor backward，显存与
+训练计算都会上升。因此四张 24GB 4090 的正式第一版固定 K=4，与 GRPO 使用同一 return budget，
+保证比较公平并控制 OOM 风险；不是因为 BPO 理论上只能使用 4 条。
+
+若平均分叉发生在轨迹比例 `f` 处，纯环境生成长度可粗略写为
+`L + 3(1-f)L = (4-3f)L`，小于 GRPO 的约 `4L`。不过 BPO 还要付出逐 action 单 token 全词表熵
+探针、服务端深拷贝/恢复和先完成 backbone 再生成 clones 的串行依赖；训练阶段又仍需处理四条
+重建后的完整序列。因此它可能减少重复的前缀环境交互和 Shopper API 调用，但不保证 wall-clock
+一定更快。正式目标是提高关键决策附近的样本效率，并在相同 K=4 预算下提升完整购买成功率。
+
+只有 10 个 optimizer updates 的首轮属于“可运行性 + 方向性”实验，足以淘汰错误实现、观察
+分叉分布和判断相对 GRPO 是否有信号，但不足以单独证明算法稳定优越。是否扩展训练应由冻结
+dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
+
 ## 3. 快照与状态隔离
 
 快照只保存在 ShopSimulator 服务端，训练进程只接收随机 `snapshot_id`。快照覆盖：
@@ -150,11 +221,39 @@ bash scripts/bpo.sh \
 
 smoke 只验证完整链路，不作为实验结果，也不保留 checkpoint：
 
+先冻结本次名称和空输出目录，并只做不加载训练权重的预检：
+
 ```bash
+cd ~/shopping-grpo
+export PYTHONPATH=./src
+export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+
+export BPO_MODEL="$PWD/outputs/models/sft-checkpoint-sweep-dev200-v1/checkpoint-325"
+export BPO_SMOKE_NAME="bpo-native-v4-smoke1-$(date +%Y%m%d-%H%M%S)"
+export BPO_SMOKE_OUT="$PWD/outputs/models/$BPO_SMOKE_NAME"
+export BPO_SMOKE_LOG="$PWD/outputs/bpo/logs/$BPO_SMOKE_NAME.log"
+export BPO_SMOKE_PID_FILE="$PWD/outputs/bpo/logs/$BPO_SMOKE_NAME.pid"
+
+mkdir -p "$BPO_SMOKE_OUT" "$(dirname "$BPO_SMOKE_LOG")"
+
 bash scripts/bpo.sh \
   --model "$BPO_MODEL" \
   --output "$BPO_SMOKE_OUT" \
-  --experiment-name bpo-native-v4-smoke1 \
+  --experiment-name "$BPO_SMOKE_NAME" \
+  --logger console \
+  --shopper-model "$SHOPPER_MODEL" \
+  --shopper-base-url "$SHOPPER_BASE_URL" \
+  --preflight-only
+```
+
+预检通过后，用相同变量启动真正的 1-step smoke：
+
+```bash
+nohup bash scripts/bpo.sh \
+  --model "$BPO_MODEL" \
+  --output "$BPO_SMOKE_OUT" \
+  --experiment-name "$BPO_SMOKE_NAME" \
   --logger console \
   --shopper-model "$SHOPPER_MODEL" \
   --shopper-base-url "$SHOPPER_BASE_URL" \
@@ -162,7 +261,27 @@ bash scripts/bpo.sh \
   trainer.total_training_steps=1 \
   trainer.val_before_train=false \
   trainer.save_freq=-1 \
-  trainer.test_freq=-1
+  trainer.test_freq=-1 \
+  > "$BPO_SMOKE_LOG" 2>&1 < /dev/null &
+
+BPO_SMOKE_PID=$!
+printf '%s\n' "$BPO_SMOKE_PID" > "$BPO_SMOKE_PID_FILE"
+echo "BPO_SMOKE_PID=$BPO_SMOKE_PID"
+tail -F "$BPO_SMOKE_LOG"
+```
+
+另开终端实时查看：
+
+```bash
+watch -n 5 '
+date
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu \
+  --format=csv,noheader
+echo "--- BPO process ---"
+ps -eo pid,ppid,etime,cmd | grep -E "train_bpo.py|shopping_grpo.training.bpo|verl.trainer.main_ppo" | grep -v grep || true
+echo "--- latest diagnostics ---"
+tail -n 5 '"$BPO_SMOKE_OUT"'/training_diagnostics.jsonl 2>/dev/null || true
+'
 ```
 
 smoke 必须确认：
