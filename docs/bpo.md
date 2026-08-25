@@ -286,6 +286,11 @@ bash scripts/bpo.sh \
 
 smoke 只验证完整链路，不作为实验结果，也不保留 checkpoint：
 
+BPO 启动器必须独占并自行创建本地 Ray runtime。若此前为诊断手动执行过 `ray start`，先用
+对应 Ray 可执行文件执行 `ray stop --force`，确认无 BPO/GRPO Ray 任务后再
+`unset RAY_ADDRESS`；不得把正式训练连接到启动时缺少 BPO 环境变量的外部 Ray head。
+启动器会拒绝非空 `RAY_ADDRESS`，避免远端 `TaskRunner` 到运行阶段才出现环境插值错误。
+
 先冻结本次名称和空输出目录，并只做不加载训练权重的预检：
 
 ```bash

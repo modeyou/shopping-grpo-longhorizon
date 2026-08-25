@@ -1,5 +1,8 @@
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from scripts import train_bpo
 
@@ -37,8 +40,14 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
     assert environment["SHOPPING_REWARD_SHAPING_PROFILE"] == "none"
     assert environment["SHOP_REWARD_VERSION"] == "shopsimulator-reward-v4"
     assert environment["GRPO_CONFIG_NAME"] == "bpo"
-    assert environment["SHOPPING_ENV_MANIFEST"].endswith(
-        "data/environment-bpo-v1.json"
+    assert Path(environment["SHOPPING_ENV_MANIFEST"]).resolve() == (
+        train_bpo.BPO_RUNTIME_MANIFEST.resolve()
     )
     assert audit["algorithm"] == "full-bpo-v1"
     assert audit["reward_profile"] == "none"
+
+
+def test_bpo_launcher_rejects_an_external_ray_address(monkeypatch):
+    monkeypatch.setenv("RAY_ADDRESS", "127.0.0.1:26379")
+    with pytest.raises(SystemExit, match="launcher-owned local Ray runtime"):
+        train_bpo.validate_launcher_owned_ray()

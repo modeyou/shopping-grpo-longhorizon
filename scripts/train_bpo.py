@@ -80,7 +80,19 @@ def _overrides(args):
     ]
 
 
+def validate_launcher_owned_ray(environ=None):
+    """Reject attachment to a Ray head that lacks the formal BPO job environment."""
+    environment = os.environ if environ is None else environ
+    address = str(environment.get("RAY_ADDRESS", "")).strip()
+    if address:
+        raise SystemExit(
+            "formal BPO requires a launcher-owned local Ray runtime; stop the "
+            "manually started Ray head and unset RAY_ADDRESS"
+        )
+
+
 def build(args):
+    validate_launcher_owned_ray()
     model = Path(args.model).expanduser().resolve()
     if not model.is_dir() or not (model / "config.json").is_file() or not _weights_exist(model):
         raise SystemExit(f"BPO model directory is incomplete: {model}")
