@@ -427,6 +427,8 @@ loss、学习率、显存和时间指标外，必须同时保留：
 正式预检会在加载 FSDP/vLLM 权重前，分别执行一次 SwanLab API Key 真鉴权和一次最小
 Shopper `chat/completions` 请求。仅设置非空环境变量不算通过；任一服务返回 401/403、
 连接失败或无有效响应时立即终止，避免经过模型初始化后才发现外部服务不可用。
+预检还会构造一条最小 GRPO/BPO 公共 trajectory state 并真实调用 finalize hook，确认
+trajectory-local Shopper 计数等诊断字段能够在进入训练树生成前完成绑定与导出。
 
 - `bpo_budget/effective_trees_total` 与 `bpo_budget/effective_returns_total`；
 - `bpo_batch/trees=2`、`bpo_batch/sibling_returns=8` 与完整满批断言；

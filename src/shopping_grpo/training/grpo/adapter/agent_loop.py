@@ -18,6 +18,7 @@ from shopping_grpo.environment.projection import (
 from shopping_grpo.training.grpo.adapter.runtime import (
     apply_bounded_reward_shaping,
     apply_reward_length_shaping,
+    current_shopper,
     current_runtime_state,
     record_observation_projection,
     reward_breakdown,

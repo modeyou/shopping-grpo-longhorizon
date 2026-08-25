@@ -495,6 +495,51 @@ def validate_shopper_api():
         raise SystemExit(f"BPO Shopper API authentication failed: {exc}") from exc
 
 
+def validate_finalize_hook():
+    from shopping_grpo.training.grpo.adapter.agent_loop import (
+        ShoppingToolAgentLoop,
+    )
+    from shopping_grpo.training.grpo.adapter.runtime import (
+        current_shopper,
+        make_runtime_state,
+    )
+
+    loop = ShoppingToolAgentLoop.__new__(ShoppingToolAgentLoop)
+    loop.reward_mode = "native"
+    loop.reward_shaping_profile = "none"
+    loop.reward_length_shaping_enable = False
+    loop.reward_length_soft_threshold = 20
+    loop.reward_length_penalty_per_step = 0.01
+    loop.reward_length_max_penalty = 0.15
+    output = SimpleNamespace(reward_score=None, extra_fields={})
+    state = make_runtime_state(task_id=3, max_steps=35, interaction_mode="gap")
+    shopper_token = current_shopper.set(SimpleNamespace(call_count=2))
+    try:
+        finalized = loop._finalize_shopping_output(output, state, task_id=3)
+    except Exception as exc:
+        raise SystemExit(
+            "BPO GRPO-finalize hook preflight failed "
+            f"({type(exc).__name__}): {exc}"
+        ) from exc
+    finally:
+        current_shopper.reset(shopper_token)
+    shopping = finalized.extra_fields.get("shopping") or {}
+    if shopping.get("shopper_llm_calls") != 2:
+        raise SystemExit(
+            "BPO GRPO-finalize hook did not preserve Shopper call diagnostics"
+        )
+    print(
+        "BPO GRPO-finalize hook preflight passed: "
+        + json.dumps(
+            {
+                "shopper_llm_calls": shopping["shopper_llm_calls"],
+                "task_id": shopping["task_id"],
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def validate_visible_gpu_headroom(torch, *, minimum_free_gib=20.0):
     device_count = int(torch.cuda.device_count())
     if device_count != 4:
@@ -561,6 +606,7 @@ def main():
     validate_entropy_patch(verl_source)
     validate_xml_tool_parser_patch(verl_source)
     common.validate_dynamic_sampling(config, verl_source, installed)
+    validate_finalize_hook()
     validate_bpo_runtime_hooks(config)
     print(
         "BPO runtime preflight passed: "

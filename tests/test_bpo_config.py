@@ -10,6 +10,7 @@ import yaml
 
 from scripts.check_bpo_runtime import (
     build_scheduler_probe_engine,
+    validate_finalize_hook,
     validate_visible_gpu_headroom,
 )
 from shopping_grpo.training.bpo.runtime import (
@@ -51,6 +52,14 @@ def test_scheduler_probe_matches_pinned_verl_receiver_contract():
     assert probe.rank == 0
     assert probe.optimizer_config is not optimizer_config
     assert probe.optimizer_config.total_training_steps == 200
+
+
+def test_grpo_finalize_hook_resolves_trajectory_local_shopper(capsys):
+    validate_finalize_hook()
+
+    output = capsys.readouterr().out
+    assert "BPO GRPO-finalize hook preflight passed" in output
+    assert '"shopper_llm_calls": 2' in output
 
 
 def test_scheduler_probe_executes_rank_dependent_upstream_contract(monkeypatch):
