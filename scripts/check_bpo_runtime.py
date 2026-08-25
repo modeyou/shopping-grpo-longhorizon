@@ -456,6 +456,43 @@ def validate_swanlab(config):
         raise SystemExit(
             "BPO SwanLab project must be shopping-multiturn-agentic"
         )
+    try:
+        import swanlab
+
+        authenticated = swanlab.login(os.environ["SWANLAB_API_KEY"])
+    except Exception as exc:
+        raise SystemExit(
+            "BPO SwanLab authentication failed "
+            f"({type(exc).__name__}); verify SWANLAB_API_KEY"
+        ) from exc
+    if authenticated is False:
+        raise SystemExit(
+            "BPO SwanLab authentication failed; verify SWANLAB_API_KEY"
+        )
+    print(
+        "BPO SwanLab authentication preflight passed: "
+        + json.dumps(
+            {
+                "mode": "online",
+                "project": str(config.trainer.project_name),
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def validate_shopper_api():
+    try:
+        from scripts.run_sft_checkpoint_sweep import validate_shopper_api as probe
+
+        probe(
+            base_url=os.environ["SHOPPER_BASE_URL"],
+            api_key=os.environ["SHOPPER_API_KEY"],
+            model=os.environ["SHOPPER_MODEL"],
+            timeout=30,
+        )
+    except (KeyError, RuntimeError) as exc:
+        raise SystemExit(f"BPO Shopper API authentication failed: {exc}") from exc
 
 
 def validate_visible_gpu_headroom(torch, *, minimum_free_gib=20.0):
@@ -492,6 +529,8 @@ def validate_visible_gpu_headroom(torch, *, minimum_free_gib=20.0):
 def main():
     config = common.compose_runtime_config(__import__("sys").argv[1:])
     common.validate_environment_contract()
+    validate_swanlab(config)
+    validate_shopper_api()
     validate_snapshot_fidelity()
     common.validate_reward_shaping_profile()
     common.validate_grpo_seeds(
@@ -522,7 +561,6 @@ def main():
     validate_entropy_patch(verl_source)
     validate_xml_tool_parser_patch(verl_source)
     common.validate_dynamic_sampling(config, verl_source, installed)
-    validate_swanlab(config)
     validate_bpo_runtime_hooks(config)
     print(
         "BPO runtime preflight passed: "

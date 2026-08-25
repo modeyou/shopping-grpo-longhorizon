@@ -424,6 +424,10 @@ SHA256、seed、分叉参数、数据环境清单、BPO 运行时清单和显存
 正式入口默认启用 SwanLab，project 固定为 `shopping-multiturn-agentic`。除 Reward、
 loss、学习率、显存和时间指标外，必须同时保留：
 
+正式预检会在加载 FSDP/vLLM 权重前，分别执行一次 SwanLab API Key 真鉴权和一次最小
+Shopper `chat/completions` 请求。仅设置非空环境变量不算通过；任一服务返回 401/403、
+连接失败或无有效响应时立即终止，避免经过模型初始化后才发现外部服务不可用。
+
 - `bpo_budget/effective_trees_total` 与 `bpo_budget/effective_returns_total`；
 - `bpo_batch/trees=2`、`bpo_batch/sibling_returns=8` 与完整满批断言；
 - `group/generated`、`group/trained`、单步/累计有效率和重采样批次数；
