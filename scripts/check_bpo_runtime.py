@@ -170,6 +170,17 @@ def validate_xml_tool_parser_patch(verl_source):
     )
 
 
+def build_scheduler_probe_engine(config):
+    """Build the complete minimal receiver used by veRL 0.8.0's scheduler."""
+    return SimpleNamespace(
+        # FSDPEngine._build_lr_scheduler logs its resolved horizon on rank 0.
+        # Keep the probe on that path so preflight exercises every branch of
+        # the pinned upstream method instead of bypassing rank-dependent code.
+        rank=0,
+        optimizer_config=deepcopy(config.actor_rollout_ref.actor.optim),
+    )
+
+
 def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     """Exercise the real veRL dispatcher with a tiny CPU-only sibling group."""
     import numpy as np
@@ -220,9 +231,7 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     # check alone cannot prove that a wrapper forwards the optimizer argument.
     probe_parameter = torch.nn.Parameter(torch.tensor([0.0]))
     probe_optimizer = torch.optim.AdamW([probe_parameter], lr=1.0e-6)
-    probe_engine = SimpleNamespace(
-        optimizer_config=deepcopy(config.actor_rollout_ref.actor.optim)
-    )
+    probe_engine = build_scheduler_probe_engine(config)
     try:
         probe_scheduler = FSDPEngine._build_lr_scheduler(
             probe_engine, probe_optimizer

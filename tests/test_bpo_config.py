@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from scripts.check_bpo_runtime import validate_visible_gpu_headroom
+from scripts.check_bpo_runtime import (
+    build_scheduler_probe_engine,
+    validate_visible_gpu_headroom,
+)
 from shopping_grpo.training.bpo.runtime import (
     _OPTIMIZER_AUDIT_MARKER,
     _SCHEDULER_CONTRACT_MARKER,
@@ -21,6 +24,83 @@ from shopping_grpo.training.bpo.runtime import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_scheduler_probe_matches_pinned_verl_receiver_contract():
+    optimizer_config = SimpleNamespace(total_training_steps=200)
+    config = SimpleNamespace(
+        actor_rollout_ref=SimpleNamespace(
+            actor=SimpleNamespace(optim=optimizer_config)
+        )
+    )
+
+    probe = build_scheduler_probe_engine(config)
+
+    assert probe.rank == 0
+    assert probe.optimizer_config is not optimizer_config
+    assert probe.optimizer_config.total_training_steps == 200
+
+
+def test_scheduler_probe_executes_rank_dependent_upstream_contract(monkeypatch):
+    calls = []
+
+    class _FSDPEngine:
+        def _build_lr_scheduler(self, optimizer):
+            optim = self.optimizer_config
+            calls.append(
+                {
+                    "rank": self.rank,
+                    "optimizer": optimizer,
+                    "total_training_steps": optim.total_training_steps,
+                    "lr_warmup_steps": optim.lr_warmup_steps,
+                    "lr_scheduler_type": optim.lr_scheduler_type,
+                    "min_lr_ratio": optim.min_lr_ratio,
+                    "num_cycles": optim.num_cycles,
+                    "zero_indexed_step": optim.zero_indexed_step,
+                }
+            )
+            return SimpleNamespace(step=lambda: None)
+
+    transformer = types.ModuleType("verl.workers.engine.fsdp.transformer_impl")
+    transformer.FSDPEngine = _FSDPEngine
+    monkeypatch.setitem(sys.modules, transformer.__name__, transformer)
+    monkeypatch.setenv("SHOPPING_BPO_SCHEDULER_HORIZON", "500")
+    monkeypatch.setenv("SHOPPING_BPO_WARMUP_STEPS", "10")
+    monkeypatch.setenv("SHOPPING_BPO_MIN_LR_RATIO", "0.1")
+
+    install_scheduler_contract()
+    config = SimpleNamespace(
+        actor_rollout_ref=SimpleNamespace(
+            actor=SimpleNamespace(
+                optim=SimpleNamespace(
+                    total_training_steps=200,
+                    lr_warmup_steps=10,
+                    lr_scheduler_type="cosine",
+                    min_lr_ratio=0.1,
+                    num_cycles=0.5,
+                    zero_indexed_step=True,
+                )
+            )
+        )
+    )
+    engine = build_scheduler_probe_engine(config)
+    optimizer = object()
+
+    scheduler = _FSDPEngine._build_lr_scheduler(engine, optimizer)
+
+    assert hasattr(scheduler, "step")
+    assert calls == [
+        {
+            "rank": 0,
+            "optimizer": optimizer,
+            "total_training_steps": 500,
+            "lr_warmup_steps": 10,
+            "lr_scheduler_type": "cosine",
+            "min_lr_ratio": 0.1,
+            "num_cycles": 0.5,
+            "zero_indexed_step": True,
+        }
+    ]
 
 
 def test_pinned_signature_guard_rejects_incompatible_hook():
