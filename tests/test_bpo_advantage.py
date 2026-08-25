@@ -124,6 +124,8 @@ def test_bpo_rollout_batch_audit_rejects_prefix_drift():
         "bpo_return_budget": [4] * 4,
         "bpo_env_idx": [0, 0, 1, 2],
         "bpo_branch_prefix_sha256": ["same"] * 4,
+        "bpo_backbone_action_count": [3] * 4,
+        "bpo_branch_relative_position": [0.5] * 4,
     }
     audits = audit_bpo_rollout_batch(
         torch.tensor([[1, 2]] * 4),
@@ -139,6 +141,29 @@ def test_bpo_rollout_batch_audit_rejects_prefix_drift():
             torch.tensor([[1, 2]] * 4),
             responses,
             mask,
+            metadata=metadata,
+            sibling_count=4,
+        )
+
+
+def test_bpo_rollout_batch_audit_rejects_final_action_branch():
+    metadata = {
+        "bpo_group_id": ["g"] * 4,
+        "bpo_sibling_index": [0, 1, 2, 3],
+        "bpo_branch_action": [1] * 4,
+        "bpo_action_token_starts": [[0, 2]] * 4,
+        "bpo_branch_entropy": [2.0] * 4,
+        "bpo_return_budget": [4] * 4,
+        "bpo_env_idx": [0, 0, 1, 2],
+        "bpo_branch_prefix_sha256": ["same"] * 4,
+        "bpo_backbone_action_count": [2] * 4,
+        "bpo_branch_relative_position": [1.0] * 4,
+    }
+    with pytest.raises(ValueError, match="precede the final action"):
+        audit_bpo_rollout_batch(
+            torch.tensor([[1, 2]] * 4),
+            torch.tensor([[10, 11, 20, 0]] * 4),
+            torch.tensor([[1, 1, 1, 0]] * 4),
             metadata=metadata,
             sibling_count=4,
         )

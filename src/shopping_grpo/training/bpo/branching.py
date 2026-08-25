@@ -62,6 +62,38 @@ def select_branch_candidate(candidates):
     return min(values, key=lambda item: (-float(item.entropy), int(item.action_index)))
 
 
+def retain_branch_candidates(candidates, *, limit=2):
+    """Keep the best candidates needed to exclude a later terminal action.
+
+    BPO branches before an action and the paper excludes the trajectory's final
+    action from the candidate set.  Until the backbone terminates, retaining the
+    two best entropy candidates is sufficient: if the best candidate becomes
+    the final action, the second-best candidate is the correct choice.
+    """
+    values = list(candidates)
+    if int(limit) < 1:
+        raise ValueError("BPO retained candidate limit must be positive")
+    if any(not math.isfinite(float(item.entropy)) for item in values):
+        raise ValueError("BPO branch entropy must be finite")
+    return sorted(
+        values,
+        key=lambda item: (-float(item.entropy), int(item.action_index)),
+    )[: int(limit)]
+
+
+def select_nonterminal_branch_candidate(candidates, *, action_count):
+    """Select the maximum-entropy boundary while excluding the final action."""
+    count = int(action_count)
+    if count < 2:
+        raise ValueError("BPO backbone needs at least two actions to branch")
+    eligible = [
+        item for item in candidates if int(item.action_index) < count - 1
+    ]
+    if not eligible:
+        raise ValueError("BPO backbone has no non-terminal branch boundary")
+    return select_branch_candidate(eligible)
+
+
 def validate_tree_outputs(outputs, *, sibling_count=4):
     """Fail before PPO if restored siblings do not share one exact prefix/state."""
     values = list(outputs)
@@ -79,6 +111,8 @@ def validate_tree_outputs(outputs, *, sibling_count=4):
         "bpo_branch_entropy",
         "bpo_return_budget",
         "bpo_branch_prefix_sha256",
+        "bpo_backbone_action_count",
+        "bpo_branch_relative_position",
     )
     for key in invariant_keys:
         if len({str(item.get(key)) for item in metadata}) != 1:
@@ -92,6 +126,9 @@ def validate_tree_outputs(outputs, *, sibling_count=4):
         raise ValueError("BPO clone siblings must use K-1 distinct leases")
 
     branch_action = int(metadata[0]["bpo_branch_action"])
+    backbone_action_count = int(metadata[0]["bpo_backbone_action_count"])
+    if backbone_action_count < 2 or branch_action >= backbone_action_count - 1:
+        raise ValueError("BPO branch boundary must precede the final action")
     prompts = [tuple(output.prompt_ids) for output in values]
     if len(set(prompts)) != 1:
         raise ValueError("BPO siblings do not share one original prompt")

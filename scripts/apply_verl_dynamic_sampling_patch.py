@@ -10,14 +10,15 @@ import py_compile
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 EXPECTED_VERL_VERSION = "0.8.0"
 EXPECTED_ORIGINAL_SHA256 = "de58d295cf86656a28196b0718168d4a11666f3e30957b7e166914496c2a6d66"
-EXPECTED_PATCHED_SHA256 = "a2132ecbce6ca55fcd3a61f615b925b4a0c7a2192c69cd3e4faf8046124b334b"
 SUPERSEDED_PATCHED_SHA256S = frozenset(
     {
+        "a2132ecbce6ca55fcd3a61f615b925b4a0c7a2192c69cd3e4faf8046124b334b",
         "9fc8bff440199e062236fc86f2a6f01eae4238e3cd8026f87e88d9c93fc4da82",
         "684b491e20ba9d41e91d5010186d4d08b01a01fc67f8a77d17c086b0381e00a3",
         "fc3564cc5680a9fa92ca7b0a9bc3ae87ccdc90c498ab1bfe34c6796d6c54fb5a",
@@ -85,10 +86,11 @@ def validate_runtime_and_target(target_override: Path | None) -> Path:
 
 def verify_patched(target: Path) -> None:
     target_hash = sha256(target)
-    if target_hash != EXPECTED_PATCHED_SHA256:
+    expected_hash = expected_patched_sha256(target)
+    if target_hash != expected_hash:
         raise RuntimeError(
             "patched ray_trainer.py hash mismatch: "
-            f"expected {EXPECTED_PATCHED_SHA256}, got {target_hash}"
+            f"expected {expected_hash}, got {target_hash}"
         )
     source = target.read_text(encoding="utf-8")
     if PATCH_MARKER not in source:
@@ -98,14 +100,18 @@ def verify_patched(target: Path) -> None:
     py_compile.compile(str(target), doraise=True)
 
 
-def add_bpo_compatibility(target: Path) -> None:
-    """Extend the pinned GRPO patch without weakening its source/hash checks."""
-    source = target.read_text(encoding="utf-8")
+def add_bpo_compatibility_source(source: str) -> str:
+    """Return the BPO-compatible form of the pinned dynamic-sampling source."""
     if source.count(BPO_COMPATIBILITY_OLD) != 1:
         raise RuntimeError(
             "the pinned dynamic-sampling patch has an unexpected estimator guard"
         )
-    upgraded = source.replace(BPO_COMPATIBILITY_OLD, BPO_COMPATIBILITY_NEW, 1)
+    return source.replace(BPO_COMPATIBILITY_OLD, BPO_COMPATIBILITY_NEW, 1)
+
+
+def add_bpo_compatibility(target: Path) -> None:
+    """Extend the pinned GRPO patch without weakening its source/hash checks."""
+    upgraded = add_bpo_compatibility_source(target.read_text(encoding="utf-8"))
     temporary = target.with_name(target.name + ".shopping-bpo-compat.tmp")
     shutil.copy2(target, temporary)
     try:
@@ -115,13 +121,68 @@ def add_bpo_compatibility(target: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def expected_patched_sha256(target: Path) -> str:
+    """Derive the exact patched hash from the verified veRL original."""
+    backup = Path(str(target) + BACKUP_SUFFIX)
+    original = None
+    for candidate in (backup, target):
+        if candidate.is_file() and sha256(candidate) == EXPECTED_ORIGINAL_SHA256:
+            original = candidate
+            break
+    if original is None:
+        raise RuntimeError(
+            "cannot derive patched hash without the verified original ray_trainer.py"
+        )
+    if not PATCH_FILE.is_file():
+        raise RuntimeError(f"patch file is missing: {PATCH_FILE}")
+    patch_program = shutil.which("patch")
+    if patch_program is None:
+        raise RuntimeError("required system 'patch' executable is unavailable")
+    with tempfile.TemporaryDirectory(prefix="shopping-grpo-patch-") as directory:
+        derived = Path(directory) / "ray_trainer.py"
+        shutil.copy2(original, derived)
+        subprocess.run(
+            [
+                patch_program,
+                "--batch",
+                "--forward",
+                "--silent",
+                str(derived),
+                str(PATCH_FILE),
+            ],
+            check=True,
+            cwd=PROJECT_ROOT,
+        )
+        derived.write_text(
+            add_bpo_compatibility_source(derived.read_text(encoding="utf-8")),
+            encoding="utf-8",
+            newline="\n",
+        )
+        py_compile.compile(str(derived), doraise=True)
+        return sha256(derived)
+
+
 def apply_patch(target: Path) -> None:
     target_hash = sha256(target)
-    if target_hash == EXPECTED_PATCHED_SHA256:
+    backup = Path(str(target) + BACKUP_SUFFIX)
+    has_verified_original = (
+        target_hash == EXPECTED_ORIGINAL_SHA256
+        or (backup.is_file() and sha256(backup) == EXPECTED_ORIGINAL_SHA256)
+    )
+    if not has_verified_original:
+        if target_hash in SUPERSEDED_PATCHED_SHA256S:
+            raise RuntimeError(
+                "cannot upgrade the previous patch without its verified original backup"
+            )
+        raise RuntimeError(
+            "refusing to patch unknown ray_trainer.py: "
+            f"expected original SHA256 {EXPECTED_ORIGINAL_SHA256}, got {target_hash}"
+        )
+    expected_hash = expected_patched_sha256(target)
+    if target_hash == expected_hash:
         verify_patched(target)
         print(f"veRL dynamic-sampling patch already applied: {target}")
         return
-    backup = Path(str(target) + BACKUP_SUFFIX)
     if target_hash in SUPERSEDED_PATCHED_SHA256S:
         if not backup.is_file() or sha256(backup) != EXPECTED_ORIGINAL_SHA256:
             raise RuntimeError(

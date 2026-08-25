@@ -43,6 +43,14 @@ def validate_bpo_config(config):
         raise SystemExit("formal BPO requires vLLM gpu_memory_utilization=0.45")
     if int(rollout.max_num_seqs) != 8:
         raise SystemExit("formal BPO requires vLLM max_num_seqs=8")
+    dynamic = config.shopping_dynamic_sampling
+    if int(dynamic.minimum_accepted_prompts) != 1:
+        raise SystemExit(
+            "formal BPO requires shopping_dynamic_sampling."
+            "minimum_accepted_prompts=1"
+        )
+    if int(config.data.train_batch_size) != 2:
+        raise SystemExit("formal BPO requires train_batch_size=2")
     if not bool(model.use_fused_kernels):
         raise SystemExit("formal BPO requires use_fused_kernels=true")
     if not bool(model.use_liger) or not bool(model.use_remove_padding):
@@ -89,6 +97,34 @@ def validate_entropy_patch(verl_source):
         + json.dumps(
             {"path": str(target), "sha256": actual_sha256},
             sort_keys=True,
+        )
+    )
+
+
+def validate_xml_tool_parser_patch(verl_source):
+    from scripts.apply_verl_bpo_tool_parser_patch import expected_patched_sha256
+    from shopping_grpo.training.bpo.xml_tool_parser_patch import PATCH_MARKER
+
+    target = verl_source.parent / "experimental/agent_loop/tool_parser.py"
+    if not target.is_file():
+        raise SystemExit(f"BPO XML parser patch target is missing: {target}")
+    actual_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    try:
+        expected_sha256 = expected_patched_sha256(target)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if actual_sha256 != expected_sha256:
+        raise SystemExit(
+            "BPO XML parser patch hash mismatch: "
+            f"expected {expected_sha256}, got {actual_sha256}; "
+            "run scripts/apply_verl_bpo_patch.py first"
+        )
+    if target.read_text(encoding="utf-8").count(PATCH_MARKER) != 1:
+        raise SystemExit("BPO XML parser patch marker is missing")
+    print(
+        "BPO tolerant XML parser patch preflight passed: "
+        + json.dumps(
+            {"path": str(target), "sha256": actual_sha256}, sort_keys=True
         )
     )
 
@@ -374,6 +410,7 @@ def main():
     verl_source = Path(verl.__file__).resolve()
     validate_bpo_config(config)
     validate_entropy_patch(verl_source)
+    validate_xml_tool_parser_patch(verl_source)
     common.validate_dynamic_sampling(config, verl_source, installed)
     validate_swanlab(config)
     validate_bpo_runtime_hooks(config)
@@ -386,6 +423,10 @@ def main():
                 "branch_count": 1,
                 "sibling_count": 4,
                 "return_budget": 4,
+                "dynamic_target_prompts": int(config.data.train_batch_size),
+                "dynamic_minimum_accepted_prompts": int(
+                    config.shopping_dynamic_sampling.minimum_accepted_prompts
+                ),
                 "upstream_lambda": 0.95,
                 "gpu_memory_utilization": 0.45,
                 "max_num_seqs": 8,

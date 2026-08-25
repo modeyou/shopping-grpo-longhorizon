@@ -9,7 +9,7 @@
 - `configs/bpo_agent_loop.yaml`：分叉 AgentLoop 注册；
 - `src/shopping_grpo/training/bpo/`：分叉、优势估计和 veRL 适配；
 - `scripts/bpo.sh`、`scripts/train_bpo.py`：独立启动入口；
-- `scripts/apply_verl_bpo_patch.py`：精确全词表熵补丁。
+- `scripts/apply_verl_bpo_patch.py`：精确全词表熵与容错 XML 参数解析补丁。
 
 ## 1. 训练目标
 
@@ -46,7 +46,7 @@ Parquet 已冻结绑定的数据/Reward 契约，保持原字节与 SHA256 不�
 3. 在与快照完全相同的 action 起始边界执行一次 `max_tokens=1`、`top_p=1`、
    `temperature=1` 的全词表 log-prob 探针，计算首 token 的精确 Shannon entropy；
 4. 再从这个边界正常生成 backbone action；熵探针不得预先条件化任何 backbone action token；
-5. 每条 backbone 只保留 entropy 最大的一个 action 边界，熵相同选择更早边界；
+5. 按论文排除 backbone 的最终 action，再从其余边界选择 entropy 最大者；熵相同选择更早边界；
 6. 从同一个环境、Shopper history、运行诊断和 token 前缀克隆三条 continuation；
 7. backbone 与三个 clone 构成 K=4 sibling returns；
 8. sibling 内使用 leave-one-out baseline：
@@ -102,8 +102,10 @@ session 隔离约束。正常的错误动作、无购买、错误购买和终止
 信号；HTTP/API 故障、状态恢复不一致、快照泄漏、非 Reward v4 和其他基础设施无效组不得当作
 负奖励进入优化。
 
-若一个 group 的四个 return 没有可辨别差异，组内相对 advantage 为零。动态采样可以继续抽取
-新 group，但最多尝试 3 个生成 batch，并在连续 10 次无法形成有效更新时停止，避免无界重试。
+若一个 group 的四个 return 没有可辨别差异，组内相对 advantage 为零。每次更新目标仍为
+2 个有效 group；动态采样最多尝试 3 个生成 batch。若届时得到 1 个有效 group，就以该真实
+K=4 group 完成一次较小更新；若一个也没有才跳过，并在连续 10 次无有效更新时停止。这个
+`target=2/minimum=1` 契约不是把正式 batch 永久降成 1，而是在有效信号稀缺时避免丢弃。
 
 ### 2.4 BPO、GRPO、critic 与 PPO 的关系
 
@@ -150,15 +152,15 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 - Shopper history、问题次数和调用计数。
 
 每个 clone 会申请独立 ShopSimulator slot。正式 train batch 为 2，每组最多同时占用
-三个 clone；backbone slot 会在 clone 前释放，允许被某个 clone 安全复用。两个 prompt
-并行恢复时最多有 6 个 clone slot。AgentLoop worker 固定为 2，
+三个 clone；source lease 会一直保留到三个 clone 全部恢复并完成，避免 release 后 slot
+复用与并发恢复发生竞态。两个 prompt 并行恢复时最多有 8 个 source/clone slot。AgentLoop worker 固定为 2，
 确保 veRL 按 K=4 重复后，每组 sibling 不会被切分给不同 worker。
 
 预检会实际执行一次 source snapshot、三次 clone 和四次相同搜索动作，只有四条恢复路径产生
 字节等价的去 session-id transition 时才通过。完整 rollout 还会在两个位置 fail-closed：
 
-- AgentLoop 返回前验证 sibling 0–3、同一 group/branch/entropy、完全相同的分叉前 token 与 mask，
-  以及三个并发 clone 的独立 lease；
+- AgentLoop 返回前验证 sibling 0–3、同一 group/branch/entropy、分叉点严格早于最终 action、
+  完全相同的分叉前 token 与 mask，以及三个并发 clone 的独立 lease；
 - advantage 计算前在 veRL `DataProto` 上再次验证这些字段，并输出每组 return、LOO advantage
   及其零和审计；任一不一致都不会进入 optimizer。
 
@@ -253,8 +255,8 @@ export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
 "$GRPO_PYTHON" scripts/apply_verl_bpo_patch.py
 ```
 
-预检不再只判断补丁 marker。动态采样补丁必须精确匹配冻结的
-`ray_trainer.py` SHA256；精确熵补丁必须精确匹配冻结的
+预检不再只判断补丁 marker。动态采样补丁必须匹配由冻结原始源码和项目 diff
+确定性派生的 `ray_trainer.py` SHA256；精确熵补丁必须精确匹配冻结的
 `vllm_async_server.py` 唯一 SHA256；该值由冻结的原始 veRL 0.8 文件和确定性 V2
 变换实时推导。V2 明确按
 `0 * log(0) = 0` 处理 vLLM 对不可能 token 返回的 `logprob=-inf`，同时拒绝
@@ -264,18 +266,24 @@ K=4 BPO advantage 分发，确认 `AgentLoopWorker` 与 `compute_advantage` 两�
 运行时 hook 已生效，并验证 advantage/return 的形状与有限性。这样 estimator
 guard、错误补丁版本和 hook 未安装会在占用四张 GPU 之前直接失败。
 
-BPO 补丁只修改固定 `verl==0.8.0` 的 `vllm_async_server.py`。脚本校验官方源码
-SHA256、创建备份、执行幂等检查，并拒绝未知版本。
+BPO 补丁修改固定 `verl==0.8.0` 的 `vllm_async_server.py`，并用精确源码锚点修改
+`experimental/agent_loop/tool_parser.py`。后者只在单个 XML parameter 缺少 `>` 时跳过
+该坏参数，保留同一 tool call 中其余合法参数；tool schema 仍会拒绝缺少必填参数的调用，
+因此不会把畸形调用悄悄当成成功。两个文件都创建独立备份、执行编译与幂等校验。
 
 动态采样补丁同样固定 `verl==0.8.0`：先应用已经过 GRPO A1U/B1 验证的 V4 patch，
 再执行唯一、确定性的 estimator guard 重写，使它显式接受 `GRPO` 或 `BPO`。被接纳的
 trajectory 可能来自多个 generation batch；现有补丁已在 concat 和 balance 后重新提取 reward。
 BPO outcome return 对全部 token reward 求和；
 `response_mask` 只控制 policy-gradient 落点，不能把位于工具/环境 token 上的终局奖励清零。
-任一 K=4 sibling group 在对齐后仍无 reward 差异时直接拒绝 optimizer update。最终
-`ray_trainer.py` SHA256 固定为
-`a2132ecbce6ca55fcd3a61f615b925b4a0c7a2192c69cd3e4faf8046124b334b`；
-旧 `9fc8...` 版本只能在存在已验证原始备份时升级，未知源码仍拒绝修改。
+任一 K=4 sibling group 在对齐后仍无 reward 差异时不会产生 advantage。最终
+`ray_trainer.py` SHA256 由已验证的 veRL 0.8 原始备份、仓库内统一 diff 和 BPO
+兼容变换现场派生并复核；旧补丁只能在存在已验证原始备份时升级，未知源码仍拒绝修改。
+
+`training_diagnostics.jsonl` 会为每条 rollout 保留 `bpo_sibling_index`、分叉 action、
+分叉 action token hash、backbone action 数、相对分叉位置、熵、prefix hash 和 env slot；每个 generation group 还记录
+分叉处不同 action 数、不同工具序列数、终止原因和错误类型。看到大量 constant group 时，
+可以区分“兄弟从分叉处就相同”和“路径不同但终局 reward 相同”，无需再靠全文日志猜测。
 
 配置 Shopper API：
 

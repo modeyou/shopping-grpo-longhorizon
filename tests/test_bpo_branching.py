@@ -6,7 +6,9 @@ from shopping_grpo.training.bpo.branching import (
     BranchCandidate,
     first_decision_token,
     full_vocabulary_entropy,
+    retain_branch_candidates,
     select_branch_candidate,
+    select_nonterminal_branch_candidate,
     validate_tree_outputs,
 )
 from shopping_grpo.training.bpo.runtime import sibling_group_starts
@@ -38,6 +40,17 @@ def test_maximum_entropy_uses_earliest_action_as_tie_break():
     assert select_branch_candidate([later, lower, earlier]) is earlier
 
 
+def test_retained_candidates_allow_final_action_to_be_excluded():
+    early = BranchCandidate(0, 0, 0.8, "early")
+    middle = BranchCandidate(1, 0, 1.2, "middle")
+    final = BranchCandidate(2, 0, 2.0, "final")
+    retained = retain_branch_candidates([early, middle, final], limit=2)
+    assert retained == [final, middle]
+    assert select_nonterminal_branch_candidate(retained, action_count=3) is middle
+    with pytest.raises(ValueError, match="at least two actions"):
+        select_nonterminal_branch_candidate([final], action_count=1)
+
+
 def test_sibling_groups_must_be_contiguous_repeats():
     assert sibling_group_starts([7, 7, 7, 7, 9, 9, 9, 9], 4) == [0, 4]
     with pytest.raises(ValueError, match="contiguous"):
@@ -65,6 +78,8 @@ def test_tree_outputs_share_exact_prefix_and_isolated_clone_leases():
                     "bpo_return_budget": 4,
                     "bpo_env_idx": env_idx,
                     "bpo_branch_prefix_sha256": "same",
+                    "bpo_backbone_action_count": 3,
+                    "bpo_branch_relative_position": 0.5,
                 },
             )
         )

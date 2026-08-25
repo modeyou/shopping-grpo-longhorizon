@@ -45,6 +45,8 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["actor_rollout_ref"]["actor"]["calculate_entropy"] is False
     assert config["trainer"]["n_gpus_per_node"] == 4
     assert config["trainer"]["project_name"] == "shopping-bpo"
+    assert config["data"]["train_batch_size"] == 2
+    assert config["shopping_dynamic_sampling"]["minimum_accepted_prompts"] == 1
 
 
 class _FakeCuda:

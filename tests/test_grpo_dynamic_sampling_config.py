@@ -93,8 +93,8 @@ class DynamicSamplingConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "patch hash mismatch"):
                 validate_dynamic_sampling(config, verl_source, {"verl": "0.8.0"})
             with mock.patch(
-                "scripts.apply_verl_dynamic_sampling_patch.EXPECTED_PATCHED_SHA256",
-                marker_only_hash,
+                "scripts.apply_verl_dynamic_sampling_patch.expected_patched_sha256",
+                return_value=marker_only_hash,
             ):
                 validate_dynamic_sampling(config, verl_source, {"verl": "0.8.0"})
 

@@ -122,3 +122,52 @@ def test_cloned_branch_session_binds_and_releases_coroutine_local_state():
 
     asyncio.run(exercise())
     assert clone.release_count == 1
+
+
+def test_cloned_branch_session_rejects_terminal_runtime_state_before_clone():
+    source = SimpleNamespace(clone=lambda snapshot_id: (_ for _ in ()).throw(
+        AssertionError("terminal state must be rejected before cloning")
+    ))
+
+    async def exercise():
+        session = ClonedBranchSession(
+            source,
+            "snapshot-terminal",
+            {"done": True, "terminate": True},
+            SimpleNamespace(),
+        )
+        try:
+            await session.start()
+        except RuntimeError as exc:
+            assert "terminal runtime state" in str(exc)
+        else:
+            raise AssertionError("terminal runtime state was accepted")
+
+    asyncio.run(exercise())
+
+
+def test_cloned_branch_session_releases_terminal_restored_environment():
+    clone = SimpleNamespace(done=True, release_count=0)
+
+    def release():
+        clone.release_count += 1
+
+    clone.release = release
+    source = SimpleNamespace(clone=lambda snapshot_id: clone)
+
+    async def exercise():
+        session = ClonedBranchSession(
+            source,
+            "snapshot-terminal-env",
+            {"done": False, "terminate": False},
+            SimpleNamespace(),
+        )
+        try:
+            await session.start()
+        except RuntimeError as exc:
+            assert "terminal environment" in str(exc)
+        else:
+            raise AssertionError("terminal restored environment was accepted")
+
+    asyncio.run(exercise())
+    assert clone.release_count == 1

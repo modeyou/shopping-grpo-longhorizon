@@ -18,16 +18,18 @@
 @@ -706 +717 @@
 -                reward_extra_infos_dict=reward_extra_infos_dict,
 +                reward_extra_infos_dict=validation_extra_infos,
-@@ -1380,0 +1383,8 @@
+@@ -1380,0 +1383,10 @@
 +        )
 +
 +        from shopping_grpo.training.grpo.dynamic_sampling import (
 +            aggregate_shopping_metrics,
 +            append_training_diagnostic,
 +            build_rollout_diagnostics,
++            extract_aligned_bpo_fields,
 +            extract_shopping_group_signals,
 +            select_reward_varying_groups,
-@@ -1381,0 +1392,64 @@
++            summarize_bpo_group_diagnostics,
+@@ -1381,0 +1394,72 @@
 +
 +        diagnostics_path = os.environ.get("SHOPPING_GRPO_DIAGNOSTICS_PATH")
 +
@@ -63,6 +65,13 @@
 +                raise ValueError("shopping_dynamic_sampling requires rollout.calculate_log_probs=true")
 +
 +            dynamic_target_prompts = int(self.config.data.train_batch_size)
++            dynamic_minimum_accepted_prompts = int(
++                dynamic_sampling_config.get("minimum_accepted_prompts", dynamic_target_prompts)
++            )
++            if not 1 <= dynamic_minimum_accepted_prompts <= dynamic_target_prompts:
++                raise ValueError(
++                    "shopping_dynamic_sampling.minimum_accepted_prompts must be in [1, train_batch_size]"
++                )
 +            dynamic_rollout_n = int(self.config.actor_rollout_ref.rollout.n)
 +            dynamic_accepted_batches = []
 +            dynamic_accepted_prompts = 0
@@ -87,6 +96,7 @@
 +                        "max_consecutive_skipped_updates": dynamic_max_consecutive_skips,
 +                        "reward_tolerance": dynamic_reward_tolerance,
 +                        "train_batch_size": dynamic_target_prompts,
++                        "minimum_accepted_prompts": dynamic_minimum_accepted_prompts,
 +                        "rollout_n": dynamic_rollout_n,
 +                    },
 +                    sort_keys=True,
@@ -117,7 +127,7 @@
 -                        self.checkpoint_manager.sleep_replicas()
 +                        if not dynamic_sampling_enabled:
 +                            self.checkpoint_manager.sleep_replicas()
-@@ -1524,0 +1605,214 @@
+@@ -1524,0 +1615,242 @@
 +                        reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 +
 +                    if dynamic_sampling_enabled:
@@ -169,6 +179,17 @@
 +                        accepted_indices = [
 +                            index for index, uid in enumerate(batch_uids) if uid in accepted_uid_set
 +                        ]
++                        rollout_diagnostics = build_rollout_diagnostics(
++                            batch_uids,
++                            batch.non_tensor_batch["shopping"].tolist(),
++                            aligned_fields=extract_aligned_bpo_fields(
++                                batch.non_tensor_batch,
++                                expected_length=len(batch_uids),
++                            ),
++                        )
++                        bpo_group_diagnostics = summarize_bpo_group_diagnostics(
++                            rollout_diagnostics
++                        )
 +                        generation_diagnostic = {
 +                            "generation_batch": dynamic_num_gen_batches,
 +                            "groups": [
@@ -182,6 +203,7 @@
 +                                    "drop_reason": group["drop_reason"],
 +                                    "kept": group["kept"],
 +                                    "accepted": group["uid"] in accepted_uid_set,
++                                    **bpo_group_diagnostics.get(group["uid"], {}),
 +                                }
 +                                for group in group_stats["groups"]
 +                            ],
@@ -189,6 +211,7 @@
 +                                dynamic_accepted_prompts + len(accepted_uids)
 +                            ),
 +                            "target_prompts": dynamic_target_prompts,
++                            "minimum_accepted_prompts": dynamic_minimum_accepted_prompts,
 +                        }
 +                        print(
 +                            "SHOPPING_GRPO_DYNAMIC_SAMPLING_BATCH "
@@ -199,10 +222,7 @@
 +                            "generation_batch",
 +                            current_step,
 +                            **generation_diagnostic,
-+                            rollouts=build_rollout_diagnostics(
-+                                batch_uids,
-+                                batch.non_tensor_batch["shopping"].tolist(),
-+                            ),
++                            rollouts=rollout_diagnostics,
 +                        )
 +                        if accepted_indices:
 +                            accepted_batch = batch.select_idxs(accepted_indices)
@@ -214,7 +234,10 @@
 +                        if dynamic_accepted_prompts < dynamic_target_prompts:
 +                            if curr_step_profile:
 +                                self._stop_profiling(True)
-+                            if dynamic_num_gen_batches >= dynamic_max_gen_batches:
++                            if (
++                                dynamic_num_gen_batches >= dynamic_max_gen_batches
++                                and dynamic_accepted_prompts < dynamic_minimum_accepted_prompts
++                            ):
 +                                dynamic_skipped_updates += 1
 +                                dynamic_consecutive_skips += 1
 +                                skipped_metrics = {
@@ -318,7 +341,22 @@
 +                                        "optimizer update; stopping a persistently "
 +                                        "no-signal run"
 +                                    )
-+                            continue
++                            if dynamic_num_gen_batches < dynamic_max_gen_batches:
++                                continue
++
++                        if dynamic_accepted_prompts < dynamic_target_prompts:
++                            print(
++                                "SHOPPING_GRPO_DYNAMIC_SAMPLING_PARTIAL "
++                                + json.dumps(
++                                    {
++                                        "accepted_prompts": dynamic_accepted_prompts,
++                                        "minimum_accepted_prompts": dynamic_minimum_accepted_prompts,
++                                        "target_prompts": dynamic_target_prompts,
++                                        "generation_batches": dynamic_num_gen_batches,
++                                    },
++                                    sort_keys=True,
++                                )
++                            )
 +
 +                        batch = DataProto.concat(dynamic_accepted_batches)
 +                        if self.config.trainer.balance_batch:
@@ -489,7 +527,7 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750 +2175,11 @@
+@@ -1750 +2199,15 @@
 -                logger.log(data=metrics, step=self.global_steps)
 +                append_training_diagnostic(
 +                    diagnostics_path,
@@ -499,6 +537,10 @@
 +                    rollouts=build_rollout_diagnostics(
 +                        batch.non_tensor_batch["uid"].tolist(),
 +                        batch.non_tensor_batch["shopping"].tolist(),
++                        aligned_fields=extract_aligned_bpo_fields(
++                            batch.non_tensor_batch,
++                            expected_length=len(batch.non_tensor_batch["uid"]),
++                        ),
 +                    ),
 +                )
 +                logger.log(data=metrics, step=current_step)

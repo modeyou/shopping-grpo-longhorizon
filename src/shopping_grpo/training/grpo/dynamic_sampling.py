@@ -10,20 +10,142 @@ from typing import Any
 
 
 def build_rollout_diagnostics(
-    uids: Sequence[Hashable], shopping_infos: Sequence[object]
+    uids: Sequence[Hashable],
+    shopping_infos: Sequence[object],
+    *,
+    aligned_fields: Mapping[str, Sequence[object]] | None = None,
 ) -> list[dict[str, Any]]:
     """Attach stable group/rollout identities to public AgentLoop diagnostics."""
     if len(uids) != len(shopping_infos):
         raise ValueError("uids and shopping_infos must have equal length")
     rollout_counts: dict[Hashable, int] = {}
+    fields = dict(aligned_fields or {})
+    for name, values in fields.items():
+        if not str(name).startswith("bpo_"):
+            raise ValueError(f"diagnostic field is not BPO namespaced: {name}")
+        if len(values) != len(uids):
+            raise ValueError(f"diagnostic field {name} is not trajectory-aligned")
     records = []
     for index, (uid, info) in enumerate(zip(uids, shopping_infos, strict=True)):
         if not isinstance(info, Mapping):
             raise ValueError(f"shopping extra field at index {index} is not an object")
         rollout_index = rollout_counts.get(uid, 0)
         rollout_counts[uid] = rollout_index + 1
-        records.append({"uid": uid, "rollout_index": rollout_index, **dict(info)})
+        bpo = {name: values[index] for name, values in fields.items()}
+        records.append(
+            {"uid": uid, "rollout_index": rollout_index, **dict(info), **bpo}
+        )
     return records
+
+
+BPO_DIAGNOSTIC_FIELDS = (
+    "bpo_group_id",
+    "bpo_sibling_index",
+    "bpo_branch_action",
+    "bpo_branch_entropy",
+    "bpo_action_token_starts",
+    "bpo_return_budget",
+    "bpo_env_idx",
+    "bpo_branch_prefix_sha256",
+    "bpo_branch_action_sha256",
+    "bpo_backbone_action_count",
+    "bpo_branch_relative_position",
+)
+
+
+def extract_aligned_bpo_fields(
+    non_tensor_batch: Mapping[str, object], *, expected_length: int
+) -> dict[str, Sequence[object]]:
+    """Extract trajectory-aligned BPO metadata from a veRL non-tensor batch."""
+    fields: dict[str, Sequence[object]] = {}
+    for name in BPO_DIAGNOSTIC_FIELDS:
+        if name not in non_tensor_batch:
+            continue
+        raw_values = non_tensor_batch[name]
+        tolist = getattr(raw_values, "tolist", None)
+        values = tolist() if callable(tolist) else list(raw_values)
+        if len(values) != int(expected_length):
+            raise ValueError(f"BPO field {name} is not trajectory-aligned")
+        fields[name] = values
+    return fields
+
+
+def summarize_bpo_group_diagnostics(
+    rollout_records: Sequence[Mapping[str, object]],
+) -> dict[Hashable, dict[str, Any]]:
+    """Expose branch location and sibling diversity for each BPO group."""
+    grouped: dict[Hashable, list[Mapping[str, object]]] = {}
+    for record in rollout_records:
+        grouped.setdefault(record["uid"], []).append(record)
+
+    summaries: dict[Hashable, dict[str, Any]] = {}
+    for uid, records in grouped.items():
+        if not any("bpo_branch_action" in record for record in records):
+            continue
+        required = (
+            "bpo_branch_action",
+            "bpo_branch_entropy",
+            "bpo_branch_prefix_sha256",
+            "bpo_branch_action_sha256",
+            "bpo_backbone_action_count",
+            "bpo_branch_relative_position",
+        )
+        if any(
+            any(record.get(name) is None for name in required)
+            for record in records
+        ):
+            summaries[uid] = {"bpo_diagnostic_incomplete": True}
+            continue
+        branch_actions = {int(record["bpo_branch_action"]) for record in records}
+        backbone_counts = {
+            int(record["bpo_backbone_action_count"]) for record in records
+        }
+        prefix_hashes = {
+            str(record["bpo_branch_prefix_sha256"]) for record in records
+        }
+        if len(branch_actions) != 1 or len(backbone_counts) != 1:
+            raise ValueError("BPO sibling diagnostics disagree on branch location")
+        if len(prefix_hashes) != 1:
+            raise ValueError("BPO sibling diagnostics disagree on branch prefix")
+        branch_action = next(iter(branch_actions))
+        backbone_action_count = next(iter(backbone_counts))
+        sibling_action_hashes = []
+        tool_sequences = []
+        termination_reasons = []
+        error_types = []
+        errors = []
+        for record in records:
+            actions = list(record.get("actions") or [])
+            sibling_action_hashes.append(str(record["bpo_branch_action_sha256"]))
+            tool_sequences.append(
+                tuple(
+                    str(action.get("name") or action.get("tool") or "")
+                    if isinstance(action, Mapping)
+                    else str(action)
+                    for action in actions
+                )
+            )
+            termination_reasons.append(str(record.get("termination_reason") or ""))
+            error = str(record.get("error_type") or record.get("error") or "")
+            errors.append(error)
+            error_types.append(error.split(":", 1)[0] if error else "")
+
+        summaries[uid] = {
+            "bpo_branch_action": branch_action,
+            "bpo_backbone_action_count": backbone_action_count,
+            "bpo_branch_relative_position": float(
+                records[0]["bpo_branch_relative_position"]
+            ),
+            "bpo_branch_entropy": float(records[0]["bpo_branch_entropy"]),
+            "bpo_unique_branch_action_count": len(
+                set(sibling_action_hashes)
+            ),
+            "bpo_unique_tool_sequence_count": len(set(tool_sequences)),
+            "bpo_termination_reasons": tuple(termination_reasons),
+            "bpo_error_types": tuple(error_types),
+            "bpo_errors": tuple(errors),
+        }
+    return summaries
 
 
 def append_training_diagnostic(

@@ -9,12 +9,46 @@ from shopping_grpo.training.grpo.dynamic_sampling import (
     aggregate_shopping_metrics,
     append_training_diagnostic,
     build_rollout_diagnostics,
+    extract_aligned_bpo_fields,
     extract_shopping_group_signals,
     select_reward_varying_groups,
+    summarize_bpo_group_diagnostics,
 )
 
 
 class RewardGroupSelectionTest(unittest.TestCase):
+    def test_bpo_diagnostics_preserve_branch_location_and_diversity(self):
+        non_tensors = {
+            "bpo_sibling_index": [0, 1],
+            "bpo_branch_action": [1, 1],
+            "bpo_branch_entropy": [2.4, 2.4],
+            "bpo_branch_prefix_sha256": ["same", "same"],
+            "bpo_branch_action_sha256": ["action-a", "action-b"],
+            "bpo_backbone_action_count": [4, 4],
+            "bpo_branch_relative_position": [1 / 3, 1 / 3],
+        }
+        fields = extract_aligned_bpo_fields(non_tensors, expected_length=2)
+        rollouts = build_rollout_diagnostics(
+            ["tree", "tree"],
+            [
+                {
+                    "actions": [{"tool": "search"}, {"tool": "click"}],
+                    "termination_reason": "done",
+                },
+                {
+                    "actions": [{"tool": "search"}, {"tool": "ask_shopper"}],
+                    "termination_reason": "max_steps",
+                },
+            ],
+            aligned_fields=fields,
+        )
+        summary = summarize_bpo_group_diagnostics(rollouts)["tree"]
+        self.assertEqual(summary["bpo_branch_action"], 1)
+        self.assertEqual(summary["bpo_backbone_action_count"], 4)
+        self.assertEqual(summary["bpo_unique_branch_action_count"], 2)
+        self.assertEqual(summary["bpo_unique_tool_sequence_count"], 2)
+        self.assertEqual(summary["bpo_termination_reasons"], ("done", "max_steps"))
+
     def test_training_diagnostics_append_public_rollouts_as_jsonl(self):
         rollouts = build_rollout_diagnostics(
             ["task-a", "task-a"],

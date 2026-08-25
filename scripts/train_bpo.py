@@ -210,6 +210,7 @@ def write_contract(environment, audit):
             "sibling_count": 4,
             "return_budget": 4,
             "branch_selection": "maximum_exact_entropy",
+            "branch_candidate_policy": "exclude-final-action-v1",
             "entropy_state": "action-boundary-first-token",
             "rollout_audit": "exact-tree-v1",
             "upstream_lambda": 0.95,
@@ -222,6 +223,10 @@ def write_contract(environment, audit):
             "use_liger": True,
             "use_remove_padding": True,
             "actor_calculate_entropy": False,
+            "dynamic_target_prompts": 2,
+            "dynamic_minimum_accepted_prompts": 1,
+            "dynamic_max_generation_batches": 3,
+            "tolerant_xml_parameter_parser": True,
         },
         "inputs": {
             name: {"path": str(Path(path).resolve()), "sha256": _sha256(path)}

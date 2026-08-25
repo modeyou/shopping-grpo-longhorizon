@@ -25,6 +25,8 @@ def audit_bpo_rollout_batch(
         "bpo_return_budget",
         "bpo_env_idx",
         "bpo_branch_prefix_sha256",
+        "bpo_backbone_action_count",
+        "bpo_branch_relative_position",
     }
     missing = extra_required - set(metadata)
     if missing:
@@ -39,7 +41,19 @@ def audit_bpo_rollout_batch(
             str(metadata["bpo_branch_prefix_sha256"][row]) for row in ordered
         }
         budgets = {int(metadata["bpo_return_budget"][row]) for row in ordered}
-        if len(branch_actions) != 1 or len(entropies) != 1 or len(prefix_hashes) != 1:
+        backbone_action_counts = {
+            int(metadata["bpo_backbone_action_count"][row]) for row in ordered
+        }
+        relative_positions = {
+            float(metadata["bpo_branch_relative_position"][row]) for row in ordered
+        }
+        if (
+            len(branch_actions) != 1
+            or len(entropies) != 1
+            or len(prefix_hashes) != 1
+            or len(backbone_action_counts) != 1
+            or len(relative_positions) != 1
+        ):
             raise ValueError(f"BPO group {group_id!r} does not share one branch state")
         if budgets != {int(sibling_count)}:
             raise ValueError(f"BPO group {group_id!r} has an invalid return budget")
@@ -49,6 +63,17 @@ def audit_bpo_rollout_batch(
             raise ValueError(f"BPO group {group_id!r} clone leases are not isolated")
 
         branch_action = next(iter(branch_actions))
+        backbone_action_count = next(iter(backbone_action_counts))
+        if backbone_action_count < 2 or branch_action >= backbone_action_count - 1:
+            raise ValueError(
+                f"BPO group {group_id!r} branch boundary must precede the final action"
+            )
+        expected_relative_position = branch_action / (backbone_action_count - 1)
+        relative_position = next(iter(relative_positions))
+        if abs(relative_position - expected_relative_position) > 1e-8:
+            raise ValueError(
+                f"BPO group {group_id!r} has inconsistent branch position metadata"
+            )
         prompt_rows = [
             tuple(int(value) for value in prompts[row].reshape(-1)) for row in ordered
         ]
@@ -78,6 +103,8 @@ def audit_bpo_rollout_batch(
                 "group_id": group_id,
                 "branch_action": branch_action,
                 "branch_entropy": next(iter(entropies)),
+                "backbone_action_count": backbone_action_count,
+                "branch_relative_position": relative_position,
                 "prefix_tokens": len(prefixes[0]),
                 "env_indices": env_indices,
             }

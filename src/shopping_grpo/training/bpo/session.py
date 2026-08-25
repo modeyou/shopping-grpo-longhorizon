@@ -21,7 +21,23 @@ class ClonedBranchSession:
         self._tokens = []
 
     async def start(self):
+        def state_flag(name):
+            if isinstance(self.state, dict):
+                return bool(self.state.get(name))
+            return bool(getattr(self.state, name, False))
+
+        if state_flag("done") or state_flag("terminate"):
+            raise RuntimeError(
+                "BPO cannot restore a branch from terminal runtime state"
+            )
         self.env = await asyncio.to_thread(self.source_env.clone, self.snapshot_id)
+        if bool(getattr(self.env, "done", False)):
+            await asyncio.to_thread(self.env.release)
+            self.env = None
+            raise RuntimeError(
+                "BPO snapshot restored a terminal environment at a "
+                "non-terminal branch boundary"
+            )
         self._tokens = [
             (current_environment, current_environment.set(self.env)),
             (current_runtime_state, current_runtime_state.set(self.state)),

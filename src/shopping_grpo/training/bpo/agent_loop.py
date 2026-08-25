@@ -13,7 +13,8 @@ from verl.experimental.agent_loop.tool_agent_loop import AgentData, AgentState
 
 from shopping_grpo.training.bpo.branching import (
     BranchCandidate,
-    select_branch_candidate,
+    retain_branch_candidates,
+    select_nonterminal_branch_candidate,
     validate_tree_outputs,
 )
 from shopping_grpo.training.bpo.session import ClonedBranchSession
@@ -216,9 +217,26 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         env_idx,
     ):
         branch_start = int(action_starts[int(candidate.action_index)])
+        branch_end = (
+            int(action_starts[int(candidate.action_index) + 1])
+            if int(candidate.action_index) + 1 < len(action_starts)
+            else len(output.response_ids)
+        )
         prefix_ids = [int(value) for value in output.response_ids[:branch_start]]
         prefix_digest = hashlib.sha256(
             ",".join(str(value) for value in prefix_ids).encode("ascii")
+        ).hexdigest()
+        branch_action_ids = [
+            int(value)
+            for value, enabled in zip(
+                output.response_ids[branch_start:branch_end],
+                output.response_mask[branch_start:branch_end],
+                strict=True,
+            )
+            if int(enabled) != 0
+        ]
+        branch_action_digest = hashlib.sha256(
+            ",".join(str(value) for value in branch_action_ids).encode("ascii")
         ).hexdigest()
         output.extra_fields.update(
             {
@@ -230,6 +248,14 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 "bpo_return_budget": 4,
                 "bpo_env_idx": int(env_idx),
                 "bpo_branch_prefix_sha256": prefix_digest,
+                "bpo_branch_action_sha256": branch_action_digest,
+                "bpo_backbone_action_count": int(
+                    candidate.payload["backbone_action_count"]
+                ),
+                "bpo_branch_relative_position": float(
+                    int(candidate.action_index)
+                    / max(1, int(candidate.payload["backbone_action_count"]) - 1)
+                ),
             }
         )
 
@@ -257,103 +283,125 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         source_env = session.env
         group_id = uuid4().hex
         candidate = None
+        retained_candidates = []
         action_starts = []
         data = await self._new_agent_data(kwargs)
         current = await self._handle_pending_state(data, sampling_params)
         try:
-            try:
-                while current != AgentState.TERMINATED:
-                    if current == AgentState.GENERATING:
-                        action_index = len(action_starts)
-                        action_starts.append(len(data.response_mask))
-                        prefix_data = clone_agent_data(data)
-                        prefix_state = deepcopy(state)
-                        prefix_shopper = current_shopper.get().clone()
-                        prompt_before = list(data.prompt_ids)
-                        # Entropy probing is read-only.  Run it before creating
-                        # the environment snapshot so an incompatible live
-                        # vLLM entropy contract fails without allocating an
-                        # opaque ShopSimulator snapshot.  The snapshot remains
-                        # at the same pre-action semantic boundary.
-                        entropy = await self._probe_entropy(
-                            prompt_before,
-                            sampling_params,
-                        )
-                        snapshot_id = await asyncio.to_thread(source_env.snapshot)
-                        try:
-                            # The paper defines H_t from the first-token
-                            # distribution at the exact action boundary s_t.
-                            # The snapshot and every sibling resume from this
-                            # same prompt, without any backbone action token.
-                            current = await self._handle_generating_state(
-                                data, sampling_params
-                            )
-                        except Exception:
-                            await asyncio.to_thread(
-                                source_env.drop_snapshot, snapshot_id
-                            )
-                            raise
-                        else:
-                            proposed = BranchCandidate(
-                                action_index=action_index,
-                                token_offset=0,
-                                entropy=entropy,
-                                snapshot_id=snapshot_id,
-                                payload={
-                                    "agent_data": prefix_data,
-                                    "runtime_state": prefix_state,
-                                    "shopper": prefix_shopper,
-                                    "source_env": source_env,
-                                    "action_starts": list(action_starts),
-                                    "group_id": group_id,
-                                },
-                            )
-                            selected = select_branch_candidate(
-                                [
-                                    value
-                                    for value in (candidate, proposed)
-                                    if value is not None
-                                ]
-                            )
-                            rejected = proposed if selected is candidate else candidate
-                            if rejected is not None:
-                                await asyncio.to_thread(
-                                    source_env.drop_snapshot, rejected.snapshot_id
-                                )
-                            candidate = selected
-                    elif current == AgentState.PROCESSING_TOOLS:
-                        current = await self._handle_processing_tools_state(data)
-                    else:
-                        raise RuntimeError(f"invalid BPO backbone state: {current}")
-                if candidate is None:
-                    raise RuntimeError(
-                        "BPO backbone has no valid semantic decision boundary"
+            while current != AgentState.TERMINATED:
+                if current == AgentState.GENERATING:
+                    action_index = len(action_starts)
+                    action_starts.append(len(data.response_mask))
+                    prefix_data = clone_agent_data(data)
+                    prefix_state = deepcopy(state)
+                    prefix_shopper = current_shopper.get().clone()
+                    prompt_before = list(data.prompt_ids)
+                    # Entropy probing is read-only.  Run it before creating
+                    # the environment snapshot so an incompatible live vLLM
+                    # entropy contract fails without allocating an opaque
+                    # ShopSimulator snapshot.  The snapshot remains at the
+                    # same pre-action semantic boundary.
+                    entropy = await self._probe_entropy(
+                        prompt_before,
+                        sampling_params,
                     )
-                backbone = self._finalize_shopping_output(
-                    self._make_output(data), state, task_id
+                    snapshot_id = await asyncio.to_thread(source_env.snapshot)
+                    try:
+                        # The paper defines H_t from the first-token
+                        # distribution at the exact action boundary s_t.
+                        # The snapshot and every sibling resume from this
+                        # same prompt, without any backbone action token.
+                        current = await self._handle_generating_state(
+                            data, sampling_params
+                        )
+                    except Exception:
+                        await asyncio.to_thread(
+                            source_env.drop_snapshot, snapshot_id
+                        )
+                        raise
+                    else:
+                        proposed = BranchCandidate(
+                            action_index=action_index,
+                            token_offset=0,
+                            entropy=entropy,
+                            snapshot_id=snapshot_id,
+                            payload={
+                                "agent_data": prefix_data,
+                                "runtime_state": prefix_state,
+                                "shopper": prefix_shopper,
+                                "source_env": source_env,
+                                "action_starts": list(action_starts),
+                                "group_id": group_id,
+                            },
+                        )
+                        previous = list(retained_candidates)
+                        retained_candidates = retain_branch_candidates(
+                            [*previous, proposed], limit=2
+                        )
+                        retained_ids = {
+                            value.snapshot_id for value in retained_candidates
+                        }
+                        for rejected in [*previous, proposed]:
+                            if rejected.snapshot_id in retained_ids:
+                                continue
+                            await asyncio.to_thread(
+                                source_env.drop_snapshot, rejected.snapshot_id
+                            )
+                elif current == AgentState.PROCESSING_TOOLS:
+                    current = await self._handle_processing_tools_state(data)
+                else:
+                    raise RuntimeError(f"invalid BPO backbone state: {current}")
+            try:
+                candidate = select_nonterminal_branch_candidate(
+                    retained_candidates,
+                    action_count=len(action_starts),
                 )
-                self._attach_bpo_metadata(
-                    backbone,
-                    candidate,
-                    action_starts,
-                    0,
-                    group_id,
-                    source_env.env_idx,
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
+            candidate.payload["backbone_action_count"] = len(action_starts)
+            for rejected in retained_candidates:
+                if rejected is candidate:
+                    continue
+                await asyncio.to_thread(
+                    source_env.drop_snapshot, rejected.snapshot_id
                 )
-            finally:
-                await session.close()
-
-            branches = await asyncio.gather(
+            retained_candidates = [candidate]
+            backbone = self._finalize_shopping_output(
+                self._make_output(data), state, task_id
+            )
+            self._attach_bpo_metadata(
+                backbone,
+                candidate,
+                action_starts,
+                0,
+                group_id,
+                source_env.env_idx,
+            )
+            branch_results = await asyncio.gather(
                 *[
                     self._run_clone(candidate, sampling_params, task_id, sibling)
                     for sibling in range(1, self.sibling_count)
-                ]
+                ],
+                return_exceptions=True,
             )
+            branch_errors = [
+                value for value in branch_results if isinstance(value, BaseException)
+            ]
+            if branch_errors:
+                raise RuntimeError(
+                    "one or more BPO clone continuations failed after all clone "
+                    "leases were joined"
+                ) from branch_errors[0]
+            branches = list(branch_results)
             outputs = [backbone, *branches]
             validate_tree_outputs(outputs, sibling_count=self.sibling_count)
             return outputs
         finally:
-            if candidate is not None:
+            for retained in retained_candidates:
                 await asyncio.to_thread(
-                    source_env.drop_snapshot, candidate.snapshot_id
+                    source_env.drop_snapshot, retained.snapshot_id
                 )
+            # Keep the source lease alive until every snapshot clone has been
+            # restored and completed.  This prevents server-side slot reuse
+            # from racing with the three sibling restorations.
+            await session.close()

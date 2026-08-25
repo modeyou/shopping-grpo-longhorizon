@@ -141,6 +141,17 @@ def main():
             print(f"verified veRL BPO entropy patch: {target}")
         else:
             apply(target)
+        if args.target is None:
+            from scripts import apply_verl_bpo_tool_parser_patch as xml_patch
+
+            xml_target = xml_patch.resolve_target()
+            if args.restore:
+                xml_patch.restore(xml_target)
+            elif args.check:
+                xml_patch.verify(xml_target)
+                print(f"verified veRL BPO XML parser patch: {xml_target}")
+            else:
+                xml_patch.apply(xml_target)
     except (OSError, RuntimeError, ValueError, py_compile.PyCompileError) as exc:
         raise SystemExit(f"veRL BPO patch error: {exc}") from exc
 

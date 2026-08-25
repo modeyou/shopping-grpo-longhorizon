@@ -54,16 +54,17 @@ class VerlPatchScriptTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "ray_trainer.py"
             shutil.copy2(original_source(), target)
+            expected_patched = patcher.expected_patched_sha256(target)
 
             first = self.run_script(target)
             self.assertEqual(first.returncode, 0, first.stderr)
-            self.assertEqual(file_sha256(target), patcher.EXPECTED_PATCHED_SHA256)
+            self.assertEqual(file_sha256(target), expected_patched)
             self.assertIn(patcher.PATCH_MARKER, target.read_text(encoding="utf-8"))
 
             second = self.run_script(target)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertIn("already applied", second.stdout)
-            self.assertEqual(file_sha256(target), patcher.EXPECTED_PATCHED_SHA256)
+            self.assertEqual(file_sha256(target), expected_patched)
 
             restored = self.run_script(target, "--restore")
             self.assertEqual(restored.returncode, 0, restored.stderr)
@@ -99,7 +100,9 @@ class VerlPatchScriptTest(unittest.TestCase):
             ):
                 patcher.apply_patch(target)
 
-            self.assertEqual(file_sha256(target), patcher.EXPECTED_PATCHED_SHA256)
+            self.assertEqual(
+                file_sha256(target), patcher.expected_patched_sha256(target)
+            )
             self.assertEqual(file_sha256(backup), patcher.EXPECTED_ORIGINAL_SHA256)
 
     def test_patched_fit_preserves_bypass_and_defers_reference_and_update(self):
@@ -148,6 +151,10 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn("aggregate_shopping_metrics", fit_source)
             self.assertIn("terminal_utilities=terminal_utilities", fit_source)
             self.assertIn("sampling_invalid=sampling_invalid", fit_source)
+            self.assertIn("minimum_accepted_prompts", fit_source)
+            self.assertIn("SHOPPING_GRPO_DYNAMIC_SAMPLING_PARTIAL", fit_source)
+            self.assertIn("extract_aligned_bpo_fields", fit_source)
+            self.assertIn("summarize_bpo_group_diagnostics", fit_source)
             self.assertIn('"drop_reason": group["drop_reason"]', fit_source)
             self.assertIn('"group/all_zero_utility_ratio"', fit_source)
             self.assertIn('"group/no_purchase_success_ratio"', fit_source)

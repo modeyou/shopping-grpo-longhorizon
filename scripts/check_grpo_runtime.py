@@ -195,13 +195,20 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
     ray_trainer = verl_source.parent / "trainer" / "ppo" / "ray_trainer.py"
     if not ray_trainer.is_file():
         raise SystemExit(f"cannot locate installed RayPPOTrainer source: {ray_trainer}")
-    from scripts.apply_verl_dynamic_sampling_patch import EXPECTED_PATCHED_SHA256
+    from scripts.apply_verl_dynamic_sampling_patch import expected_patched_sha256
 
     actual_patch_sha256 = hashlib.sha256(ray_trainer.read_bytes()).hexdigest()
-    if actual_patch_sha256 != EXPECTED_PATCHED_SHA256:
+    try:
+        expected_patch_sha256 = expected_patched_sha256(ray_trainer)
+    except RuntimeError as exc:
+        raise SystemExit(
+            f"shopping dynamic-sampling patch hash mismatch: {exc}; "
+            "run scripts/apply_verl_dynamic_sampling_patch.py first"
+        ) from exc
+    if actual_patch_sha256 != expected_patch_sha256:
         raise SystemExit(
             "shopping dynamic-sampling patch hash mismatch: "
-            f"expected {EXPECTED_PATCHED_SHA256}, got {actual_patch_sha256}; "
+            f"expected {expected_patch_sha256}, got {actual_patch_sha256}; "
             "run scripts/apply_verl_dynamic_sampling_patch.py first"
         )
     if PATCH_MARKER not in ray_trainer.read_text(encoding="utf-8"):

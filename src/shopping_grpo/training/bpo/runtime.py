@@ -204,6 +204,8 @@ def install_bpo_runtime():
                 "bpo_return_budget",
                 "bpo_env_idx",
                 "bpo_branch_prefix_sha256",
+                "bpo_backbone_action_count",
+                "bpo_branch_relative_position",
             )
         }
         audits = audit_bpo_rollout_batch(

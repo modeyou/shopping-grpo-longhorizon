@@ -132,6 +132,9 @@ shopping_bpo:
 shopping_dynamic_sampling:
   enable: true
   metric: seq_reward
+  # Aim for two useful trees, but permit one valid tree after the bounded
+  # three-batch search so rare signal still produces a real optimizer update.
+  minimum_accepted_prompts: 1
   max_num_gen_batches: 3
   max_consecutive_skipped_updates: 10
   reward_tolerance: 1.0e-8
