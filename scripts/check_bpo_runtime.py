@@ -39,10 +39,10 @@ def validate_bpo_config(config):
         raise SystemExit("BPO workers must equal train_batch_size so K siblings stay together")
     if int(rollout.engine_kwargs.vllm.max_logprobs) != -1:
         raise SystemExit("exact BPO entropy requires vLLM max_logprobs=-1")
-    if float(rollout.gpu_memory_utilization) != 0.40:
-        raise SystemExit("formal BPO requires vLLM gpu_memory_utilization=0.40")
-    if int(rollout.max_num_seqs) != 4:
-        raise SystemExit("formal BPO requires vLLM max_num_seqs=4")
+    if float(rollout.gpu_memory_utilization) != 0.45:
+        raise SystemExit("formal BPO requires vLLM gpu_memory_utilization=0.45")
+    if int(rollout.max_num_seqs) != 8:
+        raise SystemExit("formal BPO requires vLLM max_num_seqs=8")
     if bool(model.use_fused_kernels):
         raise SystemExit("formal BPO requires use_fused_kernels=false")
     if not bool(model.use_liger) or not bool(model.use_remove_padding):
@@ -261,6 +261,37 @@ def validate_swanlab(config):
         raise SystemExit("BPO SwanLab project must be shopping-bpo")
 
 
+def validate_visible_gpu_headroom(torch, *, minimum_free_gib=20.0):
+    device_count = int(torch.cuda.device_count())
+    if device_count != 4:
+        raise SystemExit(
+            "formal BPO requires exactly four visible CUDA devices; "
+            "set CUDA_VISIBLE_DEVICES to four clean GPUs"
+        )
+    free_gib = []
+    for index in range(device_count):
+        free_bytes, _ = torch.cuda.mem_get_info(index)
+        available = free_bytes / (1024 ** 3)
+        free_gib.append(round(available, 2))
+        if available < minimum_free_gib:
+            raise SystemExit(
+                f"visible CUDA device {index} has only {available:.2f} GiB free; "
+                f"formal BPO requires at least {minimum_free_gib:.2f} GiB per GPU"
+            )
+    print(
+        "BPO visible-GPU headroom preflight passed: "
+        + json.dumps(
+            {
+                "device_count": device_count,
+                "free_gib": free_gib,
+                "minimum_free_gib": minimum_free_gib,
+            },
+            sort_keys=True,
+        )
+    )
+    return free_gib
+
+
 def main():
     config = common.compose_runtime_config(__import__("sys").argv[1:])
     common.validate_environment_contract()
@@ -286,8 +317,9 @@ def main():
     import verl
     from shopping_grpo.training.bpo.agent_loop import ShoppingBPOAgentLoop
 
-    if not torch.cuda.is_available() or torch.cuda.device_count() < 4:
-        raise SystemExit("formal BPO requires four visible CUDA devices")
+    if not torch.cuda.is_available():
+        raise SystemExit("formal BPO requires CUDA")
+    visible_gpu_free_gib = validate_visible_gpu_headroom(torch)
     verl_source = Path(verl.__file__).resolve()
     validate_bpo_config(config)
     validate_entropy_patch(verl_source)
@@ -304,8 +336,10 @@ def main():
                 "sibling_count": 4,
                 "return_budget": 4,
                 "upstream_lambda": 0.95,
-                "gpu_memory_utilization": 0.40,
-                "max_num_seqs": 4,
+                "gpu_memory_utilization": 0.45,
+                "max_num_seqs": 8,
+                "minimum_free_gpu_memory_gib": 20.0,
+                "visible_gpu_free_gib": visible_gpu_free_gib,
                 "use_fused_kernels": False,
                 "use_liger": True,
                 "use_remove_padding": True,
