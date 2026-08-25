@@ -222,6 +222,7 @@ def validate_snapshot_fidelity():
     source_released = False
     try:
         source.reset(3, initial_request="")
+        source.step("search[bpo snapshot warm state]")
         snapshot_id = source.snapshot()
         source_env_idx = source.env_idx
         action = "search[bpo snapshot fidelity probe]"

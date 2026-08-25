@@ -221,6 +221,11 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 映射，例如 `0,2,3,4 -> 0,1,2,3`；预检会验证该映射和钩子 marker，避免把物理 GPU 4
 错误地传给只有四张可见卡的进程并触发 `invalid device ordinal`。
 
+ShopSimulator 快照只保存可恢复的权威状态。`text_to_clickable` 是从浏览器页面派生的
+BeautifulSoup 对象缓存，包含循环父子引用，因此不得深拷贝；clone 恢复 `page_source` 后调用
+`get_available_actions()` 重建。快照预检会先执行一次搜索再创建快照，以覆盖真实 rollout
+中已经生成 clickable 对象图的状态，而不只测试刚 reset 的空缓存。
+
 全词表 logits 只在单 token entropy probe 中产生，并立即在 vLLM 服务进程中归约成
 一个标量；完整向量不会进入 AgentLoop output 或训练 batch。
 

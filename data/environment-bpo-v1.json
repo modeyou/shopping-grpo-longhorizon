@@ -41,7 +41,7 @@
     "reward_features_v2.py": "5bcddf1adfbbaf42878ccee316df94ca24f45b2ca5f9061de50f579926c0c3ae",
     "reward_registry.py": "ffb6a2d0129f6e9e70beceec8431de1792b482592c13bd5a8422044aea084c1a",
     "reward_v4.py": "dc38d551553dc256bc5eed4a577351e61d0c6927349de06e3a2477983944d33c",
-    "snapshot_store.py": "11d8a59d32a1e65065f365a10cd945e0d886772ac259d916c321943cfd07540f",
+    "snapshot_store.py": "58f0852aa5e85e13e5b7d229b7baa679cfe330090328447079d639eb120dac6f",
     "slot_lease_pool.py": "5be40275eebbed6735196a1dea4581ce707558e247d23d0de4d98907772a0420",
     "web_agent_text_env.py": "85072a305ffece675f7fecf788e8733f89b8b058ced3ffd34eff779ee55df303"
   },

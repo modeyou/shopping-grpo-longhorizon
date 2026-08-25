@@ -9,6 +9,11 @@ class FakeClient:
         return {"content": '{"answer":"蓝色","used_facts":["蓝色"]}'}
 
 
+class _DerivedClickableGraph:
+    def __deepcopy__(self, memo):
+        raise RecursionError("derived clickable graph must not be copied")
+
+
 def test_controlled_shopper_clone_has_independent_history():
     shopper = ControlledShopper(
         FakeClient(), initial_request="买一个", allowed_facts=["蓝色"], max_questions=2
@@ -44,17 +49,21 @@ def test_snapshot_store_clones_server_and_browser_state():
         ),
         idx=3,
         history=["search"],
+        text_to_clickable=_DerivedClickableGraph(),
     )
     store = SnapshotStore()
     snapshot_id = store.create(source, 0)
-    targets = [
-        SimpleNamespace(
-            server=server,
-            browser=SimpleNamespace(),
-            get_available_actions=lambda: None,
-        )
-        for _ in range(3)
-    ]
+
+    def target():
+        value = SimpleNamespace(server=server, browser=SimpleNamespace())
+
+        def rebuild():
+            value.text_to_clickable = {"rebuilt": value.browser.current_url}
+
+        value.get_available_actions = rebuild
+        return value
+
+    targets = [target() for _ in range(3)]
     results = [
         store.clone_into(snapshot_id, target, index)
         for index, target in enumerate(targets, start=1)
@@ -64,6 +73,9 @@ def test_snapshot_store_clones_server_and_browser_state():
         "slot-1-abc", "slot-2-abc", "slot-3-abc"
     ]
     assert targets[0].browser.current_url == "http://shop/slot-1-abc/item"
+    assert targets[0].text_to_clickable == {
+        "rebuilt": "http://shop/slot-1-abc/item"
+    }
     targets[0].history.append("click")
     assert source.history == ["search"]
     assert targets[1].history == ["search"]

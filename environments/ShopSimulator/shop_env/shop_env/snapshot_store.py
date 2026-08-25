@@ -6,7 +6,7 @@ from uuid import uuid4
 
 _ENV_FIELDS = (
     "idx", "instruction_text", "instruction_simple", "goal_options", "prev_obs",
-    "prev_actions", "history", "text_to_clickable", "user_persona", "reason_key",
+    "prev_actions", "history", "user_persona", "reason_key",
 )
 
 
@@ -66,6 +66,9 @@ class SnapshotStore:
         target_env.browser.page_source = _rewrite_session(
             payload["browser"]["page_source"], old_session, new_session
         )
+        # BeautifulSoup Tags contain cyclic parent links. text_to_clickable is
+        # derived from page_source, so rebuild it instead of snapshotting it.
+        target_env.text_to_clickable = None
         target_env.get_available_actions()
         return {
             "env_idx": int(target_env_idx),
