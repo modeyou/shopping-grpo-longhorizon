@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
+import importlib.util
 import py_compile
 import shutil
 import sys
@@ -20,6 +21,21 @@ from shopping_grpo.training.bpo.entropy_patch import (
 EXPECTED_VERL_VERSION = "0.8.0"
 EXPECTED_ORIGINAL_SHA256 = "c7aafaa923edb7ab19c6a3d147643013be687df76d79ef38e855958d8382c68c"
 BACKUP_SUFFIX = ".shopping-bpo-entropy.orig"
+
+
+def load_xml_patcher():
+    """Load the sibling installer by path, avoiding third-party `scripts`."""
+    path = Path(__file__).resolve().with_name(
+        "apply_verl_bpo_tool_parser_patch.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_shopping_grpo_bpo_xml_patcher", path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load BPO XML parser patcher: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def sha256(path):
@@ -142,7 +158,7 @@ def main():
         else:
             apply(target)
         if args.target is None:
-            from scripts import apply_verl_bpo_tool_parser_patch as xml_patch
+            xml_patch = load_xml_patcher()
 
             xml_target = xml_patch.resolve_target()
             if args.restore:

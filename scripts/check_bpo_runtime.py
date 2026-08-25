@@ -210,6 +210,8 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
             "bpo_return_budget": np.asarray([4] * 4),
             "bpo_env_idx": np.asarray([0, 0, 1, 2]),
             "bpo_branch_prefix_sha256": np.asarray(["same"] * 4, dtype=object),
+            "bpo_backbone_action_count": np.asarray([3] * 4),
+            "bpo_branch_relative_position": np.asarray([0.5] * 4),
         },
     )
     try:

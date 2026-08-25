@@ -1,5 +1,6 @@
 import asyncio
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +53,16 @@ def test_entropy_patch_verifier_rejects_marker_only_source(tmp_path):
     target.write_text(f"# {PATCH_MARKER}\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="backup is missing"):
         verify(target)
+
+
+def test_combined_installer_loads_sibling_xml_patcher_by_file_path():
+    module = patcher.load_xml_patcher()
+    assert Path(module.__file__).resolve() == (
+        Path(patcher.__file__).resolve().with_name(
+            "apply_verl_bpo_tool_parser_patch.py"
+        )
+    )
+    assert callable(module.apply)
 
 
 def test_zero_probability_logprob_does_not_create_nan():
