@@ -9,8 +9,10 @@ import yaml
 
 from scripts.check_bpo_runtime import validate_visible_gpu_headroom
 from shopping_grpo.training.bpo.runtime import (
+    _OPTIMIZER_AUDIT_MARKER,
     _SPARSE_CUDA_MAPPING_MARKER,
     cuda_logical_ordinal,
+    install_optimizer_update_audit,
     install_sparse_cuda_mapping,
 )
 
@@ -140,3 +142,62 @@ def test_sparse_cuda_worker_hook_sets_masked_logical_device(monkeypatch):
         )
         == _SPARSE_CUDA_MAPPING_MARKER
     )
+
+
+def test_optimizer_audit_requires_real_gradient_and_parameter_delta(
+    monkeypatch, capsys
+):
+    import torch
+
+    class _FSDPEngine:
+        def optimizer_step(self):
+            self.optimizer.step()
+            return 0.0
+
+    transformer = types.ModuleType("verl.workers.engine.fsdp.transformer_impl")
+    transformer.FSDPEngine = _FSDPEngine
+    monkeypatch.setitem(sys.modules, transformer.__name__, transformer)
+    monkeypatch.setenv("SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE", "1")
+
+    install_optimizer_update_audit()
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    parameter.grad = torch.tensor([2.0])
+    engine = _FSDPEngine()
+    engine.module = torch.nn.Module()
+    engine.module.register_parameter("weight", parameter)
+    engine.optimizer = torch.optim.SGD([parameter], lr=0.1)
+
+    assert engine.optimizer_step() == 0.0
+    assert parameter.item() == pytest.approx(0.8)
+    output = capsys.readouterr().out
+    assert "BPO optimizer update audit" in output
+    assert '"changed_parameter_tensors": 1' in output
+    assert (
+        getattr(_FSDPEngine.optimizer_step, "_shopping_bpo_marker", None)
+        == _OPTIMIZER_AUDIT_MARKER
+    )
+
+
+def test_optimizer_audit_rejects_zero_gradient(monkeypatch):
+    import torch
+
+    class _FSDPEngine:
+        def optimizer_step(self):
+            self.optimizer.step()
+            return 0.0
+
+    transformer = types.ModuleType("verl.workers.engine.fsdp.transformer_impl")
+    transformer.FSDPEngine = _FSDPEngine
+    monkeypatch.setitem(sys.modules, transformer.__name__, transformer)
+    monkeypatch.setenv("SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE", "1")
+
+    install_optimizer_update_audit()
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    parameter.grad = torch.zeros(1)
+    engine = _FSDPEngine()
+    engine.module = torch.nn.Module()
+    engine.module.register_parameter("weight", parameter)
+    engine.optimizer = torch.optim.SGD([parameter], lr=0.1)
+
+    with pytest.raises(RuntimeError, match="no non-zero gradients"):
+        engine.optimizer_step()

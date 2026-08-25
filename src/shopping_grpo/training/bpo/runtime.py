@@ -14,6 +14,7 @@ from shopping_grpo.training.grpo.compat import install_torch_padding_fallback
 
 _INSTALLED = False
 _SPARSE_CUDA_MAPPING_MARKER = "SHOPPING_BPO_SPARSE_CUDA_MAPPING_V1"
+_OPTIMIZER_AUDIT_MARKER = "SHOPPING_BPO_OPTIMIZER_AUDIT_V1"
 
 
 def _is_bpo(value):
@@ -87,6 +88,133 @@ def install_sparse_cuda_mapping():
         _SPARSE_CUDA_MAPPING_MARKER
     )
     Worker._setup_env_cuda_visible_devices = setup_env_cuda_visible_devices
+
+
+def _local_tensor(value):
+    """Return the local tensor represented by a Tensor or DTensor."""
+    to_local = getattr(value, "to_local", None)
+    return to_local() if callable(to_local) else value
+
+
+def _global_audit_counts(torch, values, device):
+    """Sum optimizer audit counters across the active FSDP process group."""
+    counts = torch.tensor(values, dtype=torch.float64, device=device)
+    distributed = getattr(torch, "distributed", None)
+    if (
+        distributed is not None
+        and distributed.is_available()
+        and distributed.is_initialized()
+    ):
+        distributed.all_reduce(counts, op=distributed.ReduceOp.SUM)
+    return [float(value) for value in counts.cpu().tolist()]
+
+
+def install_optimizer_update_audit():
+    """Require the first formal BPO update to change trainable parameters."""
+    from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
+
+    current = FSDPEngine.optimizer_step
+    if getattr(current, "_shopping_bpo_marker", None) == _OPTIMIZER_AUDIT_MARKER:
+        return
+
+    def optimizer_step(engine):
+        enabled = os.environ.get("SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE") == "1"
+        already_audited = bool(
+            getattr(engine, "_shopping_bpo_optimizer_audited", False)
+        )
+        if not enabled or already_audited:
+            return current(engine)
+
+        import torch
+
+        tracked = []
+        trainable_tensors = 0
+        grad_tensors = 0
+        nonzero_grad_tensors = 0
+        nonfinite_grad_values = 0
+        grad_squared_sum = 0.0
+        audit_device = None
+
+        for group in engine.optimizer.param_groups:
+            for parameter in group["params"]:
+                if not parameter.requires_grad:
+                    continue
+                trainable_tensors += 1
+                local_parameter = _local_tensor(parameter.detach())
+                if audit_device is None:
+                    audit_device = local_parameter.device
+                gradient = parameter.grad
+                if gradient is None:
+                    continue
+                grad_tensors += 1
+                local_gradient = _local_tensor(gradient.detach())
+                finite = torch.isfinite(local_gradient)
+                nonfinite_grad_values += int((~finite).sum().item())
+                local_gradient_float = local_gradient.float()
+                finite_gradient = torch.where(
+                    finite,
+                    local_gradient_float,
+                    torch.zeros_like(local_gradient_float),
+                )
+                squared_sum = float(finite_gradient.square().sum().item())
+                grad_squared_sum += squared_sum
+                if squared_sum > 0.0:
+                    nonzero_grad_tensors += 1
+                    tracked.append((parameter, local_parameter.clone()))
+
+        if audit_device is None:
+            audit_device = next(engine.module.parameters()).device
+
+        reported_grad_norm = current(engine)
+
+        changed_tensors = 0
+        for parameter, before in tracked:
+            after = _local_tensor(parameter.detach())
+            if not torch.equal(before, after):
+                changed_tensors += 1
+
+        (
+            global_trainable,
+            global_grad,
+            global_nonzero_grad,
+            global_nonfinite,
+            global_grad_squared_sum,
+            global_changed,
+        ) = _global_audit_counts(
+            torch,
+            (
+                trainable_tensors,
+                grad_tensors,
+                nonzero_grad_tensors,
+                nonfinite_grad_values,
+                grad_squared_sum,
+                changed_tensors,
+            ),
+            audit_device,
+        )
+        audit = {
+            "changed_parameter_tensors": int(global_changed),
+            "grad_squared_sum": global_grad_squared_sum,
+            "grad_tensors": int(global_grad),
+            "nonfinite_grad_values": int(global_nonfinite),
+            "nonzero_grad_tensors": int(global_nonzero_grad),
+            "reported_grad_norm": float(reported_grad_norm),
+            "trainable_parameter_tensors": int(global_trainable),
+        }
+        print("BPO optimizer update audit: " + json.dumps(audit, sort_keys=True))
+        if global_trainable <= 0:
+            raise RuntimeError("BPO optimizer has no trainable parameters")
+        if global_nonfinite > 0:
+            raise RuntimeError("BPO optimizer produced non-finite gradients")
+        if global_nonzero_grad <= 0 or global_grad_squared_sum <= 0.0:
+            raise RuntimeError("BPO backward produced no non-zero gradients")
+        if global_changed <= 0:
+            raise RuntimeError("BPO optimizer step changed no trainable parameters")
+        engine._shopping_bpo_optimizer_audited = True
+        return reported_grad_norm
+
+    optimizer_step._shopping_bpo_marker = _OPTIMIZER_AUDIT_MARKER
+    FSDPEngine.optimizer_step = optimizer_step
 
 
 async def _generate_bpo_sequences(worker, batch):
@@ -171,6 +299,7 @@ def install_bpo_runtime():
     global _INSTALLED
     install_torch_padding_fallback()
     install_sparse_cuda_mapping()
+    install_optimizer_update_audit()
     if _INSTALLED:
         return
 

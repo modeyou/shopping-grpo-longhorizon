@@ -124,6 +124,7 @@ def build(args):
             "PYTHONPATH": str(ROOT / "src"),
             "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
             "SHOPPING_BPO_ROOT": str(ROOT),
+            "SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE": "1",
             "SHOPPING_GRPO_ROOT": str(ROOT),
             "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
             "SHOPPING_ENV_MANIFEST": str(BPO_RUNTIME_MANIFEST),
@@ -227,6 +228,7 @@ def write_contract(environment, audit):
             "dynamic_minimum_accepted_prompts": 1,
             "dynamic_max_generation_batches": 3,
             "tolerant_xml_parameter_parser": True,
+            "optimizer_update_audit": "first-step-nonzero-gradient-and-delta-v1",
         },
         "inputs": {
             name: {"path": str(Path(path).resolve()), "sha256": _sha256(path)}

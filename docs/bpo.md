@@ -390,7 +390,15 @@ smoke 必须确认：
 - entropy 为有限标量，全词表向量未写入输出；
 - Reward 全部为 v4，基础设施无效样本不伪装成普通失败；
 - advantage 有限，工具与 padding mask 为零；
-- optimizer 确实更新一次，四卡无 OOM。
+- optimizer 确实更新一次，四卡无 OOM；
+- 首次更新必须打印 `BPO optimizer update audit`，其中有限非零梯度张量数和
+  实际变化的参数张量数都大于零。仅有 `training/optimizer_updated=1` 不足以
+  证明模型参数确实发生变化。
+
+正式 BPO 启动器通过 `SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE=1` 启用这一首步
+硬审计。审计直接包裹 veRL 的 FSDP optimizer：先检查 optimizer 中可训练参数的
+梯度，再在 `optimizer.step()` 前后逐张量比较参数。无梯度、非有限梯度或没有任何
+参数变化都会立即终止训练；该 hook 仅由 BPO runtime 安装，不修改 GRPO 行为。
 
 ## 7. 正式训练
 
