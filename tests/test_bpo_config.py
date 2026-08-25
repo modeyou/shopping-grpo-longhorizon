@@ -1,3 +1,6 @@
+import os
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -5,6 +8,11 @@ import pytest
 import yaml
 
 from scripts.check_bpo_runtime import validate_visible_gpu_headroom
+from shopping_grpo.training.bpo.runtime import (
+    _SPARSE_CUDA_MAPPING_MARKER,
+    cuda_logical_ordinal,
+    install_sparse_cuda_mapping,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,3 +72,68 @@ def test_visible_gpu_headroom_rejects_busy_or_wrong_device_count():
         validate_visible_gpu_headroom(
             SimpleNamespace(cuda=_FakeCuda([23.5, 23.5, 23.5]))
         )
+
+
+def test_sparse_physical_gpu_ids_map_to_masked_cuda_ordinals():
+    visible_devices = "0,2,3,4"
+    assert [
+        cuda_logical_ordinal(value, visible_devices)
+        for value in ("0", "2", "3", "4")
+    ] == [0, 1, 2, 3]
+    assert cuda_logical_ordinal("1", visible_devices) == 1
+    with pytest.raises(ValueError, match="outside the logical CUDA namespace"):
+        cuda_logical_ordinal("5", visible_devices)
+    with pytest.raises(ValueError, match="unique non-empty devices"):
+        cuda_logical_ordinal("0", "0,2,2,4")
+
+
+def test_sparse_cuda_worker_hook_sets_masked_logical_device(monkeypatch):
+    selected = []
+
+    class _Worker:
+        def _setup_env_cuda_visible_devices(self):
+            raise AssertionError("the pinned veRL implementation must be replaced")
+
+    ray = types.ModuleType("ray")
+    ray.get_runtime_context = lambda: SimpleNamespace(
+        get_accelerator_ids=lambda: {"GPU": ["4"]}
+    )
+    worker = types.ModuleType("verl.single_controller.base.worker")
+    worker.Worker = _Worker
+    device = types.ModuleType("verl.utils.device")
+    device.get_torch_device = lambda: SimpleNamespace(
+        set_device=lambda value: selected.append(value)
+    )
+    device.get_visible_devices_keyword = lambda: "CUDA_VISIBLE_DEVICES"
+    ray_utils = types.ModuleType("verl.utils.ray_utils")
+    ray_utils.ray_noset_visible_devices = lambda: True
+
+    for name, module in {
+        "ray": ray,
+        "verl": types.ModuleType("verl"),
+        "verl.single_controller": types.ModuleType("verl.single_controller"),
+        "verl.single_controller.base": types.ModuleType(
+            "verl.single_controller.base"
+        ),
+        "verl.single_controller.base.worker": worker,
+        "verl.utils": types.ModuleType("verl.utils"),
+        "verl.utils.device": device,
+        "verl.utils.ray_utils": ray_utils,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,2,3,4")
+
+    install_sparse_cuda_mapping()
+    instance = _Worker()
+    instance._setup_env_cuda_visible_devices()
+
+    assert selected == [3]
+    assert os.environ["LOCAL_RANK"] == "3"
+    assert (
+        getattr(
+            _Worker._setup_env_cuda_visible_devices,
+            "_shopping_bpo_marker",
+            None,
+        )
+        == _SPARSE_CUDA_MAPPING_MARKER
+    )

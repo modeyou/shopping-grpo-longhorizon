@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 from shopping_grpo.training.bpo.advantage import (
     audit_bpo_rollout_batch,
@@ -12,6 +13,7 @@ from shopping_grpo.training.bpo.advantage import (
 from shopping_grpo.training.grpo.compat import install_torch_padding_fallback
 
 _INSTALLED = False
+_SPARSE_CUDA_MAPPING_MARKER = "SHOPPING_BPO_SPARSE_CUDA_MAPPING_V1"
 
 
 def _is_bpo(value):
@@ -30,6 +32,61 @@ def sibling_group_starts(index, sibling_count):
         if len({str(value) for value in group}) != 1:
             raise ValueError("BPO siblings must be contiguous repeats of one prompt")
     return starts
+
+
+def cuda_logical_ordinal(accelerator_id, visible_devices):
+    """Map a Ray physical accelerator id into CUDA's masked logical namespace."""
+    devices = [item.strip() for item in str(visible_devices).split(",") if item.strip()]
+    if not devices or len(set(devices)) != len(devices):
+        raise ValueError("CUDA_VISIBLE_DEVICES must contain unique non-empty devices")
+    accelerator_id = str(accelerator_id).strip()
+    if accelerator_id in devices:
+        return devices.index(accelerator_id)
+    try:
+        logical = int(accelerator_id)
+    except ValueError as exc:
+        raise ValueError(
+            f"Ray accelerator id {accelerator_id!r} is absent from CUDA_VISIBLE_DEVICES"
+        ) from exc
+    if 0 <= logical < len(devices):
+        return logical
+    raise ValueError(
+        f"Ray accelerator id {accelerator_id!r} is outside the logical CUDA namespace"
+    )
+
+
+def install_sparse_cuda_mapping():
+    """Make veRL colocated workers support non-contiguous physical GPU ids."""
+    import ray
+    from verl.single_controller.base.worker import Worker
+    from verl.utils.device import (
+        get_torch_device,
+        get_visible_devices_keyword,
+    )
+    from verl.utils.ray_utils import ray_noset_visible_devices
+
+    current = Worker._setup_env_cuda_visible_devices
+    if getattr(current, "_shopping_bpo_marker", None) == _SPARSE_CUDA_MAPPING_MARKER:
+        return
+
+    def setup_env_cuda_visible_devices(worker):
+        if not ray_noset_visible_devices():
+            return current(worker)
+        keyword = get_visible_devices_keyword().upper()
+        visible_devices = os.environ.get(keyword)
+        accelerator_ids = ray.get_runtime_context().get_accelerator_ids().get(
+            "GPU", []
+        )
+        if not visible_devices or len(accelerator_ids) != 1:
+            return current(worker)
+        logical_rank = cuda_logical_ordinal(accelerator_ids[0], visible_devices)
+        os.environ["LOCAL_RANK"] = str(logical_rank)
+        get_torch_device().set_device(logical_rank)
+
+    setup_env_cuda_visible_devices._shopping_bpo_marker = (
+        _SPARSE_CUDA_MAPPING_MARKER
+    )
+    Worker._setup_env_cuda_visible_devices = setup_env_cuda_visible_devices
 
 
 async def _generate_bpo_sequences(worker, batch):
@@ -113,6 +170,7 @@ def install_bpo_runtime():
     """Install idempotent BPO hooks in the driver and every Ray worker."""
     global _INSTALLED
     install_torch_padding_fallback()
+    install_sparse_cuda_mapping()
     if _INSTALLED:
         return
 

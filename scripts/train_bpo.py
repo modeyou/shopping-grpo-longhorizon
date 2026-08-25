@@ -205,6 +205,7 @@ def write_contract(environment, audit):
             "gpu_memory_utilization": 0.45,
             "max_num_seqs": 8,
             "minimum_free_gpu_memory_gib": 20.0,
+            "sparse_cuda_mapping": "physical-to-logical-v1",
             "use_fused_kernels": False,
             "use_liger": True,
             "use_remove_padding": True,

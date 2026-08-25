@@ -216,6 +216,11 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 之前就 OOM，这属于运行资源冲突而不是 BPO 算法失败。正式预检要求恰好四张可见 GPU 且每张
 至少有 20 GiB 空闲；有外部任务的物理 GPU 必须通过 `CUDA_VISIBLE_DEVICES` 排除。
 
+当四张可见卡的物理编号不连续时，Ray 仍可能返回物理 accelerator ID，而 CUDA 进程只能接受
+掩码后的逻辑编号。BPO worker 启动钩子固定执行 `physical ID -> CUDA_VISIBLE_DEVICES 列表位置`
+映射，例如 `0,2,3,4 -> 0,1,2,3`；预检会验证该映射和钩子 marker，避免把物理 GPU 4
+错误地传给只有四张可见卡的进程并触发 `invalid device ordinal`。
+
 全词表 logits 只在单 token entropy probe 中产生，并立即在 vLLM 服务进程中归约成
 一个标量；完整向量不会进入 AgentLoop output 或训练 batch。
 

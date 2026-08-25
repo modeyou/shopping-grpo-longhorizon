@@ -99,9 +99,30 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     from verl.trainer.ppo.utils import need_critic, need_reference_policy
     from verl.utils.config import validate_config
 
-    from shopping_grpo.training.bpo.runtime import install_bpo_runtime
+    from shopping_grpo.training.bpo.runtime import (
+        _SPARSE_CUDA_MAPPING_MARKER,
+        cuda_logical_ordinal,
+        install_bpo_runtime,
+    )
 
     install_bpo_runtime()
+    from verl.single_controller.base.worker import Worker
+
+    if (
+        getattr(
+            Worker._setup_env_cuda_visible_devices,
+            "_shopping_bpo_marker",
+            None,
+        )
+        != _SPARSE_CUDA_MAPPING_MARKER
+    ):
+        raise SystemExit("BPO sparse CUDA worker hook was not installed")
+    sparse_cuda_mapping = [
+        cuda_logical_ordinal(value, "0,2,3,4")
+        for value in ("0", "2", "3", "4")
+    ]
+    if sparse_cuda_mapping != [0, 1, 2, 3]:
+        raise SystemExit("BPO sparse CUDA physical-to-logical mapping is invalid")
     use_critic = need_critic(config)
     use_reference_policy = need_reference_policy(config)
     if use_critic:
@@ -183,6 +204,7 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
                 "use_critic": use_critic,
                 "use_reference_policy": use_reference_policy,
                 "sibling_count": 4,
+                "sparse_cuda_mapping": sparse_cuda_mapping,
             },
             sort_keys=True,
         )
@@ -339,6 +361,7 @@ def main():
                 "gpu_memory_utilization": 0.45,
                 "max_num_seqs": 8,
                 "minimum_free_gpu_memory_gib": 20.0,
+                "sparse_cuda_mapping": "physical-to-logical-v1",
                 "visible_gpu_free_gib": visible_gpu_free_gib,
                 "use_fused_kernels": False,
                 "use_liger": True,
