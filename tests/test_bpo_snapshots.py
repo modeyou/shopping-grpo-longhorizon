@@ -1,6 +1,12 @@
+import asyncio
 from types import SimpleNamespace
 
 from shopping_grpo.training.bpo.session import ClonedBranchSession
+from shopping_grpo.training.grpo.adapter.runtime import (
+    current_environment,
+    current_runtime_state,
+    current_shopper,
+)
 from shopping_grpo.training.grpo.adapter.shopper import ControlledShopper
 
 
@@ -83,3 +89,36 @@ def test_snapshot_store_clones_server_and_browser_state():
     assert targets[1].server.user_sessions[targets[1].session]["cart"] == [1]
     assert store.drop(snapshot_id) is True
     assert store.drop(snapshot_id) is False
+
+
+def test_cloned_branch_session_binds_and_releases_coroutine_local_state():
+    clone = SimpleNamespace(release_count=0)
+
+    def release():
+        clone.release_count += 1
+
+    clone.release = release
+    source = SimpleNamespace(clone=lambda snapshot_id: clone)
+    state = SimpleNamespace(name="state")
+    shopper = SimpleNamespace(name="shopper")
+
+    async def exercise():
+        previous = (
+            current_environment.get(),
+            current_runtime_state.get(),
+            current_shopper.get(),
+        )
+        session = ClonedBranchSession(source, "snapshot-1", state, shopper)
+        await session.start()
+        assert current_environment.get() is clone
+        assert current_runtime_state.get() is state
+        assert current_shopper.get() is shopper
+        await session.close()
+        assert (
+            current_environment.get(),
+            current_runtime_state.get(),
+            current_shopper.get(),
+        ) == previous
+
+    asyncio.run(exercise())
+    assert clone.release_count == 1

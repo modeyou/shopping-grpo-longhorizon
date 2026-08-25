@@ -212,16 +212,31 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
 
 
 def validate_snapshot_fidelity():
-    """Exercise one source plus three restores before model weights are loaded."""
+    """Exercise a formal task through warm state, restore and branch continuation."""
     from shopping_grpo.environment.client import ShopAgentEnv
 
     base_url = os.environ.get("SHOPSIM_BASE_URL", "http://127.0.0.1:5700")
+    task_manifest = (
+        Path(__file__).resolve().parents[1]
+        / "data/grpo/formal-v2/multiturn-train-tasks.jsonl"
+    )
+    try:
+        task = next(
+            json.loads(line)
+            for line in task_manifest.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+        task_id = int(task["task_id"])
+    except (OSError, StopIteration, KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"BPO snapshot preflight cannot read a formal train task: {task_manifest}"
+        ) from exc
     source = ShopAgentEnv(base_url=base_url, timeout=60, multiturn=True)
     clones = []
     snapshot_id = None
     source_released = False
     try:
-        source.reset(3, initial_request="")
+        source.reset(task_id, initial_request="")
         source.step("search[bpo snapshot warm state]")
         snapshot_id = source.snapshot()
         source_env_idx = source.env_idx
@@ -254,13 +269,21 @@ def validate_snapshot_fidelity():
                 "BPO snapshot fidelity failed: identical actions from one snapshot "
                 "produced different transitions"
             )
+        divergent_transitions = [
+            clone.step(f"search[bpo branch continuation {index}]")
+            for index, clone in enumerate(clones, start=1)
+        ]
+        if not all(isinstance(value, dict) for value in divergent_transitions):
+            raise SystemExit("BPO snapshot clones cannot continue independently")
         print(
             "BPO ShopSimulator snapshot fidelity preflight passed: "
             + json.dumps(
                 {
+                    "task_id": task_id,
                     "source_env_idx": env_indices[0],
                     "clone_env_indices": env_indices[1:],
                     "identical_transition_count": len(transitions),
+                    "divergent_continuation_count": len(divergent_transitions),
                 },
                 sort_keys=True,
             )

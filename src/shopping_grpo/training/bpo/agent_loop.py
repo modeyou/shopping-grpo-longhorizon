@@ -266,20 +266,25 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                     if current == AgentState.GENERATING:
                         action_index = len(action_starts)
                         action_starts.append(len(data.response_mask))
-                        snapshot_id = await asyncio.to_thread(source_env.snapshot)
                         prefix_data = clone_agent_data(data)
                         prefix_state = deepcopy(state)
                         prefix_shopper = current_shopper.get().clone()
                         prompt_before = list(data.prompt_ids)
+                        # Entropy probing is read-only.  Run it before creating
+                        # the environment snapshot so an incompatible live
+                        # vLLM entropy contract fails without allocating an
+                        # opaque ShopSimulator snapshot.  The snapshot remains
+                        # at the same pre-action semantic boundary.
+                        entropy = await self._probe_entropy(
+                            prompt_before,
+                            sampling_params,
+                        )
+                        snapshot_id = await asyncio.to_thread(source_env.snapshot)
                         try:
                             # The paper defines H_t from the first-token
                             # distribution at the exact action boundary s_t.
                             # The snapshot and every sibling resume from this
                             # same prompt, without any backbone action token.
-                            entropy = await self._probe_entropy(
-                                prompt_before,
-                                sampling_params,
-                            )
                             current = await self._handle_generating_state(
                                 data, sampling_params
                             )
