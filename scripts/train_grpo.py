@@ -27,6 +27,17 @@ DEFAULT_VAL_DATA = ROOT / "data/grpo/formal-v2/multiturn-validation.parquet"
 DEFAULT_DATA_MANIFEST = ROOT / "data/grpo/formal-v2/manifest.json"
 
 
+def validate_launcher_owned_ray(environ=None):
+    """Reject attachment to a Ray cluster not created by this launch."""
+    environment = os.environ if environ is None else environ
+    address = str(environment.get("RAY_ADDRESS", "")).strip()
+    if address:
+        raise SystemExit(
+            "formal GRPO requires a launcher-owned local Ray runtime; "
+            "stop the manually started Ray head and unset RAY_ADDRESS"
+        )
+
+
 def _model_has_weights(path: Path) -> bool:
     candidates = (
         "model.safetensors",
@@ -125,6 +136,7 @@ def _hydra_overrides(args: argparse.Namespace) -> list[str]:
 
 
 def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
+    validate_launcher_owned_ray()
     model = _validated_path(args.model, "model directory")
     if not model.is_dir() or not (model / "config.json").is_file():
         raise SystemExit(f"model directory is missing config.json: {model}")
@@ -308,6 +320,8 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
             "seed": int(environment["GRPO_SEED"]),
             "shopper_model": environment["SHOPPER_MODEL"],
             "shopper_base_url": environment["SHOPPER_BASE_URL"],
+            "cuda_visible_devices": environment.get("CUDA_VISIBLE_DEVICES", ""),
+            "ray_launcher_owned": not bool(environment.get("RAY_ADDRESS", "").strip()),
         },
         "inputs": {
             name: {

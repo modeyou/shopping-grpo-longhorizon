@@ -114,6 +114,7 @@ selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原
 | scheduler | cosine，500-step 固定 horizon，最低学习率 1e-7 |
 | data / PPO mini-batch seed | 20260823 / 20260823 |
 | LoRA rank / alpha | 16 / 32 |
+| memory kernels | fused kernels + Liger + remove-padding |
 | 最大模型长度 | 24,576 |
 | KL reward / KL loss | 关闭 / 关闭 |
 | entropy | 只记录，不直接加奖励 |

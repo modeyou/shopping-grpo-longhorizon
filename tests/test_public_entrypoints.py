@@ -14,6 +14,7 @@ from scripts.train_grpo import (
     build_command,
     main as grpo_main,
     parse_args,
+    validate_launcher_owned_ray,
     write_run_contract,
 )
 from shopping_grpo.cli import main as cli_main
@@ -21,6 +22,11 @@ from shopping_grpo.smoke import run_cpu_smoke
 
 
 class PublicEntrypointTest(unittest.TestCase):
+    def test_grpo_rejects_external_ray_address(self):
+        validate_launcher_owned_ray({})
+        with self.assertRaisesRegex(SystemExit, "launcher-owned local Ray"):
+            validate_launcher_owned_ray({"RAY_ADDRESS": "auto"})
+
     def test_cpu_smoke_covers_public_contracts(self):
         result = run_cpu_smoke()
 

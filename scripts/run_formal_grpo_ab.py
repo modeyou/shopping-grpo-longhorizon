@@ -104,7 +104,7 @@ def build_command(args: argparse.Namespace) -> list[str]:
             "trainer.val_before_train=false",
             f"trainer.project_name={PROJECT}",
             "actor_rollout_ref.model.use_remove_padding=true",
-            "actor_rollout_ref.model.use_fused_kernels=false",
+            "actor_rollout_ref.model.use_fused_kernels=true",
             "actor_rollout_ref.model.use_liger=true",
             "actor_rollout_ref.model.override_config.attn_implementation=sdpa",
             "data.dataloader_num_workers=0",

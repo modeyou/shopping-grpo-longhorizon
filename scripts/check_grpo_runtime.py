@@ -349,9 +349,9 @@ def validate_scheduler_horizon(config, verl_source: Path):
             )
     if not bool(model.use_remove_padding):
         raise SystemExit("formal GRPO requires model.use_remove_padding=true")
-    if not bool(model.use_liger) or bool(model.use_fused_kernels):
+    if not bool(model.use_liger) or not bool(model.use_fused_kernels):
         raise SystemExit(
-            "formal GRPO requires model.use_liger=true and use_fused_kernels=false"
+            "formal GRPO requires model.use_liger=true and use_fused_kernels=true"
         )
     if int(config.data.dataloader_num_workers) != 0:
         raise SystemExit("formal GRPO requires data.dataloader_num_workers=0")
@@ -363,6 +363,7 @@ def validate_scheduler_horizon(config, verl_source: Path):
                 "stage_total_training_steps": stage_end,
                 "scheduler_total_training_steps": horizon,
                 "use_liger": True,
+                "use_fused_kernels": True,
                 "use_remove_padding": True,
                 "dataloader_num_workers": 0,
             },
@@ -392,8 +393,10 @@ def validate_swanlab_tracking(config):
     if not log_dir:
         raise SystemExit("Reward v4 GRPO requires SWANLAB_LOG_DIR")
     resolved_log_dir = Path(log_dir).resolve()
-    if str(config.trainer.get("project_name")) != "shopping-grpo":
-        raise SystemExit("Reward v4 GRPO SwanLab project must be shopping-grpo")
+    if str(config.trainer.get("project_name")) != "shopping-multiturn-agentic":
+        raise SystemExit(
+            "Reward v4 GRPO SwanLab project must be shopping-multiturn-agentic"
+        )
     print(
         "SwanLab online preflight passed: "
         + json.dumps(
@@ -430,6 +433,37 @@ def validate_reward_shaping_profile():
     print(
         "GRPO reward profile preflight passed: "
         + json.dumps(config, sort_keys=True)
+    )
+
+
+def validate_visible_gpu_headroom(torch, expected_devices: int, minimum_free_gib=20.0):
+    """Require the formal run to see only the intended clean CUDA devices."""
+    device_count = int(torch.cuda.device_count())
+    if device_count != expected_devices:
+        raise SystemExit(
+            f"formal GRPO requires exactly {expected_devices} visible CUDA devices; "
+            "set CUDA_VISIBLE_DEVICES to the intended clean GPUs"
+        )
+    free_gib = []
+    for index in range(device_count):
+        free_bytes, _ = torch.cuda.mem_get_info(index)
+        available = free_bytes / (1024 ** 3)
+        free_gib.append(round(available, 2))
+        if available < minimum_free_gib:
+            raise SystemExit(
+                f"visible CUDA device {index} has only {available:.2f} GiB free; "
+                f"formal GRPO requires at least {minimum_free_gib:.2f} GiB per GPU"
+            )
+    print(
+        "GRPO visible-GPU headroom preflight passed: "
+        + json.dumps(
+            {
+                "device_count": device_count,
+                "free_gib": free_gib,
+                "minimum_free_gib": minimum_free_gib,
+            },
+            sort_keys=True,
+        )
     )
 
 
@@ -594,6 +628,10 @@ def main():
     verl_source = Path(verl.__file__).resolve()
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable in the GRPO environment")
+    validate_visible_gpu_headroom(
+        torch,
+        expected_devices=int(config.trainer.n_gpus_per_node),
+    )
     if (
         not issubclass(ShoppingToolAgentLoop, ToolAgentLoop)
         or not issubclass(ShopSimulatorTool, BaseTool)

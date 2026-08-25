@@ -45,6 +45,7 @@ class FormalGrpoABTest(unittest.TestCase):
             self.assertIn("trainer.val_before_train=false", command)
             self.assertIn("trainer.project_name=shopping-multiturn-agentic", command)
             self.assertIn("actor_rollout_ref.model.use_remove_padding=true", command)
+            self.assertIn("actor_rollout_ref.model.use_fused_kernels=true", command)
             self.assertIn("actor_rollout_ref.model.use_liger=true", command)
             self.assertIn("data.dataloader_num_workers=0", command)
             self.assertIn("--preflight-only", command)
