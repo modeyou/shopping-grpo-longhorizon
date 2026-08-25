@@ -18,9 +18,19 @@
 @@ -706,1 +717,1 @@
 -                reward_extra_infos_dict=reward_extra_infos_dict,
 +                reward_extra_infos_dict=validation_extra_infos,
-@@ -1380,0 +1383,11 @@
+@@ -722,1 +733,7 @@
+-        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
++        validation_metrics = self._val_metrics_update(
++            data_sources, sample_uids, reward_extra_infos_dict, sample_turns
++        )
++        if sample_shopping:
++            from shopping_grpo.training.grpo.dynamic_sampling import aggregate_shopping_metrics
++            validation_metrics.update({f"val-shopping/{key}": value for key, value in aggregate_shopping_metrics(sample_shopping).items()})
++        return validation_metrics
+@@ -1380,0 +1398,12 @@
 +        )
 +
++        import time
 +        from shopping_grpo.training.grpo.dynamic_sampling import (
 +            aggregate_shopping_metrics,
 +            append_training_diagnostic,
@@ -30,7 +40,7 @@
 +            extract_shopping_group_signals,
 +            select_reward_varying_groups,
 +            summarize_bpo_group_diagnostics,
-@@ -1381,0 +1394,100 @@
+@@ -1381,0 +1411,127 @@
 +
 +        diagnostics_path = os.environ.get("SHOPPING_GRPO_DIAGNOSTICS_PATH")
 +
@@ -39,6 +49,12 @@
 +        if dynamic_sampling_enabled:
 +            dynamic_sampling_metric = dynamic_sampling_config.get("metric", "seq_reward")
 +            dynamic_max_gen_batches = int(dynamic_sampling_config.get("max_num_gen_batches", 0))
++            dynamic_soft_warning_gen_batches = int(
++                dynamic_sampling_config.get("soft_warning_gen_batches", 0)
++            )
++            dynamic_require_full_batch = bool(
++                dynamic_sampling_config.get("require_full_batch", False)
++            )
 +            dynamic_max_consecutive_skips = int(
 +                dynamic_sampling_config.get("max_consecutive_skipped_updates", 0)
 +            )
@@ -50,6 +66,11 @@
 +                )
 +            if dynamic_max_gen_batches <= 0:
 +                raise ValueError("shopping_dynamic_sampling.max_num_gen_batches must be positive")
++            if not 0 < dynamic_soft_warning_gen_batches < dynamic_max_gen_batches:
++                raise ValueError(
++                    "shopping_dynamic_sampling.soft_warning_gen_batches must be "
++                    "positive and below max_num_gen_batches"
++                )
 +            if dynamic_max_consecutive_skips <= 0:
 +                raise ValueError(
 +                    "shopping_dynamic_sampling.max_consecutive_skipped_updates must be positive"
@@ -72,6 +93,14 @@
 +            if not 1 <= dynamic_minimum_accepted_prompts <= dynamic_target_prompts:
 +                raise ValueError(
 +                    "shopping_dynamic_sampling.minimum_accepted_prompts must be in [1, train_batch_size]"
++                )
++            if (
++                dynamic_require_full_batch
++                and dynamic_minimum_accepted_prompts != dynamic_target_prompts
++            ):
++                raise ValueError(
++                    "strict full-batch sampling requires minimum_accepted_prompts "
++                    "to equal train_batch_size"
 +                )
 +            dynamic_rollout_n = int(self.config.actor_rollout_ref.rollout.n)
 +            bpo_config = self.config.get("shopping_bpo", {})
@@ -101,6 +130,10 @@
 +            dynamic_generated_trajectories = 0
 +            dynamic_generated_response_tokens = 0
 +            dynamic_generated_response_tokens_total = 0
++            dynamic_generated_groups_total = 0
++            dynamic_filtered_groups_total = 0
++            dynamic_sampling_invalid_groups_total = 0
++            dynamic_generated_trajectories_total = 0
 +            dynamic_trained_groups_total = 0
 +            dynamic_effective_returns_total = 0
 +            dynamic_bpo_backbone_rollouts_total = 0
@@ -113,6 +146,8 @@
 +            dynamic_bpo_shopper_api_calls = 0
 +            dynamic_skipped_updates = 0
 +            dynamic_consecutive_skips = 0
++            dynamic_acquisition_started = time.monotonic()
++            dynamic_seconds_to_first_tree = None
 +            print(
 +                "SHOPPING_GRPO_DYNAMIC_SAMPLING_CONFIG "
 +                + json.dumps(
@@ -120,6 +155,8 @@
 +                        "enable": True,
 +                        "metric": dynamic_sampling_metric,
 +                        "max_num_gen_batches": dynamic_max_gen_batches,
++                        "soft_warning_gen_batches": dynamic_soft_warning_gen_batches,
++                        "require_full_batch": dynamic_require_full_batch,
 +                        "max_consecutive_skipped_updates": dynamic_max_consecutive_skips,
 +                        "reward_tolerance": dynamic_reward_tolerance,
 +                        "train_batch_size": dynamic_target_prompts,
@@ -131,19 +168,19 @@
 +                    sort_keys=True,
 +                )
 +            )
-@@ -1409,2 +1483,4 @@
+@@ -1409,2 +1565,4 @@
 -        # we start from step 1
 -        self.global_steps += 1
 +        # The unpatched trainer uses a one-based in-flight step. Dynamic sampling
 +        # keeps the committed counter unchanged until an optimizer update occurs.
 +        if not dynamic_sampling_enabled:
 +            self.global_steps += 1
-@@ -1414,0 +1491,1 @@
+@@ -1414,0 +1573,1 @@
 +        first_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
-@@ -1416,1 +1493,1 @@
+@@ -1416,1 +1575,1 @@
 -            self.global_steps in self.config.global_profiler.steps
 +            first_step in self.config.global_profiler.steps
-@@ -1423,0 +1501,16 @@
+@@ -1423,0 +1583,17 @@
 +                current_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
 +                optimizer_updated = False
 +                dynamic_budget_checkpoint_due = False
@@ -157,20 +194,21 @@
 +                        trained_groups=dynamic_trained_groups_total,
 +                        update_target=dynamic_target_prompts,
 +                        update_minimum=dynamic_minimum_accepted_prompts,
++                        require_full_batch=dynamic_require_full_batch,
 +                    )
 +                except ValueError as exc:
 +                    raise RuntimeError(str(exc)) from exc
-@@ -1446,1 +1525,1 @@
+@@ -1446,1 +1622,1 @@
 -                gen_batch.meta_info["global_steps"] = self.global_steps
 +                gen_batch.meta_info["global_steps"] = current_step
-@@ -1464,1 +1543,1 @@
+@@ -1464,1 +1640,1 @@
 -                is_last_step = self.global_steps >= self.total_training_steps
 +                is_last_step = current_step >= self.total_training_steps
-@@ -1471,1 +1550,2 @@
+@@ -1471,1 +1647,2 @@
 -                        self.checkpoint_manager.sleep_replicas()
 +                        if not dynamic_sampling_enabled:
 +                            self.checkpoint_manager.sleep_replicas()
-@@ -1524,0 +1615,317 @@
+@@ -1524,0 +1702,424 @@
 +                        reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 +
 +                    if dynamic_sampling_enabled:
@@ -216,6 +254,12 @@
 +                            "sampling_invalid_group_count"
 +                        ]
 +                        dynamic_generated_trajectories += group_stats["num_trajectories"]
++                        dynamic_generated_groups_total += group_stats["num_groups"]
++                        dynamic_filtered_groups_total += group_stats["dropped_group_count"]
++                        dynamic_sampling_invalid_groups_total += group_stats[
++                            "sampling_invalid_group_count"
++                        ]
++                        dynamic_generated_trajectories_total += group_stats["num_trajectories"]
 +                        generated_response_tokens = int(
 +                            batch.batch["response_mask"].sum().item()
 +                        )
@@ -316,6 +360,13 @@
 +                            rollouts=rollout_diagnostics,
 +                        )
 +                        if accepted_indices:
++                            if (
++                                dynamic_accepted_prompts == 0
++                                and dynamic_seconds_to_first_tree is None
++                            ):
++                                dynamic_seconds_to_first_tree = (
++                                    time.monotonic() - dynamic_acquisition_started
++                                )
 +                            accepted_batch = batch.select_idxs(accepted_indices)
 +                            accepted_batch.meta_info.pop("global_token_num", None)
 +                            accepted_batch.meta_info.pop("images_seqlens", None)
@@ -323,12 +374,94 @@
 +                            dynamic_accepted_prompts += len(accepted_uids)
 +
 +                        if dynamic_accepted_prompts < dynamic_current_target_prompts:
++                            if (
++                                dynamic_num_gen_batches
++                                == dynamic_soft_warning_gen_batches
++                            ):
++                                warning_payload = {
++                                    "accepted_prompts": dynamic_accepted_prompts,
++                                    "target_prompts": dynamic_current_target_prompts,
++                                    "generation_batches": dynamic_num_gen_batches,
++                                    "generated_groups": dynamic_generated_groups,
++                                    "seconds_elapsed": (
++                                        time.monotonic() - dynamic_acquisition_started
++                                    ),
++                                    "seconds_to_first_tree": dynamic_seconds_to_first_tree,
++                                }
++                                print(
++                                    "SHOPPING_GRPO_DYNAMIC_SAMPLING_SLOW_BATCH "
++                                    + json.dumps(warning_payload, sort_keys=True)
++                                )
++                                logger.log(
++                                    data={
++                                        "training/global_step": self.global_steps,
++                                        "training/optimizer_updated": 0,
++                                        "bpo_sampling/slow_full_batch_warning": 1,
++                                        "bpo_sampling/candidate_batches": dynamic_num_gen_batches,
++                                        "bpo_sampling/accepted_trees_pending": dynamic_accepted_prompts,
++                                        "bpo_sampling/seconds_elapsed": warning_payload[
++                                            "seconds_elapsed"
++                                        ],
++                                    },
++                                    step=self.global_steps,
++                                )
++                                append_training_diagnostic(
++                                    diagnostics_path,
++                                    "slow_full_batch_warning",
++                                    current_step,
++                                    **warning_payload,
++                                )
 +                            if curr_step_profile:
 +                                self._stop_profiling(True)
 +                            if (
 +                                dynamic_num_gen_batches >= dynamic_max_gen_batches
 +                                and dynamic_accepted_prompts < dynamic_current_minimum_accepted_prompts
 +                            ):
++                                if dynamic_require_full_batch:
++                                    failure_payload = {
++                                        "accepted_prompts": dynamic_accepted_prompts,
++                                        "target_prompts": dynamic_current_target_prompts,
++                                        "generation_batches": dynamic_num_gen_batches,
++                                        "generated_groups": dynamic_generated_groups,
++                                        "seconds_elapsed": (
++                                            time.monotonic() - dynamic_acquisition_started
++                                        ),
++                                        "seconds_to_first_tree": dynamic_seconds_to_first_tree,
++                                        "all_equal_groups": dynamic_all_equal_groups,
++                                        "no_purchase_success_groups": (
++                                            dynamic_no_purchase_success_groups
++                                        ),
++                                        "sampling_invalid_groups": (
++                                            dynamic_sampling_invalid_groups
++                                        ),
++                                    }
++                                    logger.log(
++                                        data={
++                                            "training/global_step": self.global_steps,
++                                            "training/optimizer_updated": 0,
++                                            "bpo_sampling/full_batch_timeout": 1,
++                                            "bpo_sampling/candidate_batches": dynamic_num_gen_batches,
++                                            "bpo_sampling/candidate_trees": dynamic_generated_groups,
++                                            "bpo_sampling/accepted_trees_pending": dynamic_accepted_prompts,
++                                            "bpo_sampling/seconds_elapsed": failure_payload[
++                                                "seconds_elapsed"
++                                            ],
++                                        },
++                                        step=self.global_steps,
++                                    )
++                                    append_training_diagnostic(
++                                        diagnostics_path,
++                                        "full_batch_timeout",
++                                        current_step,
++                                        **failure_payload,
++                                    )
++                                    raise RuntimeError(
++                                        "strict BPO sampling could not collect "
++                                        f"{dynamic_current_target_prompts} valid trees "
++                                        f"within {dynamic_max_gen_batches} generation "
++                                        "batches; the pending tree was not trained and "
++                                        "the previous checkpoint remains resumable"
++                                    )
 +                                dynamic_skipped_updates += 1
 +                                dynamic_consecutive_skips += 1
 +                                skipped_metrics = {
@@ -461,6 +594,18 @@
 +                                )
 +                            )
 +
++                        if (
++                            dynamic_require_full_batch
++                            and dynamic_accepted_prompts
++                            != dynamic_current_target_prompts
++                        ):
++                            raise RuntimeError(
++                                "strict BPO sampling reached actor update without "
++                                "a complete two-tree batch"
++                            )
++                        dynamic_seconds_to_full_batch = (
++                            time.monotonic() - dynamic_acquisition_started
++                        )
 +                        batch = DataProto.concat(dynamic_accepted_batches)
 +                        if self.config.trainer.balance_batch:
 +                            self._balance_batch(batch, metrics=metrics)
@@ -488,7 +633,7 @@
 +                                or dynamic_effective_returns_total
 +                                >= dynamic_effective_return_budget
 +                            )
-@@ -1525,0 +1820,97 @@
+@@ -1525,0 +2127,132 @@
 +                        metrics.update(
 +                            {
 +                                "group/generated": dynamic_generated_groups,
@@ -515,7 +660,19 @@
 +                                    dynamic_sampling_invalid_groups
 +                                ),
 +                                "group/resample_batches": max(dynamic_num_gen_batches - 1, 0),
++                                "group/generated_total": dynamic_generated_groups_total,
++                                "group/filtered_total": dynamic_filtered_groups_total,
++                                "group/sampling_invalid_total": (
++                                    dynamic_sampling_invalid_groups_total
++                                ),
++                                "group/effective_ratio_total": (
++                                    dynamic_trained_groups_total
++                                    / max(dynamic_generated_groups_total, 1)
++                                ),
 +                                "rollout/generated_total": dynamic_generated_trajectories,
++                                "rollout/generated_total_cumulative": (
++                                    dynamic_generated_trajectories_total
++                                ),
 +                                "rollout/generated_response_tokens": dynamic_generated_response_tokens,
 +                                "rollout/generated_response_tokens_total": dynamic_generated_response_tokens_total,
 +                                "bpo_cost/backbone_rollouts": dynamic_bpo_backbone_rollouts,
@@ -525,12 +682,31 @@
 +                                "bpo_budget/effective_trees_total": dynamic_trained_groups_total,
 +                                "bpo_budget/effective_returns_total": dynamic_effective_returns_total,
 +                                "bpo_budget/effective_return_target": dynamic_effective_return_budget,
++                                "bpo_batch/trees": dynamic_accepted_prompts,
++                                "bpo_batch/sibling_returns": (
++                                    dynamic_accepted_prompts * dynamic_rollout_n
++                                ),
++                                "bpo_batch/full_batch": int(
++                                    dynamic_accepted_prompts
++                                    == dynamic_current_target_prompts
++                                ),
++                                "bpo_sampling/candidate_batches": dynamic_num_gen_batches,
++                                "bpo_sampling/candidate_trees": dynamic_generated_groups,
++                                "bpo_sampling/seconds_to_first_tree": (
++                                    dynamic_seconds_to_first_tree
++                                    if dynamic_seconds_to_first_tree is not None
++                                    else dynamic_seconds_to_full_batch
++                                ),
++                                "bpo_sampling/seconds_to_full_batch": (
++                                    dynamic_seconds_to_full_batch
++                                ),
 +                                "bpo_cost/backbone_rollouts_total": dynamic_bpo_backbone_rollouts_total,
 +                                "bpo_cost/branch_rollouts_total": dynamic_bpo_branch_rollouts_total,
 +                                "bpo_cost/environment_transitions_total": dynamic_bpo_environment_transitions_total,
 +                                "bpo_cost/shopper_api_calls_total": dynamic_bpo_shopper_api_calls_total,
 +                            }
 +                        )
++                        ready_reward_tensor, _ = extract_reward(batch)
 +                        ready_terminal_utilities, ready_purchase_success, ready_sampling_invalid, ready_invalid_reasons = (
 +                            extract_shopping_group_signals(
 +                                batch.non_tensor_batch["shopping"].tolist()
@@ -538,7 +714,7 @@
 +                        )
 +                        _, ready_group_stats = select_reward_varying_groups(
 +                            batch.non_tensor_batch["uid"].tolist(),
-+                            reward_tensor.sum(dim=-1).detach().cpu().tolist(),
++                            ready_reward_tensor.sum(dim=-1).detach().cpu().tolist(),
 +                            terminal_utilities=ready_terminal_utilities, purchase_success=ready_purchase_success,
 +                            sampling_invalid=ready_sampling_invalid, sampling_invalid_reasons=ready_invalid_reasons,
 +                            tolerance=dynamic_reward_tolerance,
@@ -548,6 +724,8 @@
 +                            + json.dumps(
 +                                {
 +                                    "generation_batches": dynamic_num_gen_batches,
++                                    "seconds_to_first_tree": dynamic_seconds_to_first_tree,
++                                    "seconds_to_full_batch": dynamic_seconds_to_full_batch,
 +                                    "generated_groups": dynamic_generated_groups,
 +                                    "filtered_groups": dynamic_filtered_groups,
 +                                    "generated_trajectories": dynamic_generated_trajectories,
@@ -586,7 +764,9 @@
 +                        dynamic_bpo_branch_rollouts = 0
 +                        dynamic_bpo_environment_transitions = 0
 +                        dynamic_bpo_shopper_api_calls = 0
-@@ -1526,0 +1891,45 @@
++                        dynamic_acquisition_started = time.monotonic()
++                        dynamic_seconds_to_first_tree = None
+@@ -1526,0 +2260,45 @@
 +                    if "shopping" not in batch.non_tensor_batch:
 +                        raise RuntimeError(
 +                            "Shopping GRPO requires AgentLoop shopping diagnostics"
@@ -632,35 +812,35 @@
 +                            }
 +                        )
 +
-@@ -1643,1 +2052,1 @@
+@@ -1643,1 +2421,1 @@
 -                    if self.config.trainer.critic_warmup > self.global_steps:
 +                    if self.config.trainer.critic_warmup > current_step:
-@@ -1645,1 +2054,1 @@
+@@ -1645,1 +2423,1 @@
 -                        self.checkpoint_manager.update_weights(self.global_steps)
 +                        self.checkpoint_manager.update_weights(current_step)
-@@ -1649,0 +2059,3 @@
+@@ -1649,0 +2428,3 @@
 +                        optimizer_updated = True
 +                        if dynamic_sampling_enabled:
 +                            self.global_steps = current_step
-@@ -1665,1 +2077,2 @@
+@@ -1665,1 +2446,2 @@
 -                            or self.global_steps % self.config.trainer.save_freq == 0
 +                            or current_step % self.config.trainer.save_freq == 0
 +                            or dynamic_budget_checkpoint_due
-@@ -1675,1 +2087,1 @@
+@@ -1675,1 +2457,1 @@
 -                            self.checkpoint_manager.update_weights(self.global_steps)
 +                            self.checkpoint_manager.update_weights(current_step)
-@@ -1687,1 +2099,1 @@
+@@ -1687,1 +2469,1 @@
 -                    is_last_step or self.global_steps % self.config.trainer.test_freq == 0
 +                    is_last_step or current_step % self.config.trainer.test_freq == 0
-@@ -1697,1 +2109,1 @@
+@@ -1697,1 +2479,1 @@
 -                        self.global_steps + 1 in self.config.global_profiler.steps
 +                        current_step + 1 in self.config.global_profiler.steps
-@@ -1715,1 +2127,1 @@
+@@ -1715,1 +2497,1 @@
 -                        "training/global_step": self.global_steps,
 +                        "training/global_step": current_step,
-@@ -1716,0 +2129,1 @@
+@@ -1716,0 +2499,1 @@
 +                        "training/optimizer_updated": int(optimizer_updated),
-@@ -1718,0 +2132,12 @@
+@@ -1718,0 +2502,12 @@
 +                if dynamic_sampling_enabled:
 +                    metrics.update(
 +                        {
@@ -673,7 +853,7 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750,1 +2199,15 @@
+@@ -1750,1 +2545,15 @@
 -                logger.log(data=metrics, step=self.global_steps)
 +                append_training_diagnostic(
 +                    diagnostics_path,
@@ -690,7 +870,7 @@
 +                    ),
 +                )
 +                logger.log(data=metrics, step=current_step)
-@@ -1753,1 +2188,6 @@
+@@ -1753,1 +2562,6 @@
 -                self.global_steps += 1
 +                if dynamic_sampling_enabled and not optimizer_updated:
 +                    raise RuntimeError(

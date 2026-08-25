@@ -219,7 +219,7 @@ def install_optimizer_update_audit():
 
 
 def install_scheduler_contract():
-    """Keep the formal 500-step LR curve independent of the R400 stop."""
+    """Keep the formal 500-step LR curve resumable beyond the N200 decision point."""
     from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
 
     current = FSDPEngine._build_lr_scheduler
@@ -246,8 +246,8 @@ def install_scheduler_contract():
             "BPO scheduler contract: "
             + json.dumps(
                 {
-                    "effective_return_budget": 400,
-                    "maximum_optimizer_steps": 100,
+                    "effective_return_budget": 1600,
+                    "maximum_optimizer_steps": 200,
                     "horizon": horizon,
                     "min_lr_ratio": min_lr_ratio,
                     "scheduler": "cosine",

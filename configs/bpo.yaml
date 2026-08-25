@@ -130,16 +130,18 @@ shopping_bpo:
   entropy_probe: exact-full-vocabulary
   entropy_state: action-boundary-first-token
   rollout_audit: exact-tree-v1
-  # Formal comparison budget: 100 accepted trees x K=4 sibling returns.
-  effective_return_budget: 400
+  # Formal comparison budget: 200 updates x M=2 trees x K=4 sibling returns.
+  effective_return_budget: 1600
 
 shopping_dynamic_sampling:
   enable: true
   metric: seq_reward
-  # Aim for two useful trees, but permit one valid tree after the bounded
-  # three-batch search so rare signal still produces a real optimizer update.
-  minimum_accepted_prompts: 1
-  max_num_gen_batches: 3
+  # One global step is always a full M=2 tree batch. Accepted trees are retained
+  # across candidate-generation batches until the second tree is available.
+  minimum_accepted_prompts: 2
+  require_full_batch: true
+  soft_warning_gen_batches: 10
+  max_num_gen_batches: 30
   max_consecutive_skipped_updates: 10
   reward_tolerance: 1.0e-8
 
@@ -153,14 +155,15 @@ ray_kwargs:
 
 trainer:
   total_epochs: 50
-  # Safety ceiling. The patched trainer stops earlier at 400 effective returns.
-  total_training_steps: 100
-  save_freq: 100
-  test_freq: 100
+  # Fixed formal horizon: 200 updates x 2 trees x 4 sibling returns = R1600.
+  total_training_steps: 200
+  save_freq: 25
+  max_actor_ckpt_to_keep: 8
+  test_freq: 50
   val_before_train: true
   logger: [console]
   project_name: shopping-multiturn-agentic
-  experiment_name: bpo-native-v4-r400
+  experiment_name: bpo-native-v4-step200-r1600
   default_local_dir: ${oc.env:BPO_OUTPUT_DIR}
   n_gpus_per_node: 4
   nnodes: 1

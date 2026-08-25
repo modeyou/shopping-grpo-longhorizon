@@ -16,6 +16,7 @@ def effective_group_update_target(
     trained_groups: int,
     update_target: int,
     update_minimum: int,
+    require_full_batch: bool = False,
 ) -> tuple[int, int]:
     """Bound one update so a return-budget run cannot overshoot its target."""
     values = (
@@ -35,10 +36,15 @@ def effective_group_update_target(
         return int(update_target), int(update_minimum)
     if effective_return_budget % rollout_n:
         raise ValueError("effective return budget must be divisible by rollout_n")
-    remaining_groups = effective_return_budget // rollout_n - trained_groups
+    tree_budget = effective_return_budget // rollout_n
+    if require_full_batch and tree_budget % update_target:
+        raise ValueError("strict tree budget must be divisible by update_target")
+    remaining_groups = tree_budget - trained_groups
     if remaining_groups <= 0:
         raise ValueError("effective return budget is already exhausted")
     current_target = min(update_target, remaining_groups)
+    if require_full_batch and current_target != update_target:
+        raise ValueError("strict full-batch budget cannot produce a partial update")
     return current_target, min(update_minimum, current_target)
 
 
@@ -303,7 +309,10 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
     behavior_penalties = []
     model_failures = []
     purchase_success = []
+    reward_valid = []
     sampling_invalid = []
+    shopper_questions = []
+    shopper_rejections = []
     match_scores = []
     evidence_coverage = []
     partial_purchase = []
@@ -344,6 +353,9 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         purchase_success.append(
             float(bool(reward.get("purchase_success", reward["full"])))
         )
+        reward_valid.append(
+            float(bool(info.get("reward_valid", not info.get("reward_unverifiable"))))
+        )
         sampling_invalid.append(
             float(
                 bool(
@@ -362,6 +374,8 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         partial_purchase.append(
             float(info.get("reward_type") == "partial_alternative_purchase")
         )
+        shopper_questions.append(float(info.get("shopper_questions", 0)))
+        shopper_rejections.append(float(info.get("shopper_rejections", 0)))
 
     def mean(values):
         return sum(values) / len(values)
@@ -381,6 +395,7 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         "reward/behavior_penalty_mean": mean(behavior_penalties),
         "reward/model_failure_rate": mean(model_failures),
         "reward/purchase_success_rate": mean(purchase_success),
+        "reward/valid_rate": mean(reward_valid),
         "reward/partial_purchase_rate": mean(partial_purchase),
         "reward/match_score_mean": mean(match_scores),
         "reward/evidence_coverage_mean": mean(evidence_coverage),
@@ -401,6 +416,11 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         "trajectory/infrastructure_invalid_rate": mean(infrastructure_invalid),
         "trajectory/reward_unverifiable_rate": mean(reward_unverifiable),
         "trajectory/sampling_invalid_rate": mean(sampling_invalid),
+        "trajectory/shopper_question_rate": mean(
+            [float(value > 0) for value in shopper_questions]
+        ),
+        "trajectory/shopper_questions_mean": mean(shopper_questions),
+        "trajectory/shopper_rejections_mean": mean(shopper_rejections),
     }
 
 

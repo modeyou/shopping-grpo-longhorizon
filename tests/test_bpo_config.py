@@ -37,7 +37,7 @@ def test_formal_bpo_config_is_independent_and_frozen():
         "entropy_probe": "exact-full-vocabulary",
         "entropy_state": "action-boundary-first-token",
         "rollout_audit": "exact-tree-v1",
-        "effective_return_budget": 400,
+        "effective_return_budget": 1600,
     }
     assert rollout["n"] == 4
     assert rollout["agent"]["num_workers"] == 2
@@ -50,10 +50,11 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["actor_rollout_ref"]["actor"]["calculate_entropy"] is False
     assert config["trainer"]["n_gpus_per_node"] == 4
     assert config["trainer"]["project_name"] == "shopping-multiturn-agentic"
-    assert config["trainer"]["total_training_steps"] == 100
-    assert config["trainer"]["save_freq"] == 100
-    assert config["trainer"]["test_freq"] == 100
-    assert config["shopping_bpo"]["effective_return_budget"] == 400
+    assert config["trainer"]["total_training_steps"] == 200
+    assert config["trainer"]["save_freq"] == 25
+    assert config["trainer"]["max_actor_ckpt_to_keep"] == 8
+    assert config["trainer"]["test_freq"] == 50
+    assert config["shopping_bpo"]["effective_return_budget"] == 1600
     optim = config["actor_rollout_ref"]["actor"]["optim"]
     assert optim == {
         "lr": 1.0e-6,
@@ -62,7 +63,10 @@ def test_formal_bpo_config_is_independent_and_frozen():
         "min_lr_ratio": 0.1,
     }
     assert config["data"]["train_batch_size"] == 2
-    assert config["shopping_dynamic_sampling"]["minimum_accepted_prompts"] == 1
+    assert config["shopping_dynamic_sampling"]["minimum_accepted_prompts"] == 2
+    assert config["shopping_dynamic_sampling"]["require_full_batch"] is True
+    assert config["shopping_dynamic_sampling"]["soft_warning_gen_batches"] == 10
+    assert config["shopping_dynamic_sampling"]["max_num_gen_batches"] == 30
 
 
 class _FakeCuda:

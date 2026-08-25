@@ -21,21 +21,32 @@ class RewardGroupSelectionTest(unittest.TestCase):
     def test_effective_return_budget_caps_the_last_update_without_overshoot(self):
         self.assertEqual(
             effective_group_update_target(
-                effective_return_budget=400,
+                effective_return_budget=1600,
                 rollout_n=4,
-                trained_groups=99,
+                trained_groups=398,
                 update_target=2,
-                update_minimum=1,
+                update_minimum=2,
+                require_full_batch=True,
             ),
-            (1, 1),
+            (2, 2),
         )
         with self.assertRaisesRegex(ValueError, "already exhausted"):
             effective_group_update_target(
-                effective_return_budget=400,
+                effective_return_budget=1600,
                 rollout_n=4,
-                trained_groups=100,
+                trained_groups=400,
                 update_target=2,
-                update_minimum=1,
+                update_minimum=2,
+                require_full_batch=True,
+            )
+        with self.assertRaisesRegex(ValueError, "divisible by update_target"):
+            effective_group_update_target(
+                effective_return_budget=1596,
+                rollout_n=4,
+                trained_groups=0,
+                update_target=2,
+                update_minimum=2,
+                require_full_batch=True,
             )
 
     def test_bpo_diagnostics_preserve_branch_location_and_diversity(self):
@@ -260,6 +271,9 @@ class RewardGroupSelectionTest(unittest.TestCase):
                 "done": True,
                 "termination_reason": "environment_done",
                 "infrastructure_invalid": False,
+                "reward_valid": True,
+                "shopper_questions": 1,
+                "shopper_rejections": 0,
                 "reward": {
                     "full": 1.0,
                     "strict": 1.0,
@@ -285,6 +299,9 @@ class RewardGroupSelectionTest(unittest.TestCase):
                 "done": False,
                 "termination_reason": "max_steps",
                 "infrastructure_invalid": False,
+                "reward_valid": False,
+                "shopper_questions": 0,
+                "shopper_rejections": 1,
                 "reward": {
                     "full": 0.0,
                     "strict": 0.0,
@@ -313,10 +330,14 @@ class RewardGroupSelectionTest(unittest.TestCase):
         self.assertEqual(metrics["reward/shaped_min"], -0.05)
         self.assertEqual(metrics["reward/shaped_max"], 1.73)
         self.assertEqual(metrics["reward/purchase_success_rate"], 0.5)
+        self.assertEqual(metrics["reward/valid_rate"], 0.5)
         self.assertEqual(metrics["component/r_type_mean"], 0.5)
         self.assertEqual(metrics["trajectory/average_steps"], 22.5)
         self.assertEqual(metrics["trajectory/done_rate"], 0.5)
         self.assertEqual(metrics["trajectory/max_steps_rate"], 0.5)
+        self.assertEqual(metrics["trajectory/shopper_question_rate"], 0.5)
+        self.assertEqual(metrics["trajectory/shopper_questions_mean"], 0.5)
+        self.assertEqual(metrics["trajectory/shopper_rejections_mean"], 0.5)
 
 
 if __name__ == "__main__":  # pragma: no cover

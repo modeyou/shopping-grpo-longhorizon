@@ -102,10 +102,10 @@ session 隔离约束。正常的错误动作、无购买、错误购买和终止
 信号；HTTP/API 故障、状态恢复不一致、快照泄漏、非 Reward v4 和其他基础设施无效组不得当作
 负奖励进入优化。
 
-若一个 group 的四个 return 没有可辨别差异，组内相对 advantage 为零。每次更新目标仍为
-2 个有效 group；动态采样最多尝试 3 个生成 batch。若届时得到 1 个有效 group，就以该真实
-K=4 group 完成一次较小更新；若一个也没有才跳过，并在连续 10 次无有效更新时停止。这个
-`target=2/minimum=1` 契约不是把正式 batch 永久降成 1，而是在有效信号稀缺时避免丢弃。
+若一个 group 的四个 return 没有可辨别差异，组内相对 advantage 为零，不进入 optimizer。
+正式训练每步严格要求 2 个有效 group；第一棵会跨候选生成 batch 保留，绝不降级为单树更新。
+第 10 个候选 batch 仍未满批时告警，第 30 个仍未凑齐时硬停止并保留最近 checkpoint；当前
+未完成 step 不计数，也不会把无差异树或伪造的第二棵树塞进训练。
 
 ### 2.4 BPO、GRPO、critic 与 PPO 的关系
 
@@ -137,9 +137,9 @@ K 增大不仅增加采样，还增加完整序列的 log-prob、reference forwa
 重建后的完整序列。因此它可能减少重复的前缀环境交互和 Shopper API 调用，但不保证 wall-clock
 一定更快。正式目标是提高关键决策附近的样本效率，并在相同 K=4 预算下提升完整购买成功率。
 
-只有 10 个 optimizer updates 的首轮属于“可运行性 + 方向性”实验，足以淘汰错误实现、观察
-分叉分布和判断相对 GRPO 是否有信号，但不足以单独证明算法稳定优越。是否扩展训练应由冻结
-dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
+1-step smoke 只负责证明完整双树 optimizer 链路可运行。正式首轮固定为 200 个 optimizer
+updates；是否从 step 200 续训到 scheduler horizon 500，应由冻结 dev500 三面板结果、
+validation 曲线、基础设施有效率和分叉诊断共同决定。
 
 ## 3. 快照与状态隔离
 
@@ -171,9 +171,9 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 `lambda=0.95` 向分叉前传播；最后进入 PPO clip tree loss。当前实现逐项对应这些接口。
 
 项目与论文实验规模的差异是有意冻结的资源适配，不冒充论文原配置：论文主实验使用多分叉、
-更大的 return budget、8 张 A100 和数千次更新；本项目首版固定 `M=1, K=4`、四张 4090 和
-100 个有效 tree / 400 个有效 sibling returns，只用于验证 Shopping 场景下是否有方向性收益。论文实验还使用 `2e-6` 学习率、
-`beta=0.05` KL 和 batch 128；本项目为显存与首轮归因固定为 `1e-6`、`beta=0`、batch 2。
+更大的 return budget、8 张 A100 和数千次更新；本项目固定 `M=2, K=4`、四张 4090，正式
+运行 200 个双树 optimizer steps，即 400 个有效 tree / 1600 个有效 sibling returns。论文实验还使用 `2e-6` 学习率、
+`beta=0.05` KL 和 batch 128；本项目为显存与首轮归因固定为 `1e-6`、`beta=0`、每步 2 棵树。
 `beta=0` 是论文无偏性定理明确覆盖的特例，但不是论文主实验超参数。论文没有公开可核对的官方实现仓库，
 因此“对齐”以论文公式、算法 1 和 veRL 0.8 官方数据流为准，而不是依据同名但不同算法的仓库。
 
@@ -189,6 +189,7 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 | train batch | 2 prompts |
 | sibling count K | 4 |
 | branch count M | 1 |
+| accepted trees / global step | 严格 2；跨候选生成批次保留，禁止单树降级 |
 | return budget | 4 / prompt |
 | 分叉选择 | 最大精确全词表 entropy，最早边界打破平局 |
 | entropy 状态 | action 起始边界的首 token 分布；不得条件化已生成 action token |
@@ -198,9 +199,9 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 | rollout temperature / top-p | 0.7 / 0.9 |
 | LoRA rank / alpha | 16 / 32 |
 | learning rate | `1e-6`，显式 warmup 10 steps，cosine horizon 500，最低 `1e-7` |
-| 正式停止预算 | 100 个有效 tree / 400 个有效 sibling returns |
-| optimizer updates | 最多 100；达到 R400 时提前停止 |
-| checkpoint / validation | R200 保存；R400 保存并验证 |
+| 正式停止预算 | 200 global steps / 400 个有效 tree / 1600 个有效 sibling returns |
+| optimizer updates | 严格 200 个完整双树 global steps |
+| checkpoint / validation | 每 25 steps 保存并保留全部 8 份；train 前及每 50 steps 验证；step 200 可续训到 500 |
 | GPU | 4 张 |
 | vLLM GPU memory utilization | 0.45 |
 | vLLM max sequences（每个单卡引擎） | 8 |
@@ -307,7 +308,7 @@ bash scripts/bpo.sh \
   --preflight-only
 ```
 
-预检会拒绝非 Reward v4、错误 manifest、非四卡、非 K=4/M=1、worker 分组错误、
+预检会拒绝非 Reward v4、错误 manifest、非四卡、非 K=4/M=2、worker 分组错误、
 缺少精确熵补丁、显存组合不是 `fused=true + Liger=true + remove-padding=true + vLLM 0.45/8`、
 四张可见 GPU 中任一卡空闲显存低于 20 GiB、动态采样补丁缺失和监控配置错误。
 
@@ -403,13 +404,14 @@ smoke 必须确认：
 
 ## 7. 正式训练
 
-确认 smoke 后使用全新输出目录启动原生 Reward V4 的 `BPO-N-R400`：
+确认严格双树 smoke 后使用全新输出目录启动原生 Reward V4 的
+`BPO-N200/R1600`：
 
 ```bash
 bash scripts/bpo.sh \
   --model "$BPO_MODEL" \
   --output "$BPO_FORMAL_OUT" \
-  --experiment-name bpo-native-v4-r400-seed20260823 \
+  --experiment-name bpo-native-v4-step200-r1600-seed20260823 \
   --logger swanlab \
   --seed 20260823 \
   --shopper-model "$SHOPPER_MODEL" \
@@ -423,25 +425,38 @@ SHA256、seed、分叉参数、数据环境清单、BPO 运行时清单和显存
 loss、学习率、显存和时间指标外，必须同时保留：
 
 - `bpo_budget/effective_trees_total` 与 `bpo_budget/effective_returns_total`；
-- `group/generated`、`group/trained`、有效率和重采样批次数；
+- `bpo_batch/trees=2`、`bpo_batch/sibling_returns=8` 与完整满批断言；
+- `group/generated`、`group/trained`、单步/累计有效率和重采样批次数；
+- `bpo_sampling/seconds_to_first_tree`、`seconds_to_full_batch` 与候选批次数；
 - `rollout/generated_total` 与累计实际生成 response tokens；
 - backbone rollout、branch continuation、环境 transition、Shopper API 调用的单步与累计值；
 - 分叉相对位置、分叉 entropy、首动作与工具序列多样性；
 - 严格购买成功率、terminal utility、Reward v4 有效率、基础设施无效比例；
 - 首步非零梯度和真实参数 delta 审计。
 
-这里的 R400 指真正进入 optimizer update 的 400 个 sibling returns，不包括被动态采样
+训练前及 step 50/100/150/200 的 validation 不做 BPO 分叉（`val n=1`），而是在冻结的
+400-row validation parquet 上记录 `val-shopping/*` 标量，包括 strict/full、购买成功率、
+terminal utility、done、平均步数、repeat/max-steps、基础设施无效、reward unverifiable 与
+sampling invalid。checkpoint 选择首先看 strict/purchase success，再用 Reward 有效率与
+terminal utility 排除“成功率虚高但轨迹不可验证”的模型，不能只按 shaped reward 选。
+
+这里的 R1600 指真正进入 optimizer update 的 1600 个 sibling returns，不包括被动态采样
 丢弃的 tree；但所有被丢弃 tree 消耗的 token、环境交互和 API 调用仍计入实际成本。
 因此与 GRPO 比较时应同时报告有效 return 预算和实际 GPU/API 成本，不能只比较 step 数。
+
+每个 global step 在同一 policy 版本下持续收集候选；第一棵有效 tree 会保留到第二棵
+到达。10 个候选生成批次仍未满组时写入 SwanLab 告警；30 批仍未凑齐两棵时硬停止，
+禁止用单树更新。最近的 25-step checkpoint 保持可恢复，当前未完成 step 不计数。
 
 BPO 与 GRPO 不得同时占用 GPU 0–3、同一 Ray runtime 或同一批 ShopSimulator slots。
 可以在 GRPO 运行期间开发 BPO 代码，但 BPO smoke 必须等 GRPO 完全退出后执行。
 
 ## 8. 评测与停止规则
 
-达到 400 个有效 sibling returns 后，只在冻结 dev500 的三个面板评测候选 checkpoint：
+完成 200 global steps / 1600 个有效 sibling returns 后，只在冻结 dev500 的三个面板
+评测候选 checkpoint：
 
-先执行正式验收；未打印 `BPO-N-R400 FORMAL RUN ACCEPTED` 时不得进入 dev500：
+先执行正式验收；未打印 `BPO-N200-R1600 FORMAL RUN ACCEPTED` 时不得进入 dev500：
 
 ```bash
 "$GRPO_PYTHON" scripts/audit_bpo_formal_run.py \

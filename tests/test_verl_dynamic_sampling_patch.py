@@ -152,6 +152,14 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn("terminal_utilities=terminal_utilities", fit_source)
             self.assertIn("sampling_invalid=sampling_invalid", fit_source)
             self.assertIn("minimum_accepted_prompts", fit_source)
+            self.assertIn("dynamic_require_full_batch", fit_source)
+            self.assertIn("SHOPPING_GRPO_DYNAMIC_SAMPLING_SLOW_BATCH", fit_source)
+            self.assertIn('"bpo_sampling/seconds_to_full_batch"', fit_source)
+            self.assertIn('"bpo_batch/trees"', fit_source)
+            self.assertIn('"bpo_batch/sibling_returns"', fit_source)
+            self.assertIn("strict BPO sampling could not collect", fit_source)
+            self.assertIn("ready_reward_tensor, _ = extract_reward(batch)", fit_source)
+            self.assertIn("ready_reward_tensor.sum(dim=-1)", fit_source)
             self.assertIn("SHOPPING_GRPO_DYNAMIC_SAMPLING_PARTIAL", fit_source)
             self.assertIn("extract_aligned_bpo_fields", fit_source)
             self.assertIn("summarize_bpo_group_diagnostics", fit_source)
@@ -221,6 +229,9 @@ class VerlPatchScriptTest(unittest.TestCase):
                 "reward_extra_infos_dict, sample_turns)",
                 validate_source,
             )
+            self.assertIn("aggregate_shopping_metrics(sample_shopping)", validate_source)
+            self.assertIn('f"val-shopping/{key}"', validate_source)
+            self.assertIn("return validation_metrics", validate_source)
 
     def test_select_and_concat_keep_all_trajectory_fields_aligned(self):
         def make_batch(offset: int, uid_prefix: str) -> DataProto:

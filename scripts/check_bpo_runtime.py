@@ -44,11 +44,17 @@ def validate_bpo_config(config):
     if int(rollout.max_num_seqs) != 8:
         raise SystemExit("formal BPO requires vLLM max_num_seqs=8")
     dynamic = config.shopping_dynamic_sampling
-    if int(dynamic.minimum_accepted_prompts) != 1:
+    if int(dynamic.minimum_accepted_prompts) != 2:
         raise SystemExit(
             "formal BPO requires shopping_dynamic_sampling."
-            "minimum_accepted_prompts=1"
+            "minimum_accepted_prompts=2"
         )
+    if not bool(dynamic.require_full_batch):
+        raise SystemExit("formal BPO requires strict full-tree batches")
+    if int(dynamic.soft_warning_gen_batches) != 10:
+        raise SystemExit("formal BPO requires a 10-generation-batch warning")
+    if int(dynamic.max_num_gen_batches) != 30:
+        raise SystemExit("formal BPO requires a 30-generation-batch hard limit")
     if int(config.data.train_batch_size) != 2:
         raise SystemExit("formal BPO requires train_batch_size=2")
     if not bool(model.use_fused_kernels):
@@ -68,12 +74,16 @@ def validate_bpo_config(config):
         raise SystemExit("formal BPO requires PPO clip ratio 0.2")
     if int(config.trainer.n_gpus_per_node) != 4:
         raise SystemExit("formal BPO requires four GPUs")
-    if int(bpo.effective_return_budget) != 400:
-        raise SystemExit("formal BPO requires effective_return_budget=400")
-    if int(config.trainer.total_training_steps) != 100:
-        raise SystemExit("formal BPO requires a 100-step safety ceiling")
-    if int(config.trainer.save_freq) != 100 or int(config.trainer.test_freq) != 100:
-        raise SystemExit("formal BPO requires final fallback save/test at step 100")
+    if int(bpo.effective_return_budget) != 1600:
+        raise SystemExit("formal BPO requires effective_return_budget=1600")
+    if int(config.trainer.total_training_steps) != 200:
+        raise SystemExit("formal BPO requires exactly 200 global steps")
+    if int(config.trainer.save_freq) != 25 or int(config.trainer.test_freq) != 50:
+        raise SystemExit(
+            "formal BPO requires checkpoints every 25 steps and validation every 50"
+        )
+    if int(config.trainer.max_actor_ckpt_to_keep) != 8:
+        raise SystemExit("formal BPO must retain all eight 25-step checkpoints")
     if int(config.data.seed) != 20260823:
         raise SystemExit("formal BPO requires data seed 20260823")
     optim = config.actor_rollout_ref.actor.optim
@@ -461,9 +471,11 @@ def main():
                 "branch_count": 1,
                 "sibling_count": 4,
                 "return_budget": 4,
-                "effective_tree_budget": 100,
-                "effective_return_budget": 400,
-                "maximum_optimizer_steps": 100,
+                "effective_tree_budget": 400,
+                "effective_return_budget": 1600,
+                "trees_per_optimizer_step": 2,
+                "returns_per_optimizer_step": 8,
+                "maximum_optimizer_steps": 200,
                 "scheduler": "cosine",
                 "scheduler_horizon": 500,
                 "warmup_steps": 10,
@@ -472,6 +484,15 @@ def main():
                 "dynamic_target_prompts": int(config.data.train_batch_size),
                 "dynamic_minimum_accepted_prompts": int(
                     config.shopping_dynamic_sampling.minimum_accepted_prompts
+                ),
+                "dynamic_require_full_batch": bool(
+                    config.shopping_dynamic_sampling.require_full_batch
+                ),
+                "dynamic_soft_warning_generation_batches": int(
+                    config.shopping_dynamic_sampling.soft_warning_gen_batches
+                ),
+                "dynamic_max_generation_batches": int(
+                    config.shopping_dynamic_sampling.max_num_gen_batches
                 ),
                 "upstream_lambda": 0.95,
                 "gpu_memory_utilization": 0.45,
