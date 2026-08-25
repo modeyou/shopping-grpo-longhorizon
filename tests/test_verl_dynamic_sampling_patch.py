@@ -228,10 +228,10 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn(
                 "reward_extra_infos_dict=validation_extra_infos", validate_source
             )
-            self.assertIn(
-                "self._val_metrics_update(data_sources, sample_uids, "
-                "reward_extra_infos_dict, sample_turns)",
+            self.assertRegex(
                 validate_source,
+                r"self\._val_metrics_update\(\s*data_sources,\s*sample_uids,\s*"
+                r"reward_extra_infos_dict,\s*sample_turns\s*\)",
             )
             self.assertIn("aggregate_shopping_metrics(sample_shopping)", validate_source)
             self.assertIn('f"val-shopping/{key}"', validate_source)
