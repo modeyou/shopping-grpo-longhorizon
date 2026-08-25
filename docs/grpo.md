@@ -222,6 +222,21 @@ Rubric 不是另一个 reward。它把任务要求冻结成可核对维度；Jud
 
 ## 正式 A/B 入口
 
+当前服务器的 GPU 1 被其他服务占用。正式 GRPO 必须显式保留物理卡
+`0,2,3,4`，不要写成进程内的逻辑编号 `0,1,2,3`，也不要手工启动 Ray：
+
+~~~bash
+export CUDA_VISIBLE_DEVICES=0,2,3,4
+export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
+unset RAY_ADDRESS
+~~~
+
+运行时 hook 会把 Ray 分配的物理 ID 映射为 CUDA 掩码内的逻辑 ordinal：
+`0→0、2→1、3→2、4→3`。正式 preflight 会拒绝未显式设置的掩码、重复或非四卡
+掩码、Ray 自动重写掩码、可见卡数量不符，以及任一可见卡空闲显存低于 20 GiB
+的启动。这样既不会误占物理 GPU 1，也不会把物理 GPU 4 错当成不存在的
+进程内 `cuda:4`。
+
 先在项目 Python 环境中安装两个经过固定源校验的 veRL 补丁。第二个补丁可逆地恢复第一个补丁并校验其 SHA-256，因此未知或被手改的 veRL 文件会被拒绝：
 
 ~~~bash

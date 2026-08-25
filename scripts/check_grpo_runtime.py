@@ -438,6 +438,37 @@ def validate_reward_shaping_profile():
 
 def validate_visible_gpu_headroom(torch, expected_devices: int, minimum_free_gib=20.0):
     """Require the formal run to see only the intended clean CUDA devices."""
+    from shopping_grpo.training.grpo.compat import (
+        cuda_logical_ordinal,
+        parse_visible_cuda_devices,
+    )
+
+    raw_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if not raw_visible_devices:
+        raise SystemExit(
+            "formal GRPO requires an explicit CUDA_VISIBLE_DEVICES mask; "
+            "for the current server use CUDA_VISIBLE_DEVICES=0,2,3,4"
+        )
+    try:
+        physical_devices = parse_visible_cuda_devices(raw_visible_devices)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if len(physical_devices) != expected_devices:
+        raise SystemExit(
+            f"formal GRPO requires exactly {expected_devices} physical GPU ids in "
+            f"CUDA_VISIBLE_DEVICES, got {physical_devices}"
+        )
+    if os.environ.get("RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES") != "1":
+        raise SystemExit(
+            "formal GRPO requires "
+            "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1"
+        )
+    logical_mapping = {
+        physical: cuda_logical_ordinal(physical, raw_visible_devices)
+        for physical in physical_devices
+    }
+    if list(logical_mapping.values()) != list(range(expected_devices)):
+        raise SystemExit(f"invalid sparse CUDA logical mapping: {logical_mapping}")
     device_count = int(torch.cuda.device_count())
     if device_count != expected_devices:
         raise SystemExit(
@@ -459,12 +490,19 @@ def validate_visible_gpu_headroom(torch, expected_devices: int, minimum_free_gib
         + json.dumps(
             {
                 "device_count": device_count,
+                "physical_devices": physical_devices,
+                "physical_to_logical": logical_mapping,
                 "free_gib": free_gib,
                 "minimum_free_gib": minimum_free_gib,
             },
             sort_keys=True,
         )
     )
+    return {
+        "physical_devices": physical_devices,
+        "physical_to_logical": logical_mapping,
+        "free_gib": free_gib,
+    }
 
 
 def ppo_gradient_accumulation_steps(mini_batch_size: int, micro_batch_size: int) -> int:
@@ -616,7 +654,12 @@ def main():
         from verl.experimental.agent_loop.tool_agent_loop import AgentState, ToolAgentLoop
         from shopping_grpo.training.grpo.adapter.agent_loop import ShoppingToolAgentLoop
         from shopping_grpo.training.grpo.adapter.tools import ShopSimulatorTool
-        from shopping_grpo.training.grpo.compat import install_torch_padding_fallback
+        from shopping_grpo.training.grpo.compat import (
+            SPARSE_CUDA_MAPPING_MARKER,
+            install_sparse_cuda_mapping,
+            install_torch_padding_fallback,
+        )
+        from verl.single_controller.base.worker import Worker
         from verl.tools.base_tool import BaseTool
         from verl.utils.tracking import Tracking
     except ImportError as exc:
@@ -628,7 +671,7 @@ def main():
     verl_source = Path(verl.__file__).resolve()
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable in the GRPO environment")
-    validate_visible_gpu_headroom(
+    gpu_audit = validate_visible_gpu_headroom(
         torch,
         expected_devices=int(config.trainer.n_gpus_per_node),
     )
@@ -647,6 +690,20 @@ def main():
     validate_scheduler_horizon(config, verl_source)
     validate_swanlab_tracking(config)
     install_torch_padding_fallback()
+    install_sparse_cuda_mapping()
+    if (
+        getattr(
+            Worker._setup_env_cuda_visible_devices,
+            "_shopping_grpo_marker",
+            None,
+        )
+        != SPARSE_CUDA_MAPPING_MARKER
+    ):
+        raise SystemExit("GRPO sparse CUDA worker hook was not installed")
+    print(
+        "GRPO sparse-CUDA mapping preflight passed: "
+        + json.dumps(gpu_audit, sort_keys=True)
+    )
     print(
         "GRPO runtime preflight passed: "
         + ", ".join(f"{name}={value}" for name, value in installed.items())

@@ -130,7 +130,7 @@ reward_model:
 ray_kwargs:
   ray_init:
     runtime_env:
-      worker_process_setup_hook: shopping_grpo.training.grpo.compat.install_torch_padding_fallback
+      worker_process_setup_hook: shopping_grpo.training.grpo.compat.worker_process_setup_hook
 
 trainer:
   total_epochs: 50

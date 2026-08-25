@@ -158,6 +158,8 @@ class PublicEntrypointTest(unittest.TestCase):
                 "SHOPPER_MODEL": "shopper",
                 "SHOPPER_BASE_URL": "https://shopper.example.test/v1",
                 "SHOPPER_API_KEY": "must-not-be-written",
+                "CUDA_VISIBLE_DEVICES": "0,2,3,4",
+                "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
             }
             audit = {
                 "command": ["python", "-m", "verl.trainer.main_ppo"],
@@ -177,6 +179,13 @@ class PublicEntrypointTest(unittest.TestCase):
         self.assertEqual(
             contract["runtime_contract"]["reward_profile"],
             "bounded-v1",
+        )
+        self.assertEqual(
+            contract["runtime_contract"]["cuda_physical_to_logical"],
+            {"0": 0, "2": 1, "3": 2, "4": 3},
+        )
+        self.assertTrue(
+            contract["runtime_contract"]["ray_preserves_cuda_visible_devices"]
         )
         self.assertIn("sha256", contract["inputs"]["train_data"])
         self.assertIn("sha256", contract["inputs"]["data_manifest"])

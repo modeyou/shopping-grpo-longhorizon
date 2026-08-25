@@ -278,6 +278,8 @@ def _model_artifact_paths(model: Path) -> list[Path]:
 
 def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
     """Persist a secret-free, machine-verifiable GRPO launch contract."""
+    from shopping_grpo.training.grpo.compat import parse_visible_cuda_devices
+
     git_commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"],
         cwd=ROOT,
@@ -304,6 +306,15 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
         environment["SHOPPING_GRPO_DATA_MANIFEST"]
     )
     model_artifacts = _model_artifact_paths(Path(environment["GRPO_MODEL_PATH"]))
+    cuda_visible_devices = environment.get("CUDA_VISIBLE_DEVICES", "")
+    cuda_physical_to_logical = {}
+    if cuda_visible_devices:
+        cuda_physical_to_logical = {
+            physical: logical
+            for logical, physical in enumerate(
+                parse_visible_cuda_devices(cuda_visible_devices)
+            )
+        }
     contract = {
         "schema_version": "shopping-grpo-run-contract-v2",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -320,7 +331,12 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
             "seed": int(environment["GRPO_SEED"]),
             "shopper_model": environment["SHOPPER_MODEL"],
             "shopper_base_url": environment["SHOPPER_BASE_URL"],
-            "cuda_visible_devices": environment.get("CUDA_VISIBLE_DEVICES", ""),
+            "cuda_visible_devices": cuda_visible_devices,
+            "cuda_physical_to_logical": cuda_physical_to_logical,
+            "ray_preserves_cuda_visible_devices": environment.get(
+                "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES"
+            )
+            == "1",
             "ray_launcher_owned": not bool(environment.get("RAY_ADDRESS", "").strip()),
         },
         "inputs": {

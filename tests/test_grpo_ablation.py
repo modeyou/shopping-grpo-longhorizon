@@ -5,6 +5,7 @@ from scripts.check_grpo_runtime import (
     ppo_gradient_accumulation_steps,
     validate_grpo_seeds,
     validate_reward_shaping_profile,
+    validate_visible_gpu_headroom,
 )
 from shopping_grpo.training.grpo.adapter.runtime import (
     apply_bounded_reward_shaping,
@@ -19,6 +20,50 @@ from shopping_grpo.training.grpo.dynamic_sampling import (
 
 
 class GrpoAblationTest(unittest.TestCase):
+    def test_formal_gpu_preflight_audits_sparse_physical_mask(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        free_bytes = 21 * 1024 ** 3
+        torch = SimpleNamespace(
+            cuda=SimpleNamespace(
+                device_count=lambda: 4,
+                mem_get_info=lambda index: (free_bytes, 24 * 1024 ** 3),
+            )
+        )
+        environment = {
+            "CUDA_VISIBLE_DEVICES": "0,2,3,4",
+            "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            audit = validate_visible_gpu_headroom(torch, expected_devices=4)
+        self.assertEqual(audit["physical_devices"], ["0", "2", "3", "4"])
+        self.assertEqual(
+            audit["physical_to_logical"],
+            {"0": 0, "2": 1, "3": 2, "4": 3},
+        )
+
+    def test_formal_gpu_preflight_rejects_implicit_or_ray_rewritten_mask(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        torch = SimpleNamespace(cuda=SimpleNamespace(device_count=lambda: 4))
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(SystemExit, "explicit CUDA_VISIBLE_DEVICES"):
+                validate_visible_gpu_headroom(torch, expected_devices=4)
+        with patch.dict(
+            os.environ,
+            {"CUDA_VISIBLE_DEVICES": "0,2,3,4"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(
+                SystemExit,
+                "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1",
+            ):
+                validate_visible_gpu_headroom(torch, expected_devices=4)
+
     def test_grpo_yaml_decodes_environment_seed_as_integer(self):
         config = (
             Path(__file__).resolve().parents[1] / "configs" / "grpo.yaml"
