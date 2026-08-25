@@ -201,7 +201,7 @@ validation 曲线、基础设施有效率和分叉诊断共同决定。
 | learning rate | `1e-6`，显式 warmup 10 steps，cosine horizon 500，最低 `1e-7` |
 | 正式停止预算 | 200 global steps / 400 个有效 tree / 1600 个有效 sibling returns |
 | optimizer updates | 严格 200 个完整双树 global steps |
-| checkpoint / validation | 每 25 steps 保存并保留全部 8 份；train 前及每 50 steps 验证；step 200 可续训到 500 |
+| checkpoint / validation | step 10 额外保存并验证；之后每 25 steps 保存、每 50 steps 验证；保留全部 9 份 checkpoint |
 | GPU | 4 张 |
 | vLLM GPU memory utilization | 0.45 |
 | vLLM max sequences（每个单卡引擎） | 8 |
@@ -434,11 +434,18 @@ loss、学习率、显存和时间指标外，必须同时保留：
 - 严格购买成功率、terminal utility、Reward v4 有效率、基础设施无效比例；
 - 首步非零梯度和真实参数 delta 审计。
 
-训练前及 step 50/100/150/200 的 validation 不做 BPO 分叉（`val n=1`），而是在冻结的
+训练前及 step 10/50/100/150/200 的 validation 不做 BPO 分叉（`val n=1`），而是在冻结的
 400-row validation parquet 上记录 `val-shopping/*` 标量，包括 strict/full、购买成功率、
 terminal utility、done、平均步数、repeat/max-steps、基础设施无效、reward unverifiable 与
 sampling invalid。checkpoint 选择首先看 strict/purchase success，再用 Reward 有效率与
 terminal utility 排除“成功率虚高但轨迹不可验证”的模型，不能只按 shaped reward 选。
+其中 `val n=1` 表示每个 validation row 只生成一条 temperature=0 的确定性轨迹；它不是
+validation batch size，也不构造 K=4 BPO tree 或计算 sibling advantage。
+
+正式配置将 `data.dataloader_num_workers` 固定为 0。2000/400-row parquet 的读取不是吞吐
+瓶颈，使用主进程加载可以消除短 run 结束时 multiprocessing DataLoader worker 在 `atexit`
+阶段被回收并打印 `Killed` 的噪声；Ray、两个 AgentLoop workers 和四个 vLLM engine 的并行
+保持不变。若修改后仍在训练中途看到 `Killed`，应视为真实故障而不是退出清理提示。
 
 这里的 R1600 指真正进入 optimizer update 的 1600 个 sibling returns，不包括被动态采样
 丢弃的 tree；但所有被丢弃 tree 消耗的 token、环境交互和 API 调用仍计入实际成本。

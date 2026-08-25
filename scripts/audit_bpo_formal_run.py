@@ -39,8 +39,8 @@ def audit(output: Path, log: Path) -> dict:
         "trees_per_optimizer_step": 2,
         "returns_per_optimizer_step": 8,
         "maximum_optimizer_steps": 200,
-        "checkpoint_steps": [25, 50, 75, 100, 125, 150, 175, 200],
-        "validation_steps": [0, 50, 100, 150, 200],
+        "checkpoint_steps": [10, 25, 50, 75, 100, 125, 150, 175, 200],
+        "validation_steps": [0, 10, 50, 100, 150, 200],
         "scheduler": "cosine",
         "scheduler_horizon": 500,
         "warmup_steps": 10,
@@ -125,8 +125,8 @@ def audit(output: Path, log: Path) -> dict:
     checkpoints = sorted(
         path for path in output.glob("global_step_*") if path.is_dir()
     )
-    if len(checkpoints) < 8:
-        raise ValueError("formal BPO requires checkpoints every 25 steps")
+    if len(checkpoints) < 9:
+        raise ValueError("formal BPO requires step 10 plus every-25-step checkpoints")
 
     return {
         "status": "accepted",

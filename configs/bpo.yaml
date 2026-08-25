@@ -12,6 +12,8 @@ data:
   val_files: ${oc.env:BPO_VAL_FILE}
   train_batch_size: 2
   val_batch_size: 2
+  # Formal parquet is small; avoid multiprocessing DataLoader teardown noise.
+  dataloader_num_workers: 0
   seed: ${oc.decode:${oc.env:BPO_SEED,20260823}}
   max_prompt_length: 4096
   max_response_length: 20480
@@ -142,6 +144,8 @@ shopping_dynamic_sampling:
   require_full_batch: true
   soft_warning_gen_batches: 10
   max_num_gen_batches: 30
+  checkpoint_steps: [10]
+  validation_steps: [10]
   max_consecutive_skipped_updates: 10
   reward_tolerance: 1.0e-8
 
@@ -158,7 +162,7 @@ trainer:
   # Fixed formal horizon: 200 updates x 2 trees x 4 sibling returns = R1600.
   total_training_steps: 200
   save_freq: 25
-  max_actor_ckpt_to_keep: 8
+  max_actor_ckpt_to_keep: 9
   test_freq: 50
   val_before_train: true
   logger: [console]

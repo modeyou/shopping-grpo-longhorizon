@@ -55,6 +55,12 @@ def validate_bpo_config(config):
         raise SystemExit("formal BPO requires a 10-generation-batch warning")
     if int(dynamic.max_num_gen_batches) != 30:
         raise SystemExit("formal BPO requires a 30-generation-batch hard limit")
+    if list(dynamic.checkpoint_steps) != [10]:
+        raise SystemExit("formal BPO requires an early step-10 checkpoint")
+    if list(dynamic.validation_steps) != [10]:
+        raise SystemExit("formal BPO requires an early step-10 validation")
+    if int(config.data.dataloader_num_workers) != 0:
+        raise SystemExit("formal BPO requires single-process parquet loading")
     if int(config.data.train_batch_size) != 2:
         raise SystemExit("formal BPO requires train_batch_size=2")
     if not bool(model.use_fused_kernels):
@@ -82,8 +88,8 @@ def validate_bpo_config(config):
         raise SystemExit(
             "formal BPO requires checkpoints every 25 steps and validation every 50"
         )
-    if int(config.trainer.max_actor_ckpt_to_keep) != 8:
-        raise SystemExit("formal BPO must retain all eight 25-step checkpoints")
+    if int(config.trainer.max_actor_ckpt_to_keep) != 9:
+        raise SystemExit("formal BPO must retain step 10 plus eight 25-step checkpoints")
     if int(config.data.seed) != 20260823:
         raise SystemExit("formal BPO requires data seed 20260823")
     optim = config.actor_rollout_ref.actor.optim

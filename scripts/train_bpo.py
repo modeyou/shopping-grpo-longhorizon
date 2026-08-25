@@ -232,6 +232,7 @@ def write_contract(environment, audit):
             "dynamic_require_full_batch": True,
             "dynamic_soft_warning_generation_batches": 10,
             "dynamic_max_generation_batches": 30,
+            "dataloader_num_workers": 0,
             "tolerant_xml_parameter_parser": True,
             "optimizer_update_audit": "first-step-nonzero-gradient-and-delta-v1",
             "scheduler": "cosine",
@@ -243,9 +244,9 @@ def write_contract(environment, audit):
             "trees_per_optimizer_step": 2,
             "returns_per_optimizer_step": 8,
             "maximum_optimizer_steps": 200,
-            "budget_checkpoint_returns": [200, 400, 600, 800, 1000, 1200, 1400, 1600],
-            "checkpoint_steps": [25, 50, 75, 100, 125, 150, 175, 200],
-            "validation_steps": [0, 50, 100, 150, 200],
+            "budget_checkpoint_returns": [80, 200, 400, 600, 800, 1000, 1200, 1400, 1600],
+            "checkpoint_steps": [10, 25, 50, 75, 100, 125, 150, 175, 200],
+            "validation_steps": [0, 10, 50, 100, 150, 200],
         },
         "inputs": {
             name: {"path": str(Path(path).resolve()), "sha256": _sha256(path)}

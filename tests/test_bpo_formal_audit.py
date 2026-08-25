@@ -17,8 +17,8 @@ def _write_run(tmp_path, *, returns=1600, branches=1200):
             "trees_per_optimizer_step": 2,
             "returns_per_optimizer_step": 8,
             "maximum_optimizer_steps": 200,
-            "checkpoint_steps": [25, 50, 75, 100, 125, 150, 175, 200],
-            "validation_steps": [0, 50, 100, 150, 200],
+            "checkpoint_steps": [10, 25, 50, 75, 100, 125, 150, 175, 200],
+            "validation_steps": [0, 10, 50, 100, 150, 200],
             "scheduler": "cosine",
             "scheduler_horizon": 500,
             "warmup_steps": 10,
@@ -54,7 +54,7 @@ def _write_run(tmp_path, *, returns=1600, branches=1200):
     with (output / "training_diagnostics.jsonl").open("a", encoding="utf-8") as handle:
         for event in events[1:]:
             handle.write(json.dumps(event) + chr(10))
-    for step in range(25, 201, 25):
+    for step in [10, *range(25, 201, 25)]:
         (output / f"global_step_{step}").mkdir()
     log = tmp_path / "run.log"
     log.write_text(

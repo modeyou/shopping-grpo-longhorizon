@@ -52,7 +52,7 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["trainer"]["project_name"] == "shopping-multiturn-agentic"
     assert config["trainer"]["total_training_steps"] == 200
     assert config["trainer"]["save_freq"] == 25
-    assert config["trainer"]["max_actor_ckpt_to_keep"] == 8
+    assert config["trainer"]["max_actor_ckpt_to_keep"] == 9
     assert config["trainer"]["test_freq"] == 50
     assert config["shopping_bpo"]["effective_return_budget"] == 1600
     optim = config["actor_rollout_ref"]["actor"]["optim"]
@@ -63,10 +63,13 @@ def test_formal_bpo_config_is_independent_and_frozen():
         "min_lr_ratio": 0.1,
     }
     assert config["data"]["train_batch_size"] == 2
+    assert config["data"]["dataloader_num_workers"] == 0
     assert config["shopping_dynamic_sampling"]["minimum_accepted_prompts"] == 2
     assert config["shopping_dynamic_sampling"]["require_full_batch"] is True
     assert config["shopping_dynamic_sampling"]["soft_warning_gen_batches"] == 10
     assert config["shopping_dynamic_sampling"]["max_num_gen_batches"] == 30
+    assert config["shopping_dynamic_sampling"]["checkpoint_steps"] == [10]
+    assert config["shopping_dynamic_sampling"]["validation_steps"] == [10]
 
 
 class _FakeCuda:
