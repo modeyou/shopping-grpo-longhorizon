@@ -29,7 +29,7 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
         output=tmp_path / "output",
         experiment_name="bpo-test",
         logger="console",
-        seed=20260824,
+        seed=20260823,
         dry_run=False,
         preflight_only=True,
         hydra_overrides=[],
@@ -41,6 +41,9 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
     assert environment["SHOP_REWARD_VERSION"] == "shopsimulator-reward-v4"
     assert environment["GRPO_CONFIG_NAME"] == "bpo"
     assert environment["SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE"] == "1"
+    assert environment["SHOPPING_BPO_SCHEDULER_HORIZON"] == "500"
+    assert environment["SHOPPING_BPO_WARMUP_STEPS"] == "10"
+    assert environment["SHOPPING_BPO_MIN_LR_RATIO"] == "0.1"
     assert Path(environment["SHOPPING_ENV_MANIFEST"]).resolve() == (
         train_bpo.BPO_RUNTIME_MANIFEST.resolve()
     )

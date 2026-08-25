@@ -9,6 +9,39 @@ from pathlib import Path
 from typing import Any
 
 
+def effective_group_update_target(
+    *,
+    effective_return_budget: int,
+    rollout_n: int,
+    trained_groups: int,
+    update_target: int,
+    update_minimum: int,
+) -> tuple[int, int]:
+    """Bound one update so a return-budget run cannot overshoot its target."""
+    values = (
+        effective_return_budget,
+        rollout_n,
+        trained_groups,
+        update_target,
+        update_minimum,
+    )
+    if any(int(value) < 0 for value in values):
+        raise ValueError("effective-return budget values must be non-negative")
+    if rollout_n <= 0 or update_target <= 0 or update_minimum <= 0:
+        raise ValueError("rollout and update targets must be positive")
+    if update_minimum > update_target:
+        raise ValueError("update minimum cannot exceed update target")
+    if not effective_return_budget:
+        return int(update_target), int(update_minimum)
+    if effective_return_budget % rollout_n:
+        raise ValueError("effective return budget must be divisible by rollout_n")
+    remaining_groups = effective_return_budget // rollout_n - trained_groups
+    if remaining_groups <= 0:
+        raise ValueError("effective return budget is already exhausted")
+    current_target = min(update_target, remaining_groups)
+    return current_target, min(update_minimum, current_target)
+
+
 def build_rollout_diagnostics(
     uids: Sequence[Hashable],
     shopping_infos: Sequence[object],
@@ -50,6 +83,9 @@ BPO_DIAGNOSTIC_FIELDS = (
     "bpo_branch_action_sha256",
     "bpo_backbone_action_count",
     "bpo_branch_relative_position",
+    "bpo_branch_prefix_steps",
+    "bpo_branch_prefix_shopper_calls",
+    "bpo_branch_prefix_environment_transitions",
 )
 
 
@@ -89,6 +125,9 @@ def summarize_bpo_group_diagnostics(
             "bpo_branch_action_sha256",
             "bpo_backbone_action_count",
             "bpo_branch_relative_position",
+            "bpo_branch_prefix_steps",
+            "bpo_branch_prefix_shopper_calls",
+            "bpo_branch_prefix_environment_transitions",
         )
         if any(
             any(record.get(name) is None for name in required)
@@ -109,6 +148,33 @@ def summarize_bpo_group_diagnostics(
             raise ValueError("BPO sibling diagnostics disagree on branch prefix")
         branch_action = next(iter(branch_actions))
         backbone_action_count = next(iter(backbone_counts))
+        prefix_steps = {int(record["bpo_branch_prefix_steps"]) for record in records}
+        prefix_calls = {
+            int(record["bpo_branch_prefix_shopper_calls"]) for record in records
+        }
+        if len(prefix_steps) != 1 or len(prefix_calls) != 1:
+            raise ValueError("BPO sibling diagnostics disagree on branch-prefix cost")
+        prefix_step_count = next(iter(prefix_steps))
+        prefix_call_count = next(iter(prefix_calls))
+        prefix_environment_transitions = {
+            int(record["bpo_branch_prefix_environment_transitions"])
+            for record in records
+        }
+        if len(prefix_environment_transitions) != 1:
+            raise ValueError(
+                "BPO sibling diagnostics disagree on environment-transition prefix"
+            )
+        prefix_environment_transition_count = next(
+            iter(prefix_environment_transitions)
+        )
+
+        def environment_transitions(record):
+            return sum(
+                str(action.get("tool") or action.get("name") or "")
+                != "ask_shopper"
+                for action in (record.get("actions") or [])
+                if isinstance(action, Mapping)
+            )
         sibling_action_hashes = []
         tool_sequences = []
         termination_reasons = []
@@ -137,6 +203,11 @@ def summarize_bpo_group_diagnostics(
                 records[0]["bpo_branch_relative_position"]
             ),
             "bpo_branch_entropy": float(records[0]["bpo_branch_entropy"]),
+            "bpo_branch_prefix_steps": prefix_step_count,
+            "bpo_branch_prefix_shopper_calls": prefix_call_count,
+            "bpo_branch_prefix_environment_transitions": (
+                prefix_environment_transition_count
+            ),
             "bpo_unique_branch_action_count": len(
                 set(sibling_action_hashes)
             ),
@@ -144,6 +215,27 @@ def summarize_bpo_group_diagnostics(
             "bpo_termination_reasons": tuple(termination_reasons),
             "bpo_error_types": tuple(error_types),
             "bpo_errors": tuple(errors),
+            "bpo_cost_backbone_rollouts": 1,
+            "bpo_cost_branch_rollouts": len(records) - 1,
+            "bpo_cost_environment_transitions": environment_transitions(records[0])
+            + sum(
+                max(
+                    0,
+                    environment_transitions(record)
+                    - prefix_environment_transition_count,
+                )
+                for record in records[1:]
+            ),
+            "bpo_cost_shopper_api_calls": int(
+                records[0].get("shopper_llm_calls", 0)
+            )
+            + sum(
+                max(
+                    0,
+                    int(record.get("shopper_llm_calls", 0)) - prefix_call_count,
+                )
+                for record in records[1:]
+            ),
         }
     return summaries
 

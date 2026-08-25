@@ -68,6 +68,29 @@ def validate_bpo_config(config):
         raise SystemExit("formal BPO requires PPO clip ratio 0.2")
     if int(config.trainer.n_gpus_per_node) != 4:
         raise SystemExit("formal BPO requires four GPUs")
+    if int(bpo.effective_return_budget) != 400:
+        raise SystemExit("formal BPO requires effective_return_budget=400")
+    if int(config.trainer.total_training_steps) != 100:
+        raise SystemExit("formal BPO requires a 100-step safety ceiling")
+    if int(config.trainer.save_freq) != 100 or int(config.trainer.test_freq) != 100:
+        raise SystemExit("formal BPO requires final fallback save/test at step 100")
+    if int(config.data.seed) != 20260823:
+        raise SystemExit("formal BPO requires data seed 20260823")
+    optim = config.actor_rollout_ref.actor.optim
+    if float(optim.lr) != 1.0e-6:
+        raise SystemExit("formal BPO requires actor learning rate 1e-6")
+    if int(optim.lr_warmup_steps) != 10:
+        raise SystemExit("formal BPO requires 10 explicit warmup steps")
+    if str(optim.lr_scheduler_type) != "cosine" or float(optim.min_lr_ratio) != 0.1:
+        raise SystemExit("formal BPO requires cosine scheduling with min_lr_ratio=0.1")
+    scheduler_environment = {
+        "SHOPPING_BPO_SCHEDULER_HORIZON": "500",
+        "SHOPPING_BPO_WARMUP_STEPS": "10",
+        "SHOPPING_BPO_MIN_LR_RATIO": "0.1",
+    }
+    for name, expected_value in scheduler_environment.items():
+        if os.environ.get(name) != expected_value:
+            raise SystemExit(f"formal BPO requires {name}={expected_value}")
 
 
 def validate_entropy_patch(verl_source):
@@ -141,6 +164,7 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     from verl.utils.config import validate_config
 
     from shopping_grpo.training.bpo.runtime import (
+        _SCHEDULER_CONTRACT_MARKER,
         _SPARSE_CUDA_MAPPING_MARKER,
         cuda_logical_ordinal,
         install_bpo_runtime,
@@ -148,6 +172,7 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
 
     install_bpo_runtime()
     from verl.single_controller.base.worker import Worker
+    from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
 
     if (
         getattr(
@@ -164,6 +189,15 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     ]
     if sparse_cuda_mapping != [0, 1, 2, 3]:
         raise SystemExit("BPO sparse CUDA physical-to-logical mapping is invalid")
+    if (
+        getattr(
+            FSDPEngine._build_lr_scheduler,
+            "_shopping_bpo_marker",
+            None,
+        )
+        != _SCHEDULER_CONTRACT_MARKER
+    ):
+        raise SystemExit("BPO scheduler contract hook was not installed")
     use_critic = need_critic(config)
     use_reference_policy = need_reference_policy(config)
     if use_critic:
@@ -346,8 +380,10 @@ def validate_swanlab(config):
         return
     if os.environ.get("SWANLAB_MODE") != "online" or not os.environ.get("SWANLAB_API_KEY"):
         raise SystemExit("BPO SwanLab requires online mode and SWANLAB_API_KEY")
-    if str(config.trainer.project_name) != "shopping-bpo":
-        raise SystemExit("BPO SwanLab project must be shopping-bpo")
+    if str(config.trainer.project_name) != "shopping-multiturn-agentic":
+        raise SystemExit(
+            "BPO SwanLab project must be shopping-multiturn-agentic"
+        )
 
 
 def validate_visible_gpu_headroom(torch, *, minimum_free_gib=20.0):
@@ -425,6 +461,14 @@ def main():
                 "branch_count": 1,
                 "sibling_count": 4,
                 "return_budget": 4,
+                "effective_tree_budget": 100,
+                "effective_return_budget": 400,
+                "maximum_optimizer_steps": 100,
+                "scheduler": "cosine",
+                "scheduler_horizon": 500,
+                "warmup_steps": 10,
+                "minimum_lr_ratio": 0.1,
+                "swanlab_project": str(config.trainer.project_name),
                 "dynamic_target_prompts": int(config.data.train_batch_size),
                 "dynamic_minimum_accepted_prompts": int(
                     config.shopping_dynamic_sampling.minimum_accepted_prompts

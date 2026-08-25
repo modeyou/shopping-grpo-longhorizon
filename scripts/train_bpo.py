@@ -35,9 +35,9 @@ def parse_args():
     parser.add_argument("--shopper-model", default="deepseek-v4-flash-0731")
     parser.add_argument("--shopper-base-url", default=os.environ.get("SHOPPER_BASE_URL"))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--experiment-name", default="shopping-agent-bpo-v1")
-    parser.add_argument("--logger", choices=("console", "swanlab"), default="console")
-    parser.add_argument("--seed", type=int, default=20260824)
+    parser.add_argument("--experiment-name", default="bpo-native-v4-r400")
+    parser.add_argument("--logger", choices=("console", "swanlab"), default="swanlab")
+    parser.add_argument("--seed", type=int, default=20260823)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--preflight-only", action="store_true")
@@ -125,6 +125,9 @@ def build(args):
             "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
             "SHOPPING_BPO_ROOT": str(ROOT),
             "SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE": "1",
+            "SHOPPING_BPO_SCHEDULER_HORIZON": "500",
+            "SHOPPING_BPO_WARMUP_STEPS": "10",
+            "SHOPPING_BPO_MIN_LR_RATIO": "0.1",
             "SHOPPING_GRPO_ROOT": str(ROOT),
             "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
             "SHOPPING_ENV_MANIFEST": str(BPO_RUNTIME_MANIFEST),
@@ -229,6 +232,14 @@ def write_contract(environment, audit):
             "dynamic_max_generation_batches": 3,
             "tolerant_xml_parameter_parser": True,
             "optimizer_update_audit": "first-step-nonzero-gradient-and-delta-v1",
+            "scheduler": "cosine",
+            "scheduler_horizon": 500,
+            "warmup_steps": 10,
+            "minimum_lr_ratio": 0.1,
+            "effective_tree_budget": 100,
+            "effective_return_budget": 400,
+            "maximum_optimizer_steps": 100,
+            "budget_checkpoint_returns": [200, 400],
         },
         "inputs": {
             name: {"path": str(Path(path).resolve()), "sha256": _sha256(path)}

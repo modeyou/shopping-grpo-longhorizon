@@ -172,7 +172,7 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 
 项目与论文实验规模的差异是有意冻结的资源适配，不冒充论文原配置：论文主实验使用多分叉、
 更大的 return budget、8 张 A100 和数千次更新；本项目首版固定 `M=1, K=4`、四张 4090 和
-10 次更新，只用于验证 Shopping 场景下是否有方向性收益。论文实验还使用 `2e-6` 学习率、
+100 个有效 tree / 400 个有效 sibling returns，只用于验证 Shopping 场景下是否有方向性收益。论文实验还使用 `2e-6` 学习率、
 `beta=0.05` KL 和 batch 128；本项目为显存与首轮归因固定为 `1e-6`、`beta=0`、batch 2。
 `beta=0` 是论文无偏性定理明确覆盖的特例，但不是论文主实验超参数。论文没有公开可核对的官方实现仓库，
 因此“对齐”以论文公式、算法 1 和 veRL 0.8 官方数据流为准，而不是依据同名但不同算法的仓库。
@@ -197,9 +197,10 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 | PPO clip | 0.20 |
 | rollout temperature / top-p | 0.7 / 0.9 |
 | LoRA rank / alpha | 16 / 32 |
-| learning rate | `1e-6`，warmup ratio `0.03` |
-| 正式 optimizer updates | 10 |
-| checkpoint / validation | 每 5 updates |
+| learning rate | `1e-6`，显式 warmup 10 steps，cosine horizon 500，最低 `1e-7` |
+| 正式停止预算 | 100 个有效 tree / 400 个有效 sibling returns |
+| optimizer updates | 最多 100；达到 R400 时提前停止 |
+| checkpoint / validation | R200 保存；R400 保存并验证 |
 | GPU | 4 张 |
 | vLLM GPU memory utilization | 0.45 |
 | vLLM max sequences（每个单卡引擎） | 8 |
@@ -402,15 +403,15 @@ smoke 必须确认：
 
 ## 7. 正式训练
 
-确认 smoke 后使用全新输出目录启动默认 10 updates：
+确认 smoke 后使用全新输出目录启动原生 Reward V4 的 `BPO-N-R400`：
 
 ```bash
 bash scripts/bpo.sh \
   --model "$BPO_MODEL" \
   --output "$BPO_FORMAL_OUT" \
-  --experiment-name bpo-native-v4-formal10-seed20260824 \
+  --experiment-name bpo-native-v4-r400-seed20260823 \
   --logger swanlab \
-  --seed 20260824 \
+  --seed 20260823 \
   --shopper-model "$SHOPPER_MODEL" \
   --shopper-base-url "$SHOPPER_BASE_URL"
 ```
@@ -418,12 +419,35 @@ bash scripts/bpo.sh \
 正式启动会写入 `shopping-bpo-run-contract-v1`，记录 Git commit、模型、数据与配置
 SHA256、seed、分叉参数、数据环境清单、BPO 运行时清单和显存配置，但不会记录 API key。
 
+正式入口默认启用 SwanLab，project 固定为 `shopping-multiturn-agentic`。除 Reward、
+loss、学习率、显存和时间指标外，必须同时保留：
+
+- `bpo_budget/effective_trees_total` 与 `bpo_budget/effective_returns_total`；
+- `group/generated`、`group/trained`、有效率和重采样批次数；
+- `rollout/generated_total` 与累计实际生成 response tokens；
+- backbone rollout、branch continuation、环境 transition、Shopper API 调用的单步与累计值；
+- 分叉相对位置、分叉 entropy、首动作与工具序列多样性；
+- 严格购买成功率、terminal utility、Reward v4 有效率、基础设施无效比例；
+- 首步非零梯度和真实参数 delta 审计。
+
+这里的 R400 指真正进入 optimizer update 的 400 个 sibling returns，不包括被动态采样
+丢弃的 tree；但所有被丢弃 tree 消耗的 token、环境交互和 API 调用仍计入实际成本。
+因此与 GRPO 比较时应同时报告有效 return 预算和实际 GPU/API 成本，不能只比较 step 数。
+
 BPO 与 GRPO 不得同时占用 GPU 0–3、同一 Ray runtime 或同一批 ShopSimulator slots。
 可以在 GRPO 运行期间开发 BPO 代码，但 BPO smoke 必须等 GRPO 完全退出后执行。
 
 ## 8. 评测与停止规则
 
-10 updates 后只在冻结 dev500 的三个面板评测候选 checkpoint：
+达到 400 个有效 sibling returns 后，只在冻结 dev500 的三个面板评测候选 checkpoint：
+
+先执行正式验收；未打印 `BPO-N-R400 FORMAL RUN ACCEPTED` 时不得进入 dev500：
+
+```bash
+"$GRPO_PYTHON" scripts/audit_bpo_formal_run.py \
+  --output "$BPO_FORMAL_OUT" \
+  --log "$BPO_FORMAL_LOG"
+```
 
 - gap + ask enabled；
 - gap + ask disabled；

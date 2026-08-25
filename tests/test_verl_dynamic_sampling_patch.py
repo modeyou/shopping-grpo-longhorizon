@@ -160,6 +160,11 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn('"group/no_purchase_success_ratio"', fit_source)
             self.assertIn('"group/all_purchase_success_ratio"', fit_source)
             self.assertIn('"group/sampling_invalid"', fit_source)
+            self.assertIn("effective_return_budget", fit_source)
+            self.assertIn("dynamic_effective_returns_total", fit_source)
+            self.assertIn("dynamic_budget_checkpoint_due", fit_source)
+            self.assertIn('"bpo_cost/shopper_api_calls_total"', fit_source)
+            self.assertIn('"rollout/generated_response_tokens_total"', fit_source)
             self.assertIn('"training/optimizer_updated": 0', fit_source)
             self.assertIn(
                 "logger.log(data=skipped_metrics, step=self.global_steps)",

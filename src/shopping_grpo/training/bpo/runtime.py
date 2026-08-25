@@ -15,6 +15,7 @@ from shopping_grpo.training.grpo.compat import install_torch_padding_fallback
 _INSTALLED = False
 _SPARSE_CUDA_MAPPING_MARKER = "SHOPPING_BPO_SPARSE_CUDA_MAPPING_V1"
 _OPTIMIZER_AUDIT_MARKER = "SHOPPING_BPO_OPTIMIZER_AUDIT_V1"
+_SCHEDULER_CONTRACT_MARKER = "SHOPPING_BPO_SCHEDULER_CONTRACT_V1"
 
 
 def _is_bpo(value):
@@ -217,6 +218,50 @@ def install_optimizer_update_audit():
     FSDPEngine.optimizer_step = optimizer_step
 
 
+def install_scheduler_contract():
+    """Keep the formal 500-step LR curve independent of the R400 stop."""
+    from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
+
+    current = FSDPEngine._build_lr_scheduler
+    if getattr(current, "_shopping_bpo_marker", None) == _SCHEDULER_CONTRACT_MARKER:
+        return
+
+    def build_lr_scheduler(engine):
+        horizon = int(os.environ.get("SHOPPING_BPO_SCHEDULER_HORIZON", "500"))
+        warmup = int(os.environ.get("SHOPPING_BPO_WARMUP_STEPS", "10"))
+        min_lr_ratio = float(
+            os.environ.get("SHOPPING_BPO_MIN_LR_RATIO", "0.1")
+        )
+        if horizon != 500 or warmup != 10 or min_lr_ratio != 0.1:
+            raise RuntimeError("formal BPO scheduler contract was modified")
+        if not 0 <= warmup < horizon:
+            raise RuntimeError("formal BPO scheduler warmup/horizon is invalid")
+        optimizer_config = engine.optimizer_config
+        optimizer_config.total_training_steps = horizon
+        optimizer_config.lr_warmup_steps = warmup
+        optimizer_config.lr_scheduler_type = "cosine"
+        optimizer_config.min_lr_ratio = min_lr_ratio
+        scheduler = current(engine)
+        print(
+            "BPO scheduler contract: "
+            + json.dumps(
+                {
+                    "effective_return_budget": 400,
+                    "maximum_optimizer_steps": 100,
+                    "horizon": horizon,
+                    "min_lr_ratio": min_lr_ratio,
+                    "scheduler": "cosine",
+                    "warmup_steps": warmup,
+                },
+                sort_keys=True,
+            )
+        )
+        return scheduler
+
+    build_lr_scheduler._shopping_bpo_marker = _SCHEDULER_CONTRACT_MARKER
+    FSDPEngine._build_lr_scheduler = build_lr_scheduler
+
+
 async def _generate_bpo_sequences(worker, batch):
     import hydra
     import numpy as np
@@ -300,6 +345,7 @@ def install_bpo_runtime():
     install_torch_padding_fallback()
     install_sparse_cuda_mapping()
     install_optimizer_update_audit()
+    install_scheduler_contract()
     if _INSTALLED:
         return
 

@@ -333,6 +333,9 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             "shopper_questions": int(state.get("shopper_question_count", 0)),
             "shopper_rejections": int(state.get("shopper_rejection_count", 0)),
             "shopper_dialogue": list(state.get("shopper_questions") or []),
+            "shopper_llm_calls": int(
+                getattr(current_shopper.get(), "call_count", 0)
+            ),
             "actions": [
                 {"tool": step["tool"], "parameters": step["parameters"]}
                 for step in state["steps"]

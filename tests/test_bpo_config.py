@@ -10,9 +10,11 @@ import yaml
 from scripts.check_bpo_runtime import validate_visible_gpu_headroom
 from shopping_grpo.training.bpo.runtime import (
     _OPTIMIZER_AUDIT_MARKER,
+    _SCHEDULER_CONTRACT_MARKER,
     _SPARSE_CUDA_MAPPING_MARKER,
     cuda_logical_ordinal,
     install_optimizer_update_audit,
+    install_scheduler_contract,
     install_sparse_cuda_mapping,
 )
 
@@ -35,6 +37,7 @@ def test_formal_bpo_config_is_independent_and_frozen():
         "entropy_probe": "exact-full-vocabulary",
         "entropy_state": "action-boundary-first-token",
         "rollout_audit": "exact-tree-v1",
+        "effective_return_budget": 400,
     }
     assert rollout["n"] == 4
     assert rollout["agent"]["num_workers"] == 2
@@ -46,7 +49,18 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert model["use_remove_padding"] is True
     assert config["actor_rollout_ref"]["actor"]["calculate_entropy"] is False
     assert config["trainer"]["n_gpus_per_node"] == 4
-    assert config["trainer"]["project_name"] == "shopping-bpo"
+    assert config["trainer"]["project_name"] == "shopping-multiturn-agentic"
+    assert config["trainer"]["total_training_steps"] == 100
+    assert config["trainer"]["save_freq"] == 100
+    assert config["trainer"]["test_freq"] == 100
+    assert config["shopping_bpo"]["effective_return_budget"] == 400
+    optim = config["actor_rollout_ref"]["actor"]["optim"]
+    assert optim == {
+        "lr": 1.0e-6,
+        "lr_warmup_steps": 10,
+        "lr_scheduler_type": "cosine",
+        "min_lr_ratio": 0.1,
+    }
     assert config["data"]["train_batch_size"] == 2
     assert config["shopping_dynamic_sampling"]["minimum_accepted_prompts"] == 1
 
@@ -201,3 +215,35 @@ def test_optimizer_audit_rejects_zero_gradient(monkeypatch):
 
     with pytest.raises(RuntimeError, match="no non-zero gradients"):
         engine.optimizer_step()
+
+
+def test_scheduler_contract_decouples_curve_from_formal_stop(monkeypatch, capsys):
+    calls = []
+
+    class _FSDPEngine:
+        def _build_lr_scheduler(self):
+            calls.append(dict(vars(self.optimizer_config)))
+            return "scheduler"
+
+    transformer = types.ModuleType("verl.workers.engine.fsdp.transformer_impl")
+    transformer.FSDPEngine = _FSDPEngine
+    monkeypatch.setitem(sys.modules, transformer.__name__, transformer)
+    monkeypatch.setenv("SHOPPING_BPO_SCHEDULER_HORIZON", "500")
+    monkeypatch.setenv("SHOPPING_BPO_WARMUP_STEPS", "10")
+    monkeypatch.setenv("SHOPPING_BPO_MIN_LR_RATIO", "0.1")
+
+    install_scheduler_contract()
+    engine = _FSDPEngine()
+    engine.optimizer_config = SimpleNamespace(total_training_steps=100)
+    assert engine._build_lr_scheduler() == "scheduler"
+    assert calls == [{
+        "total_training_steps": 500,
+        "lr_warmup_steps": 10,
+        "lr_scheduler_type": "cosine",
+        "min_lr_ratio": 0.1,
+    }]
+    assert "BPO scheduler contract" in capsys.readouterr().out
+    assert (
+        getattr(_FSDPEngine._build_lr_scheduler, "_shopping_bpo_marker", None)
+        == _SCHEDULER_CONTRACT_MARKER
+    )

@@ -12,7 +12,7 @@ data:
   val_files: ${oc.env:BPO_VAL_FILE}
   train_batch_size: 2
   val_batch_size: 2
-  seed: ${oc.decode:${oc.env:BPO_SEED,20260824}}
+  seed: ${oc.decode:${oc.env:BPO_SEED,20260823}}
   max_prompt_length: 4096
   max_response_length: 20480
   return_raw_chat: true
@@ -38,7 +38,7 @@ actor_rollout_ref:
       attn_implementation: sdpa
   actor:
     ppo_mini_batch_size: 2
-    data_loader_seed: ${oc.decode:${oc.env:BPO_SEED,20260824}}
+    data_loader_seed: ${oc.decode:${oc.env:BPO_SEED,20260823}}
     ppo_micro_batch_size_per_gpu: 1
     ppo_max_token_len_per_gpu: 24576
     use_dynamic_bsz: false
@@ -53,7 +53,9 @@ actor_rollout_ref:
     kl_loss_coef: 0.0
     optim:
       lr: 1.0e-6
-      lr_warmup_steps_ratio: 0.03
+      lr_warmup_steps: 10
+      lr_scheduler_type: cosine
+      min_lr_ratio: 0.1
     fsdp_config:
       optimizer_offload: true
       param_offload: true
@@ -128,6 +130,8 @@ shopping_bpo:
   entropy_probe: exact-full-vocabulary
   entropy_state: action-boundary-first-token
   rollout_audit: exact-tree-v1
+  # Formal comparison budget: 100 accepted trees x K=4 sibling returns.
+  effective_return_budget: 400
 
 shopping_dynamic_sampling:
   enable: true
@@ -149,13 +153,14 @@ ray_kwargs:
 
 trainer:
   total_epochs: 50
-  total_training_steps: 10
-  save_freq: 5
-  test_freq: 5
+  # Safety ceiling. The patched trainer stops earlier at 400 effective returns.
+  total_training_steps: 100
+  save_freq: 100
+  test_freq: 100
   val_before_train: true
   logger: [console]
-  project_name: shopping-bpo
-  experiment_name: shopping-agent-bpo-v1
+  project_name: shopping-multiturn-agentic
+  experiment_name: bpo-native-v4-r400
   default_local_dir: ${oc.env:BPO_OUTPUT_DIR}
   n_gpus_per_node: 4
   nnodes: 1

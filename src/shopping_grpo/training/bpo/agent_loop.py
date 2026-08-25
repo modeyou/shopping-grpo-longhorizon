@@ -256,6 +256,15 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                     int(candidate.action_index)
                     / max(1, int(candidate.payload["backbone_action_count"]) - 1)
                 ),
+                "bpo_branch_prefix_steps": int(
+                    candidate.payload["branch_prefix_steps"]
+                ),
+                "bpo_branch_prefix_shopper_calls": int(
+                    candidate.payload["branch_prefix_shopper_calls"]
+                ),
+                "bpo_branch_prefix_environment_transitions": int(
+                    candidate.payload["branch_prefix_environment_transitions"]
+                ),
             }
         )
 
@@ -332,6 +341,14 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                                 "source_env": source_env,
                                 "action_starts": list(action_starts),
                                 "group_id": group_id,
+                                "branch_prefix_steps": len(prefix_state["steps"]),
+                                "branch_prefix_shopper_calls": int(
+                                    prefix_shopper.call_count
+                                ),
+                                "branch_prefix_environment_transitions": sum(
+                                    step.get("tool") != "ask_shopper"
+                                    for step in prefix_state["steps"]
+                                ),
                             },
                         )
                         previous = list(retained_candidates)

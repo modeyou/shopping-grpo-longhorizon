@@ -9,6 +9,7 @@ from shopping_grpo.training.grpo.dynamic_sampling import (
     aggregate_shopping_metrics,
     append_training_diagnostic,
     build_rollout_diagnostics,
+    effective_group_update_target,
     extract_aligned_bpo_fields,
     extract_shopping_group_signals,
     select_reward_varying_groups,
@@ -17,6 +18,26 @@ from shopping_grpo.training.grpo.dynamic_sampling import (
 
 
 class RewardGroupSelectionTest(unittest.TestCase):
+    def test_effective_return_budget_caps_the_last_update_without_overshoot(self):
+        self.assertEqual(
+            effective_group_update_target(
+                effective_return_budget=400,
+                rollout_n=4,
+                trained_groups=99,
+                update_target=2,
+                update_minimum=1,
+            ),
+            (1, 1),
+        )
+        with self.assertRaisesRegex(ValueError, "already exhausted"):
+            effective_group_update_target(
+                effective_return_budget=400,
+                rollout_n=4,
+                trained_groups=100,
+                update_target=2,
+                update_minimum=1,
+            )
+
     def test_bpo_diagnostics_preserve_branch_location_and_diversity(self):
         non_tensors = {
             "bpo_sibling_index": [0, 1],
@@ -26,6 +47,9 @@ class RewardGroupSelectionTest(unittest.TestCase):
             "bpo_branch_action_sha256": ["action-a", "action-b"],
             "bpo_backbone_action_count": [4, 4],
             "bpo_branch_relative_position": [1 / 3, 1 / 3],
+            "bpo_branch_prefix_steps": [1, 1],
+            "bpo_branch_prefix_shopper_calls": [1, 1],
+            "bpo_branch_prefix_environment_transitions": [1, 1],
         }
         fields = extract_aligned_bpo_fields(non_tensors, expected_length=2)
         rollouts = build_rollout_diagnostics(
@@ -34,10 +58,14 @@ class RewardGroupSelectionTest(unittest.TestCase):
                 {
                     "actions": [{"tool": "search"}, {"tool": "click"}],
                     "termination_reason": "done",
+                    "steps": 4,
+                    "shopper_llm_calls": 2,
                 },
                 {
                     "actions": [{"tool": "search"}, {"tool": "ask_shopper"}],
                     "termination_reason": "max_steps",
+                    "steps": 3,
+                    "shopper_llm_calls": 2,
                 },
             ],
             aligned_fields=fields,
@@ -48,6 +76,10 @@ class RewardGroupSelectionTest(unittest.TestCase):
         self.assertEqual(summary["bpo_unique_branch_action_count"], 2)
         self.assertEqual(summary["bpo_unique_tool_sequence_count"], 2)
         self.assertEqual(summary["bpo_termination_reasons"], ("done", "max_steps"))
+        self.assertEqual(summary["bpo_cost_backbone_rollouts"], 1)
+        self.assertEqual(summary["bpo_cost_branch_rollouts"], 1)
+        self.assertEqual(summary["bpo_cost_environment_transitions"], 2)
+        self.assertEqual(summary["bpo_cost_shopper_api_calls"], 3)
 
     def test_training_diagnostics_append_public_rollouts_as_jsonl(self):
         rollouts = build_rollout_diagnostics(

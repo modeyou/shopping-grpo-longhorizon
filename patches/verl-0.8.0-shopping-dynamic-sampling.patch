@@ -3,7 +3,7 @@
 @@ -20,0 +21,2 @@
 +# SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V4
 +
-@@ -609,0 +612 @@
+@@ -609,0 +612,1 @@
 +        sample_shopping = []
 @@ -665,0 +669,3 @@
 +            if "shopping" in test_batch.non_tensor_batch:
@@ -15,10 +15,10 @@
 +                if len(sample_shopping) != len(sample_scores):
 +                    raise ValueError("validation shopping diagnostics are not trajectory-aligned")
 +                validation_extra_infos["shopping"] = sample_shopping
-@@ -706 +717 @@
+@@ -706,1 +717,1 @@
 -                reward_extra_infos_dict=reward_extra_infos_dict,
 +                reward_extra_infos_dict=validation_extra_infos,
-@@ -1380,0 +1383,10 @@
+@@ -1380,0 +1383,11 @@
 +        )
 +
 +        from shopping_grpo.training.grpo.dynamic_sampling import (
@@ -26,10 +26,11 @@
 +            append_training_diagnostic,
 +            build_rollout_diagnostics,
 +            extract_aligned_bpo_fields,
++            effective_group_update_target,
 +            extract_shopping_group_signals,
 +            select_reward_varying_groups,
 +            summarize_bpo_group_diagnostics,
-@@ -1381,0 +1394,72 @@
+@@ -1381,0 +1394,100 @@
 +
 +        diagnostics_path = os.environ.get("SHOPPING_GRPO_DIAGNOSTICS_PATH")
 +
@@ -73,6 +74,20 @@
 +                    "shopping_dynamic_sampling.minimum_accepted_prompts must be in [1, train_batch_size]"
 +                )
 +            dynamic_rollout_n = int(self.config.actor_rollout_ref.rollout.n)
++            bpo_config = self.config.get("shopping_bpo", {})
++            dynamic_effective_return_budget = int(
++                bpo_config.get("effective_return_budget", 0)
++            )
++            if dynamic_effective_return_budget:
++                if dynamic_effective_return_budget % dynamic_rollout_n:
++                    raise ValueError(
++                        "shopping_bpo.effective_return_budget must be divisible by rollout.n"
++                    )
++                dynamic_effective_tree_budget = (
++                    dynamic_effective_return_budget // dynamic_rollout_n
++                )
++            else:
++                dynamic_effective_tree_budget = 0
 +            dynamic_accepted_batches = []
 +            dynamic_accepted_prompts = 0
 +            dynamic_num_gen_batches = 0
@@ -84,6 +99,18 @@
 +            dynamic_no_purchase_success_groups = 0
 +            dynamic_sampling_invalid_groups = 0
 +            dynamic_generated_trajectories = 0
++            dynamic_generated_response_tokens = 0
++            dynamic_generated_response_tokens_total = 0
++            dynamic_trained_groups_total = 0
++            dynamic_effective_returns_total = 0
++            dynamic_bpo_backbone_rollouts_total = 0
++            dynamic_bpo_branch_rollouts_total = 0
++            dynamic_bpo_environment_transitions_total = 0
++            dynamic_bpo_shopper_api_calls_total = 0
++            dynamic_bpo_backbone_rollouts = 0
++            dynamic_bpo_branch_rollouts = 0
++            dynamic_bpo_environment_transitions = 0
++            dynamic_bpo_shopper_api_calls = 0
 +            dynamic_skipped_updates = 0
 +            dynamic_consecutive_skips = 0
 +            print(
@@ -98,6 +125,8 @@
 +                        "train_batch_size": dynamic_target_prompts,
 +                        "minimum_accepted_prompts": dynamic_minimum_accepted_prompts,
 +                        "rollout_n": dynamic_rollout_n,
++                        "effective_return_budget": dynamic_effective_return_budget,
++                        "effective_tree_budget": dynamic_effective_tree_budget,
 +                    },
 +                    sort_keys=True,
 +                )
@@ -109,25 +138,39 @@
 +        # keeps the committed counter unchanged until an optimizer update occurs.
 +        if not dynamic_sampling_enabled:
 +            self.global_steps += 1
-@@ -1414,0 +1491 @@
+@@ -1414,0 +1491,1 @@
 +        first_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
-@@ -1416 +1493 @@
+@@ -1416,1 +1493,1 @@
 -            self.global_steps in self.config.global_profiler.steps
 +            first_step in self.config.global_profiler.steps
-@@ -1423,0 +1501,2 @@
+@@ -1423,0 +1501,16 @@
 +                current_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
 +                optimizer_updated = False
-@@ -1446 +1525 @@
++                dynamic_budget_checkpoint_due = False
++                try:
++                    (
++                        dynamic_current_target_prompts,
++                        dynamic_current_minimum_accepted_prompts,
++                    ) = effective_group_update_target(
++                        effective_return_budget=dynamic_effective_return_budget,
++                        rollout_n=dynamic_rollout_n,
++                        trained_groups=dynamic_trained_groups_total,
++                        update_target=dynamic_target_prompts,
++                        update_minimum=dynamic_minimum_accepted_prompts,
++                    )
++                except ValueError as exc:
++                    raise RuntimeError(str(exc)) from exc
+@@ -1446,1 +1525,1 @@
 -                gen_batch.meta_info["global_steps"] = self.global_steps
 +                gen_batch.meta_info["global_steps"] = current_step
-@@ -1464 +1543 @@
+@@ -1464,1 +1543,1 @@
 -                is_last_step = self.global_steps >= self.total_training_steps
 +                is_last_step = current_step >= self.total_training_steps
-@@ -1471 +1550,2 @@
+@@ -1471,1 +1550,2 @@
 -                        self.checkpoint_manager.sleep_replicas()
 +                        if not dynamic_sampling_enabled:
 +                            self.checkpoint_manager.sleep_replicas()
-@@ -1524,0 +1615,242 @@
+@@ -1524,0 +1615,317 @@
 +                        reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 +
 +                    if dynamic_sampling_enabled:
@@ -173,7 +216,23 @@
 +                            "sampling_invalid_group_count"
 +                        ]
 +                        dynamic_generated_trajectories += group_stats["num_trajectories"]
-+                        remaining_prompts = dynamic_target_prompts - dynamic_accepted_prompts
++                        generated_response_tokens = int(
++                            batch.batch["response_mask"].sum().item()
++                        )
++                        dynamic_generated_response_tokens += generated_response_tokens
++                        dynamic_generated_response_tokens_total += generated_response_tokens
++                        remaining_prompts = dynamic_current_target_prompts - dynamic_accepted_prompts
++                        if dynamic_effective_tree_budget:
++                            remaining_prompts = min(
++                                remaining_prompts,
++                                dynamic_effective_tree_budget
++                                - dynamic_trained_groups_total
++                                - dynamic_accepted_prompts,
++                            )
++                        if remaining_prompts <= 0:
++                            raise RuntimeError(
++                                "BPO effective-return budget was exhausted before optimizer update"
++                            )
 +                        accepted_uids = list(group_stats["kept_uids"][:remaining_prompts])
 +                        accepted_uid_set = set(accepted_uids)
 +                        accepted_indices = [
@@ -189,6 +248,38 @@
 +                        )
 +                        bpo_group_diagnostics = summarize_bpo_group_diagnostics(
 +                            rollout_diagnostics
++                        )
++                        dynamic_bpo_backbone_rollouts += sum(
++                            int(value.get("bpo_cost_backbone_rollouts", 0))
++                            for value in bpo_group_diagnostics.values()
++                        )
++                        dynamic_bpo_branch_rollouts += sum(
++                            int(value.get("bpo_cost_branch_rollouts", 0))
++                            for value in bpo_group_diagnostics.values()
++                        )
++                        dynamic_bpo_environment_transitions += sum(
++                            int(value.get("bpo_cost_environment_transitions", 0))
++                            for value in bpo_group_diagnostics.values()
++                        )
++                        dynamic_bpo_shopper_api_calls += sum(
++                            int(value.get("bpo_cost_shopper_api_calls", 0))
++                            for value in bpo_group_diagnostics.values()
++                        )
++                        dynamic_bpo_backbone_rollouts_total += sum(
++                            int(value.get("bpo_cost_backbone_rollouts", 0))
++                            for value in bpo_group_diagnostics.values()
++                        )
++                        dynamic_bpo_branch_rollouts_total += sum(
++                            int(value.get("bpo_cost_branch_rollouts", 0))
++                            for value in bpo_group_diagnostics.values()
++                        )
++                        dynamic_bpo_environment_transitions_total += sum(
++                            int(value.get("bpo_cost_environment_transitions", 0))
++                            for value in bpo_group_diagnostics.values()
++                        )
++                        dynamic_bpo_shopper_api_calls_total += sum(
++                            int(value.get("bpo_cost_shopper_api_calls", 0))
++                            for value in bpo_group_diagnostics.values()
 +                        )
 +                        generation_diagnostic = {
 +                            "generation_batch": dynamic_num_gen_batches,
@@ -210,8 +301,8 @@
 +                            "accepted_prompts_after_batch": (
 +                                dynamic_accepted_prompts + len(accepted_uids)
 +                            ),
-+                            "target_prompts": dynamic_target_prompts,
-+                            "minimum_accepted_prompts": dynamic_minimum_accepted_prompts,
++                            "target_prompts": dynamic_current_target_prompts,
++                            "minimum_accepted_prompts": dynamic_current_minimum_accepted_prompts,
 +                        }
 +                        print(
 +                            "SHOPPING_GRPO_DYNAMIC_SAMPLING_BATCH "
@@ -231,12 +322,12 @@
 +                            dynamic_accepted_batches.append(accepted_batch)
 +                            dynamic_accepted_prompts += len(accepted_uids)
 +
-+                        if dynamic_accepted_prompts < dynamic_target_prompts:
++                        if dynamic_accepted_prompts < dynamic_current_target_prompts:
 +                            if curr_step_profile:
 +                                self._stop_profiling(True)
 +                            if (
 +                                dynamic_num_gen_batches >= dynamic_max_gen_batches
-+                                and dynamic_accepted_prompts < dynamic_minimum_accepted_prompts
++                                and dynamic_accepted_prompts < dynamic_current_minimum_accepted_prompts
 +                            ):
 +                                dynamic_skipped_updates += 1
 +                                dynamic_consecutive_skips += 1
@@ -281,18 +372,25 @@
 +                                    "rollout/generated_total": (
 +                                        dynamic_generated_trajectories
 +                                    ),
++                                    "rollout/generated_response_tokens": dynamic_generated_response_tokens,
++                                    "rollout/generated_response_tokens_total": dynamic_generated_response_tokens_total,
++                                    "bpo_cost/backbone_rollouts": dynamic_bpo_backbone_rollouts,
++                                    "bpo_cost/branch_rollouts": dynamic_bpo_branch_rollouts,
++                                    "bpo_cost/environment_transitions": dynamic_bpo_environment_transitions,
++                                    "bpo_cost/shopper_api_calls": dynamic_bpo_shopper_api_calls,
 +                                }
 +                                print(
 +                                    "SHOPPING_GRPO_DYNAMIC_SAMPLING_SKIPPED "
 +                                    + json.dumps(
 +                                        {
 +                                            "accepted_prompts": dynamic_accepted_prompts,
-+                                            "target_prompts": dynamic_target_prompts,
++                                            "target_prompts": dynamic_current_target_prompts,
 +                                            "generation_batches": dynamic_num_gen_batches,
 +                                            "generated_groups": dynamic_generated_groups,
 +                                            "generated_trajectories": (
 +                                                dynamic_generated_trajectories
 +                                            ),
++                                            "generated_response_tokens": dynamic_generated_response_tokens,
 +                                            "all_equal_groups": (
 +                                                dynamic_all_equal_groups
 +                                            ),
@@ -330,6 +428,11 @@
 +                                dynamic_no_purchase_success_groups = 0
 +                                dynamic_sampling_invalid_groups = 0
 +                                dynamic_generated_trajectories = 0
++                                dynamic_generated_response_tokens = 0
++                                dynamic_bpo_backbone_rollouts = 0
++                                dynamic_bpo_branch_rollouts = 0
++                                dynamic_bpo_environment_transitions = 0
++                                dynamic_bpo_shopper_api_calls = 0
 +                                if (
 +                                    dynamic_consecutive_skips
 +                                    >= dynamic_max_consecutive_skips
@@ -344,14 +447,14 @@
 +                            if dynamic_num_gen_batches < dynamic_max_gen_batches:
 +                                continue
 +
-+                        if dynamic_accepted_prompts < dynamic_target_prompts:
++                        if dynamic_accepted_prompts < dynamic_current_target_prompts:
 +                            print(
 +                                "SHOPPING_GRPO_DYNAMIC_SAMPLING_PARTIAL "
 +                                + json.dumps(
 +                                    {
 +                                        "accepted_prompts": dynamic_accepted_prompts,
-+                                        "minimum_accepted_prompts": dynamic_minimum_accepted_prompts,
-+                                        "target_prompts": dynamic_target_prompts,
++                                        "minimum_accepted_prompts": dynamic_current_minimum_accepted_prompts,
++                                        "target_prompts": dynamic_current_target_prompts,
 +                                        "generation_batches": dynamic_num_gen_batches,
 +                                    },
 +                                    sort_keys=True,
@@ -370,7 +473,22 @@
 +                                continue
 +                            images_seqlens_all.extend(multi_modal_input["images_seqlens"].tolist())
 +                        batch.meta_info["images_seqlens"] = images_seqlens_all
-@@ -1525,0 +1820,70 @@
++                        previous_effective_returns = dynamic_effective_returns_total
++                        dynamic_trained_groups_total += dynamic_accepted_prompts
++                        dynamic_effective_returns_total = (
++                            dynamic_trained_groups_total * dynamic_rollout_n
++                        )
++                        dynamic_budget_checkpoint_due = (
++                            previous_effective_returns < 200
++                            <= dynamic_effective_returns_total
++                        )
++                        if dynamic_effective_return_budget:
++                            is_last_step = (
++                                is_last_step
++                                or dynamic_effective_returns_total
++                                >= dynamic_effective_return_budget
++                            )
+@@ -1525,0 +1820,97 @@
 +                        metrics.update(
 +                            {
 +                                "group/generated": dynamic_generated_groups,
@@ -398,6 +516,19 @@
 +                                ),
 +                                "group/resample_batches": max(dynamic_num_gen_batches - 1, 0),
 +                                "rollout/generated_total": dynamic_generated_trajectories,
++                                "rollout/generated_response_tokens": dynamic_generated_response_tokens,
++                                "rollout/generated_response_tokens_total": dynamic_generated_response_tokens_total,
++                                "bpo_cost/backbone_rollouts": dynamic_bpo_backbone_rollouts,
++                                "bpo_cost/branch_rollouts": dynamic_bpo_branch_rollouts,
++                                "bpo_cost/environment_transitions": dynamic_bpo_environment_transitions,
++                                "bpo_cost/shopper_api_calls": dynamic_bpo_shopper_api_calls,
++                                "bpo_budget/effective_trees_total": dynamic_trained_groups_total,
++                                "bpo_budget/effective_returns_total": dynamic_effective_returns_total,
++                                "bpo_budget/effective_return_target": dynamic_effective_return_budget,
++                                "bpo_cost/backbone_rollouts_total": dynamic_bpo_backbone_rollouts_total,
++                                "bpo_cost/branch_rollouts_total": dynamic_bpo_branch_rollouts_total,
++                                "bpo_cost/environment_transitions_total": dynamic_bpo_environment_transitions_total,
++                                "bpo_cost/shopper_api_calls_total": dynamic_bpo_shopper_api_calls_total,
 +                            }
 +                        )
 +                        ready_terminal_utilities, ready_purchase_success, ready_sampling_invalid, ready_invalid_reasons = (
@@ -420,7 +551,16 @@
 +                                    "generated_groups": dynamic_generated_groups,
 +                                    "filtered_groups": dynamic_filtered_groups,
 +                                    "generated_trajectories": dynamic_generated_trajectories,
++                                    "generated_response_tokens": dynamic_generated_response_tokens,
++                                    "generated_response_tokens_total": dynamic_generated_response_tokens_total,
++                                    "bpo_cost_backbone_rollouts": dynamic_bpo_backbone_rollouts,
++                                    "bpo_cost_branch_rollouts": dynamic_bpo_branch_rollouts,
++                                    "bpo_cost_environment_transitions": dynamic_bpo_environment_transitions,
++                                    "bpo_cost_shopper_api_calls": dynamic_bpo_shopper_api_calls,
 +                                    "trained_groups": dynamic_accepted_prompts,
++                                    "effective_trees_total": dynamic_trained_groups_total,
++                                    "effective_returns_total": dynamic_effective_returns_total,
++                                    "effective_return_target": dynamic_effective_return_budget,
 +                                    "trained_group_rewards": [
 +                                        group["rewards"] for group in ready_group_stats["groups"]
 +                                    ],
@@ -441,6 +581,11 @@
 +                        dynamic_no_purchase_success_groups = 0
 +                        dynamic_sampling_invalid_groups = 0
 +                        dynamic_generated_trajectories = 0
++                        dynamic_generated_response_tokens = 0
++                        dynamic_bpo_backbone_rollouts = 0
++                        dynamic_bpo_branch_rollouts = 0
++                        dynamic_bpo_environment_transitions = 0
++                        dynamic_bpo_shopper_api_calls = 0
 @@ -1526,0 +1891,45 @@
 +                    if "shopping" not in batch.non_tensor_batch:
 +                        raise RuntimeError(
@@ -487,32 +632,33 @@
 +                            }
 +                        )
 +
-@@ -1643 +2052 @@
+@@ -1643,1 +2052,1 @@
 -                    if self.config.trainer.critic_warmup > self.global_steps:
 +                    if self.config.trainer.critic_warmup > current_step:
-@@ -1645 +2054 @@
+@@ -1645,1 +2054,1 @@
 -                        self.checkpoint_manager.update_weights(self.global_steps)
 +                        self.checkpoint_manager.update_weights(current_step)
 @@ -1649,0 +2059,3 @@
 +                        optimizer_updated = True
 +                        if dynamic_sampling_enabled:
 +                            self.global_steps = current_step
-@@ -1665 +2077 @@
+@@ -1665,1 +2077,2 @@
 -                            or self.global_steps % self.config.trainer.save_freq == 0
 +                            or current_step % self.config.trainer.save_freq == 0
-@@ -1675 +2087 @@
++                            or dynamic_budget_checkpoint_due
+@@ -1675,1 +2087,1 @@
 -                            self.checkpoint_manager.update_weights(self.global_steps)
 +                            self.checkpoint_manager.update_weights(current_step)
-@@ -1687 +2099 @@
+@@ -1687,1 +2099,1 @@
 -                    is_last_step or self.global_steps % self.config.trainer.test_freq == 0
 +                    is_last_step or current_step % self.config.trainer.test_freq == 0
-@@ -1697 +2109 @@
+@@ -1697,1 +2109,1 @@
 -                        self.global_steps + 1 in self.config.global_profiler.steps
 +                        current_step + 1 in self.config.global_profiler.steps
-@@ -1715 +2127 @@
+@@ -1715,1 +2127,1 @@
 -                        "training/global_step": self.global_steps,
 +                        "training/global_step": current_step,
-@@ -1716,0 +2129 @@
+@@ -1716,0 +2129,1 @@
 +                        "training/optimizer_updated": int(optimizer_updated),
 @@ -1718,0 +2132,12 @@
 +                if dynamic_sampling_enabled:
@@ -527,7 +673,7 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750 +2199,15 @@
+@@ -1750,1 +2199,15 @@
 -                logger.log(data=metrics, step=self.global_steps)
 +                append_training_diagnostic(
 +                    diagnostics_path,
@@ -544,7 +690,7 @@
 +                    ),
 +                )
 +                logger.log(data=metrics, step=current_step)
-@@ -1753 +2188,6 @@
+@@ -1753,1 +2188,6 @@
 -                self.global_steps += 1
 +                if dynamic_sampling_enabled and not optimizer_updated:
 +                    raise RuntimeError(
