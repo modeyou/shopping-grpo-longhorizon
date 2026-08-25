@@ -35,6 +35,31 @@ def test_bpo_loo_advantage_and_upstream_action_weighting():
     assert torch.equal(advantages, returns)
 
 
+def test_bpo_outcome_reward_is_not_dropped_by_actor_response_mask():
+    rewards = torch.zeros((4, 4), dtype=torch.float32)
+    rewards[:, 3] = torch.tensor([1.0, 0.0, -1.0, 2.0])
+    mask = torch.tensor([[1.0, 0.0, 1.0, 0.0]] * 4)
+    metadata = {
+        "bpo_group_id": ["g"] * 4,
+        "bpo_sibling_index": [0, 1, 2, 3],
+        "bpo_branch_action": [1] * 4,
+        "bpo_action_token_starts": [[0, 2]] * 4,
+    }
+
+    advantages, _ = compute_bpo_advantage(
+        rewards,
+        mask,
+        metadata=metadata,
+        sibling_count=4,
+        upstream_lambda=0.5,
+    )
+
+    expected = torch.tensor([2 / 3, -2 / 3, -2.0, 2.0])
+    assert torch.allclose(advantages[:, 2], expected)
+    assert torch.all(advantages[:, 1] == 0)
+    assert torch.all(advantages[:, 3] == 0)
+
+
 def test_bpo_rejects_incomplete_sibling_group():
     metadata = {
         "bpo_group_id": ["g"] * 3,
@@ -46,6 +71,40 @@ def test_bpo_rejects_incomplete_sibling_group():
         compute_bpo_advantage(
             torch.zeros(3, 2),
             torch.ones(3, 2),
+            metadata=metadata,
+            sibling_count=4,
+        )
+
+
+def test_bpo_rejects_reward_flat_sibling_group():
+    metadata = {
+        "bpo_group_id": ["g"] * 4,
+        "bpo_sibling_index": [0, 1, 2, 3],
+        "bpo_branch_action": [1] * 4,
+        "bpo_action_token_starts": [[0, 1]] * 4,
+    }
+    with pytest.raises(ValueError, match="no reward variation"):
+        compute_bpo_advantage(
+            torch.zeros(4, 3),
+            torch.ones(4, 3),
+            metadata=metadata,
+            sibling_count=4,
+        )
+
+
+def test_bpo_rejects_non_finite_sibling_reward():
+    rewards = torch.zeros(4, 3)
+    rewards[2, 2] = torch.nan
+    metadata = {
+        "bpo_group_id": ["g"] * 4,
+        "bpo_sibling_index": [0, 1, 2, 3],
+        "bpo_branch_action": [1] * 4,
+        "bpo_action_token_starts": [[0, 1]] * 4,
+    }
+    with pytest.raises(ValueError, match="non-finite rewards"):
+        compute_bpo_advantage(
+            rewards,
+            torch.ones_like(rewards),
             metadata=metadata,
             sibling_count=4,
         )

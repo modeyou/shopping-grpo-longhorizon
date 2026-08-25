@@ -124,11 +124,19 @@ def compute_bpo_advantage(
         raise ValueError("BPO upstream_lambda must be in [0, 1]")
     batch_size, response_length = token_level_rewards.shape
     groups = _validate_metadata(metadata, batch_size, sibling_count)
-    scores = (token_level_rewards * response_mask).sum(dim=-1)
+    # Outcome rewards can live on tool/environment tokens whose actor mask is
+    # zero. The mask controls policy-gradient placement, not trajectory return.
+    scores = token_level_rewards.sum(dim=-1)
     scalar_advantages = torch.zeros_like(scores)
     with torch.no_grad():
         for rows in groups.values():
             group_scores = scores[rows]
+            if not torch.isfinite(group_scores).all():
+                raise ValueError("BPO sibling group contains non-finite rewards")
+            if torch.max(group_scores) - torch.min(group_scores) <= 1e-8:
+                raise ValueError(
+                    "BPO sibling group has no reward variation after reward alignment"
+                )
             total = group_scores.sum()
             for local_index, row in enumerate(rows):
                 sibling_mean = (total - group_scores[local_index]) / (sibling_count - 1)

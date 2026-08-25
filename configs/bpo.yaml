@@ -24,9 +24,10 @@ actor_rollout_ref:
     path: ${oc.env:BPO_MODEL_PATH}
     trust_remote_code: true
     enable_gradient_checkpointing: true
-    # Match the four-GPU GRPO A1U/B1 memory path that completed one update.
+    # Fuse the output head so long-sequence actor updates do not materialize
+    # the complete sequence-by-vocabulary logits tensor.
     use_remove_padding: true
-    use_fused_kernels: false
+    use_fused_kernels: true
     use_liger: true
     lora_rank: 16
     lora_alpha: 32
@@ -46,7 +47,8 @@ actor_rollout_ref:
     clip_ratio_low: 0.20
     clip_ratio_high: 0.20
     entropy_coeff: 0.0
-    calculate_entropy: true
+    # Branch entropy is measured by the dedicated one-token vLLM probe.
+    calculate_entropy: false
     use_kl_loss: false
     kl_loss_coef: 0.0
     optim:

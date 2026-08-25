@@ -203,12 +203,13 @@ dev500 三面板结果、基础设施有效率和分叉诊断共同决定。
 | vLLM max sequences（每个单卡引擎） | 8 |
 | AgentLoop workers | 2 |
 
-正式显存方案冻结为 `use_fused_kernels=false`、`use_liger=true`、
-`use_remove_padding=true`、`gpu_memory_utilization=0.45` 和 `max_num_seqs=8`。这是 GRPO A1U/B1 在同一 SFT checkpoint-325、四张 4090 上
-真正完成一次 optimizer update 的已验证组合；其 actor 汇总峰值约为 18.15 GiB allocated、
-20.2 GiB reserved。它们改变算子、吞吐和显存占用，但不改变 BPO 分叉、Reward、advantage
-或评测定义。BPO 仍增加快照和精确熵探针，因此必须用自己的 1-step smoke 验证 loss 有限、
-四卡工作且没有 OOM，不能把 GRPO smoke 直接当作 BPO smoke。
+正式显存方案冻结为 `use_fused_kernels=true`、`use_liger=true`、
+`use_remove_padding=true`、`gpu_memory_utilization=0.45` 和 `max_num_seqs=8`。Liger、
+remove-padding 和 batch 预算沿用 GRPO A1U/B1 在同一 SFT checkpoint-325、四张 4090 上
+完成 optimizer update 的已验证路径；BPO 首次走到 actor update 时又证明非 fused output head
+会在长序列全词表 `log_softmax` 处 OOM，因此 BPO 额外冻结 fused output head。它们改变算子、
+吞吐和显存占用，但不改变 BPO 分叉、Reward、advantage 或评测定义。仍必须由新的 1-step
+smoke 验证该组合真正完成有限 loss 的 optimizer update，不能把 GRPO smoke 当作 BPO smoke。
 
 `0.45/8` 要求四张可见 GPU 在启动前保持独占和充足余量。rollout 前的
 `checkpoint_manager.update_weights` 会由 FSDP 临时召集完整参数、合并 LoRA 并同步给 vLLM；
@@ -226,8 +227,12 @@ BeautifulSoup 对象缓存，包含循环父子引用，因此不得深拷贝；
 `get_available_actions()` 重建。快照预检会先执行一次搜索再创建快照，以覆盖真实 rollout
 中已经生成 clickable 对象图的状态，而不只测试刚 reset 的空缓存。
 
-全词表 logits 只在单 token entropy probe 中产生，并立即在 vLLM 服务进程中归约成
-一个标量；完整向量不会进入 AgentLoop output 或训练 batch。
+单 token entropy probe 的全词表 logits 会立即在 vLLM 服务进程中归约成一个标量；完整
+向量不会进入 AgentLoop output 或训练 batch。actor update 仍需计算被选 token 的 log-prob，
+因此启用 fused output head，避免为完整长序列常驻 sequence-by-vocabulary logits。
+`actor.calculate_entropy=false`：BPO 已由独立的一 token 精确探针记录分叉熵，且训练 entropy
+系数为 0，不再为无用的全序列 entropy 分配显存。Liger 与 fused output head 分工不同，二者
+与 remove-padding 同时开启。
 
 ## 5. 安装补丁与预检
 
@@ -257,7 +262,11 @@ BPO 补丁只修改固定 `verl==0.8.0` 的 `vllm_async_server.py`。脚本校�
 SHA256、创建备份、执行幂等检查，并拒绝未知版本。
 
 动态采样补丁同样固定 `verl==0.8.0`：先应用已经过 GRPO A1U/B1 验证的 V4 patch，
-再执行唯一、确定性的 estimator guard 重写，使它显式接受 `GRPO` 或 `BPO`。最终
+再执行唯一、确定性的 estimator guard 重写，使它显式接受 `GRPO` 或 `BPO`。被接纳的
+trajectory 可能来自多个 generation batch；现有补丁已在 concat 和 balance 后重新提取 reward。
+BPO outcome return 对全部 token reward 求和；
+`response_mask` 只控制 policy-gradient 落点，不能把位于工具/环境 token 上的终局奖励清零。
+任一 K=4 sibling group 在对齐后仍无 reward 差异时直接拒绝 optimizer update。最终
 `ray_trainer.py` SHA256 固定为
 `a2132ecbce6ca55fcd3a61f615b925b4a0c7a2192c69cd3e4faf8046124b334b`；
 旧 `9fc8...` 版本只能在存在已验证原始备份时升级，未知源码仍拒绝修改。
@@ -284,7 +293,7 @@ bash scripts/bpo.sh \
 ```
 
 预检会拒绝非 Reward v4、错误 manifest、非四卡、非 K=4/M=1、worker 分组错误、
-缺少精确熵补丁、显存组合不是 `fused=false + Liger=true + remove-padding=true + vLLM 0.45/8`、
+缺少精确熵补丁、显存组合不是 `fused=true + Liger=true + remove-padding=true + vLLM 0.45/8`、
 四张可见 GPU 中任一卡空闲显存低于 20 GiB、动态采样补丁缺失和监控配置错误。
 
 ## 6. 1-step smoke

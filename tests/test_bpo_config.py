@@ -39,9 +39,10 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert rollout["engine_kwargs"]["vllm"]["max_logprobs"] == -1
     assert rollout["gpu_memory_utilization"] == 0.45
     assert rollout["max_num_seqs"] == 8
-    assert model["use_fused_kernels"] is False
+    assert model["use_fused_kernels"] is True
     assert model["use_liger"] is True
     assert model["use_remove_padding"] is True
+    assert config["actor_rollout_ref"]["actor"]["calculate_entropy"] is False
     assert config["trainer"]["n_gpus_per_node"] == 4
     assert config["trainer"]["project_name"] == "shopping-bpo"
 

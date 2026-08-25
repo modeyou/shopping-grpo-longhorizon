@@ -218,9 +218,10 @@ def write_contract(environment, audit):
             "max_num_seqs": 8,
             "minimum_free_gpu_memory_gib": 20.0,
             "sparse_cuda_mapping": "physical-to-logical-v1",
-            "use_fused_kernels": False,
+            "use_fused_kernels": True,
             "use_liger": True,
             "use_remove_padding": True,
+            "actor_calculate_entropy": False,
         },
         "inputs": {
             name: {"path": str(Path(path).resolve()), "sha256": _sha256(path)}

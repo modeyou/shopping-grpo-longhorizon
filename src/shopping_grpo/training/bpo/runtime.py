@@ -222,9 +222,7 @@ def install_bpo_runtime():
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
-        scores = (
-            data.batch["token_level_rewards"] * data.batch["response_mask"]
-        ).sum(dim=-1)
+        scores = data.batch["token_level_rewards"].sum(dim=-1)
         for audit in audits:
             rows = [
                 index

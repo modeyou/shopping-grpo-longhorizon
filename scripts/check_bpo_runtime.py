@@ -43,11 +43,16 @@ def validate_bpo_config(config):
         raise SystemExit("formal BPO requires vLLM gpu_memory_utilization=0.45")
     if int(rollout.max_num_seqs) != 8:
         raise SystemExit("formal BPO requires vLLM max_num_seqs=8")
-    if bool(model.use_fused_kernels):
-        raise SystemExit("formal BPO requires use_fused_kernels=false")
+    if not bool(model.use_fused_kernels):
+        raise SystemExit("formal BPO requires use_fused_kernels=true")
     if not bool(model.use_liger) or not bool(model.use_remove_padding):
         raise SystemExit(
             "formal BPO requires use_liger=true and use_remove_padding=true"
+        )
+    if bool(config.actor_rollout_ref.actor.calculate_entropy):
+        raise SystemExit(
+            "formal BPO requires actor.calculate_entropy=false; branch entropy "
+            "comes from the exact one-token vLLM probe"
         )
     if float(algorithm.bpo.upstream_lambda) != 0.95:
         raise SystemExit("formal BPO requires upstream_lambda=0.95")
@@ -387,9 +392,10 @@ def main():
                 "minimum_free_gpu_memory_gib": 20.0,
                 "sparse_cuda_mapping": "physical-to-logical-v1",
                 "visible_gpu_free_gib": visible_gpu_free_gib,
-                "use_fused_kernels": False,
+                "use_fused_kernels": True,
                 "use_liger": True,
                 "use_remove_padding": True,
+                "actor_calculate_entropy": False,
                 "gpus": 4,
             },
             sort_keys=True,
