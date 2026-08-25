@@ -11,6 +11,7 @@ from shopping_grpo.training.bpo.advantage import (
     audit_bpo_rollout_batch,
     compute_bpo_advantage,
 )
+from shopping_grpo.training.bpo.step0_validation import install_step0_validation_cache
 from shopping_grpo.training.grpo.compat import install_torch_padding_fallback
 
 _INSTALLED = False
@@ -391,6 +392,7 @@ def install_bpo_runtime():
     install_sparse_cuda_mapping()
     install_optimizer_update_audit()
     install_scheduler_contract()
+    install_step0_validation_cache()
     if _INSTALLED:
         return
 

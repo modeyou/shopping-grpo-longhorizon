@@ -316,6 +316,7 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
     match_scores = []
     evidence_coverage = []
     partial_purchase = []
+    bpo_metrics = []
     for index, info in enumerate(shopping_infos):
         if not isinstance(info, Mapping) or not isinstance(info.get("reward"), Mapping):
             raise ValueError(f"shopping extra field at index {index} is missing reward diagnostics")
@@ -376,11 +377,22 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         )
         shopper_questions.append(float(info.get("shopper_questions", 0)))
         shopper_rejections.append(float(info.get("shopper_rejections", 0)))
+        raw_bpo_metrics = info.get("bpo_metrics")
+        if raw_bpo_metrics is not None:
+            if not isinstance(raw_bpo_metrics, Mapping):
+                raise ValueError("shopping bpo_metrics must be an object")
+            normalized_bpo_metrics = {}
+            for name, raw_value in raw_bpo_metrics.items():
+                value = float(raw_value)
+                if not math.isfinite(value):
+                    raise ValueError(f"shopping BPO metric {name} is not finite")
+                normalized_bpo_metrics[str(name)] = value
+            bpo_metrics.append(normalized_bpo_metrics)
 
     def mean(values):
         return sum(values) / len(values)
 
-    return {
+    metrics = {
         "reward/full_mean": mean(rewards["full"]),
         "reward/strict_mean": mean(rewards["strict"]),
         "reward/native_mean": mean(rewards["native"]),
@@ -422,8 +434,115 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         "trajectory/shopper_questions_mean": mean(shopper_questions),
         "trajectory/shopper_rejections_mean": mean(shopper_rejections),
     }
+    metrics.update(swanlab_key_metrics(metrics))
+    if bpo_metrics:
+        if len(bpo_metrics) != len(shopping_infos):
+            raise ValueError("shopping BPO metrics are missing from some trajectories")
+        names = set(bpo_metrics[0])
+        if any(set(values) != names for values in bpo_metrics[1:]):
+            raise ValueError("shopping BPO metric keys are not trajectory-aligned")
+        metrics.update(
+            {
+                name: mean([values[name] for values in bpo_metrics])
+                for name in sorted(names)
+            }
+        )
+    return metrics
 
 
+
+def swanlab_key_metrics(
+    shopping_metrics: Mapping[str, object],
+) -> dict[str, float]:
+    """Expose a compact, stable dashboard over the full validation diagnostics."""
+    aliases = {
+        "strict_success_rate": "reward/strict_mean",
+        "purchase_success_rate": "reward/purchase_success_rate",
+        "mean_reward": "reward/shaped_mean",
+        "terminal_utility_mean": "reward/terminal_utility_mean",
+        "done_rate": "trajectory/done_rate",
+        "average_steps": "trajectory/average_steps",
+        "sampling_invalid_rate": "trajectory/sampling_invalid_rate",
+        "infrastructure_invalid_rate": "trajectory/infrastructure_invalid_rate",
+        "reward_unverifiable_rate": "trajectory/reward_unverifiable_rate",
+        "shopper_question_rate": "trajectory/shopper_question_rate",
+    }
+    summary = {}
+    for alias, source in aliases.items():
+        try:
+            value = float(shopping_metrics[source])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"shopping validation metrics are missing numeric {source}"
+            ) from exc
+        if not math.isfinite(value):
+            raise ValueError(f"shopping validation metric {source} is not finite")
+        summary[f"summary/{alias}"] = value
+    return summary
+
+
+def aggregate_bpo_tree_metrics(
+    group_summaries: Mapping[Hashable, Mapping[str, object]],
+    reward_groups: Sequence[Mapping[str, object]],
+) -> dict[str, float]:
+    """Aggregate the branch position, diversity, and sibling-return signal."""
+    if not group_summaries or not reward_groups:
+        return {}
+    expected_uids = {group["uid"] for group in reward_groups}
+    if set(group_summaries) != expected_uids:
+        raise ValueError("BPO tree diagnostics are not aligned with reward groups")
+    summaries = [group_summaries[uid] for uid in expected_uids]
+    if any(bool(summary.get("bpo_diagnostic_incomplete")) for summary in summaries):
+        raise ValueError("BPO tree diagnostics are incomplete")
+
+    def values(name):
+        result = [float(summary[name]) for summary in summaries]
+        if any(not math.isfinite(value) for value in result):
+            raise ValueError(f"BPO tree diagnostic {name} is not finite")
+        return result
+
+    def mean(items):
+        return sum(items) / len(items)
+
+    sibling_stds = []
+    sibling_ranges = []
+    sibling_unique_counts = []
+    for group in reward_groups:
+        returns = [float(value) for value in group["rewards"]]
+        if len(returns) < 2 or any(not math.isfinite(value) for value in returns):
+            raise ValueError("BPO sibling returns must contain finite groups")
+        center = mean(returns)
+        sibling_stds.append(
+            math.sqrt(mean([(value - center) ** 2 for value in returns]))
+        )
+        sibling_ranges.append(max(returns) - min(returns))
+        sibling_unique_counts.append(float(len(set(returns))))
+
+    return {
+        "bpo_branch/relative_position_mean": mean(
+            values("bpo_branch_relative_position")
+        ),
+        "bpo_branch/entropy_mean": mean(values("bpo_branch_entropy")),
+        "bpo_branch/backbone_actions_mean": mean(
+            values("bpo_backbone_action_count")
+        ),
+        "bpo_branch/prefix_steps_mean": mean(values("bpo_branch_prefix_steps")),
+        "bpo_branch/prefix_shopper_calls_mean": mean(
+            values("bpo_branch_prefix_shopper_calls")
+        ),
+        "bpo_branch/prefix_environment_transitions_mean": mean(
+            values("bpo_branch_prefix_environment_transitions")
+        ),
+        "bpo_diversity/unique_branch_actions_mean": mean(
+            values("bpo_unique_branch_action_count")
+        ),
+        "bpo_diversity/unique_tool_sequences_mean": mean(
+            values("bpo_unique_tool_sequence_count")
+        ),
+        "bpo_return/sibling_std_mean": mean(sibling_stds),
+        "bpo_return/sibling_range_mean": mean(sibling_ranges),
+        "bpo_return/sibling_unique_count_mean": mean(sibling_unique_counts),
+    }
 def extract_shopping_group_signals(
     shopping_infos: Sequence[object],
 ) -> tuple[list[float], list[bool], list[bool], list[tuple[str, ...]]]:

@@ -8,6 +8,10 @@ import json
 import math
 from pathlib import Path
 
+from shopping_grpo.training.bpo.step0_validation import (
+    load_validation_cache,
+    validate_contract,
+)
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -57,6 +61,37 @@ def audit(output: Path, log: Path) -> dict:
     if launch.get("logger") != "swanlab":
         raise ValueError("formal BPO must use SwanLab")
 
+
+    step0 = contract.get("step0_validation") or {}
+    if step0.get("reuse_policy") != "exact-contract-sha256-v1":
+        raise ValueError("formal BPO step-0 reuse policy is missing")
+    step0_contract_path = Path(str(step0.get("contract_path") or "")).resolve()
+    step0_cache_path = Path(str(step0.get("cache_path") or "")).resolve()
+    for path in (step0_contract_path, step0_cache_path):
+        if not path.is_file():
+            raise ValueError(f"required BPO step-0 artifact is missing: {path}")
+    step0_contract = _json(step0_contract_path)
+    step0_sha256 = validate_contract(step0_contract)
+    if step0_sha256 != step0.get("contract_sha256"):
+        raise ValueError("formal BPO step-0 contract hash mismatch")
+    step0_metrics = load_validation_cache(
+        step0_cache_path,
+        expected_contract_sha256=step0_sha256,
+    )
+    required_step0_metrics = {
+        "val-shopping/summary/strict_success_rate",
+        "val-shopping/summary/purchase_success_rate",
+        "val-shopping/summary/mean_reward",
+        "val-shopping/summary/terminal_utility_mean",
+        "val-shopping/summary/done_rate",
+        "val-shopping/summary/sampling_invalid_rate",
+    }
+    missing_step0_metrics = required_step0_metrics.difference(step0_metrics or {})
+    if missing_step0_metrics:
+        raise ValueError(
+            "formal BPO step-0 cache is missing key SwanLab metrics: "
+            + ", ".join(sorted(missing_step0_metrics))
+        )
     events = [
         json.loads(line)
         for line in diagnostics_path.read_text(encoding="utf-8").splitlines()
@@ -95,6 +130,22 @@ def audit(output: Path, log: Path) -> dict:
         raise ValueError("BPO cumulative cost metrics are missing or invalid")
     if branches != 3 * backbone:
         raise ValueError("BPO generated tree cost does not satisfy K=4")
+    required_training_metrics = {
+        "summary/strict_success_rate",
+        "summary/purchase_success_rate",
+        "summary/mean_reward",
+        "summary/sampling_invalid_rate",
+        "summary/infrastructure_invalid_rate",
+        "summary/reward_unverifiable_rate",
+        "bpo_branch/relative_position_mean",
+        "bpo_branch/entropy_mean",
+        "bpo_diversity/unique_branch_actions_mean",
+        "bpo_diversity/unique_tool_sequences_mean",
+        "bpo_return/sibling_std_mean",
+        "bpo_return/sibling_range_mean",
+        "group/effective_ratio",
+    }
+
     for event in optimizer_events:
         metrics = event.get("metrics") or {}
         if int(metrics.get("bpo_batch/trees", -1)) != 2:
@@ -103,6 +154,18 @@ def audit(output: Path, log: Path) -> dict:
             raise ValueError("BPO formal run contains a non-R8 optimizer batch")
         if int(metrics.get("bpo_batch/full_batch", -1)) != 1:
             raise ValueError("BPO formal run contains an incomplete optimizer batch")
+        missing_metrics = required_training_metrics.difference(metrics)
+        if missing_metrics:
+            raise ValueError(
+                "BPO optimizer diagnostics are missing key SwanLab metrics: "
+                + ", ".join(sorted(missing_metrics))
+            )
+        if any(
+            not math.isfinite(float(metrics[name]))
+            for name in required_training_metrics
+        ):
+            raise ValueError("BPO key SwanLab metrics must all be finite")
+
         candidate_batches = int(metrics.get("bpo_sampling/candidate_batches", 0))
         first_tree = float(metrics.get("bpo_sampling/seconds_to_first_tree", -1))
         full_batch = float(metrics.get("bpo_sampling/seconds_to_full_batch", -1))
@@ -119,6 +182,7 @@ def audit(output: Path, log: Path) -> dict:
         "BPO scheduler contract:",
         "BPO optimizer update audit:",
         "BPO tree audit passed:",
+        "BPO step-0 validation cache",
     ):
         if marker not in log_text:
             raise ValueError(f"formal BPO log is missing marker: {marker}")
@@ -139,6 +203,8 @@ def audit(output: Path, log: Path) -> dict:
         "environment_transitions": transitions,
         "shopper_api_calls": shopper_calls,
         "checkpoints": [str(path) for path in checkpoints],
+        "step0_contract_sha256": step0_sha256,
+        "step0_cache": str(step0_cache_path),
     }
 
 

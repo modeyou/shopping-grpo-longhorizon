@@ -25,6 +25,12 @@ from shopping_grpo.training.grpo.adapter.runtime import (
     multiturn_spec_from_kwargs,
 )
 from shopping_grpo.training.grpo.adapter.session import ShopSimulatorSession
+from shopping_grpo.training.grpo.dynamic_sampling import (
+    BPO_DIAGNOSTIC_FIELDS,
+    aggregate_bpo_tree_metrics,
+    build_rollout_diagnostics,
+    summarize_bpo_group_diagnostics,
+)
 
 
 def clone_agent_data(source):
@@ -39,6 +45,39 @@ def clone_agent_data(source):
     cloned.metrics = {}
     cloned.tool_calls = []
     return cloned
+
+def attach_bpo_tree_metrics(outputs):
+    """Attach one validated tree summary to every sibling shopping record."""
+    values = list(outputs)
+    if not values:
+        raise ValueError("BPO tree metrics require sibling outputs")
+    group_ids = [str(output.extra_fields["bpo_group_id"]) for output in values]
+    if len(set(group_ids)) != 1:
+        raise ValueError("BPO tree metrics require one group id")
+    shopping_infos = [output.extra_fields["shopping"] for output in values]
+    aligned_fields = {
+        name: [output.extra_fields[name] for output in values]
+        for name in BPO_DIAGNOSTIC_FIELDS
+    }
+    records = build_rollout_diagnostics(
+        group_ids,
+        shopping_infos,
+        aligned_fields=aligned_fields,
+    )
+    summaries = summarize_bpo_group_diagnostics(records)
+    rewards = []
+    for output, shopping in zip(values, shopping_infos, strict=True):
+        score = output.reward_score
+        if score is None:
+            score = shopping["reward"]["total"]
+        rewards.append(float(score))
+    metrics = aggregate_bpo_tree_metrics(
+        summaries,
+        [{"uid": group_ids[0], "rewards": rewards}],
+    )
+    for shopping in shopping_infos:
+        shopping["bpo_metrics"] = dict(metrics)
+    return metrics
 
 
 class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
@@ -412,6 +451,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
             branches = list(branch_results)
             outputs = [backbone, *branches]
             validate_tree_outputs(outputs, sibling_count=self.sibling_count)
+            attach_bpo_tree_metrics(outputs)
             return outputs
         finally:
             for retained in retained_candidates:

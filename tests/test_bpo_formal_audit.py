@@ -1,13 +1,44 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from scripts.audit_bpo_formal_run import audit
+from shopping_grpo.training.bpo.step0_validation import (
+    build_validation_contract,
+    freeze_validation_cache,
+)
+
 
 
 def _write_run(tmp_path, *, returns=1600, branches=1200):
     output = tmp_path / "run"
     output.mkdir(parents=True)
+    step0_input = tmp_path / "step0-validation-input.parquet"
+    step0_input.write_bytes(b"frozen validation fixture")
+    step0_contract = build_validation_contract(
+        root=tmp_path,
+        git_commit="a" * 40,
+        inputs={"validation_data": step0_input},
+        settings={"validation_sampling": "deterministic-n1"},
+    )
+    step0_contract_path = output / "step0_validation_contract.json"
+    step0_contract_path.write_text(
+        json.dumps(step0_contract), encoding="utf-8"
+    )
+    step0_cache_path = output / "step0_validation_cache.json"
+    freeze_validation_cache(
+        step0_cache_path,
+        contract_sha256_value=step0_contract["contract_sha256"],
+        metrics={
+            "val-shopping/summary/strict_success_rate": 0.6,
+            "val-shopping/summary/purchase_success_rate": 0.6,
+            "val-shopping/summary/mean_reward": 0.5,
+            "val-shopping/summary/terminal_utility_mean": 0.5,
+            "val-shopping/summary/done_rate": 0.9,
+            "val-shopping/summary/sampling_invalid_rate": 0.0,
+        },
+    )
     contract = {
         "schema_version": "shopping-bpo-run-contract-v1",
         "launch": {"reward_profile": "none", "seed": 20260823, "logger": "swanlab"},
@@ -23,6 +54,12 @@ def _write_run(tmp_path, *, returns=1600, branches=1200):
             "scheduler_horizon": 500,
             "warmup_steps": 10,
             "minimum_lr_ratio": 0.1,
+        },
+        "step0_validation": {
+            "reuse_policy": "exact-contract-sha256-v1",
+            "contract_path": str(step0_contract_path),
+            "contract_sha256": step0_contract["contract_sha256"],
+            "cache_path": str(step0_cache_path),
         },
     }
     (output / "run_contract.json").write_text(json.dumps(contract), encoding="utf-8")
@@ -42,6 +79,19 @@ def _write_run(tmp_path, *, returns=1600, branches=1200):
         "bpo_cost/branch_rollouts_total": branches,
         "bpo_cost/environment_transitions_total": 500,
         "bpo_cost/shopper_api_calls_total": 20,
+        "summary/strict_success_rate": 0.6,
+        "summary/purchase_success_rate": 0.6,
+        "summary/mean_reward": 0.5,
+        "summary/sampling_invalid_rate": 0.0,
+        "summary/infrastructure_invalid_rate": 0.0,
+        "summary/reward_unverifiable_rate": 0.0,
+        "bpo_branch/relative_position_mean": 0.5,
+        "bpo_branch/entropy_mean": 2.0,
+        "bpo_diversity/unique_branch_actions_mean": 3.0,
+        "bpo_diversity/unique_tool_sequences_mean": 2.0,
+        "bpo_return/sibling_std_mean": 0.25,
+        "bpo_return/sibling_range_mean": 0.5,
+        "group/effective_ratio": 1.0,
     }
     events = [
         {"event": "optimizer_step", "global_step": step, "metrics": metrics}
@@ -60,7 +110,8 @@ def _write_run(tmp_path, *, returns=1600, branches=1200):
     log.write_text(
         "BPO scheduler contract:\n"
         "BPO optimizer update audit:\n"
-        "BPO tree audit passed:\n",
+        "BPO tree audit passed:\n"
+        "BPO step-0 validation cache frozen:\n",
         encoding="utf-8",
     )
     return output, log
@@ -80,4 +131,13 @@ def test_formal_audit_rejects_budget_or_tree_cost_mismatch(tmp_path):
 
     output, log = _write_run(tmp_path / "second", branches=1199)
     with pytest.raises(ValueError, match="K=4"):
+        audit(output, log)
+
+
+def test_formal_audit_rejects_a_missing_step0_cache(tmp_path):
+    output, log = _write_run(tmp_path)
+    contract = json.loads((output / "run_contract.json").read_text(encoding="utf-8"))
+    cache = contract["step0_validation"]["cache_path"]
+    Path(cache).unlink()
+    with pytest.raises(ValueError, match="step-0 artifact is missing"):
         audit(output, log)

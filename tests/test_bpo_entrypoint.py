@@ -1,4 +1,5 @@
 from argparse import Namespace
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -50,6 +51,24 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
     assert audit["algorithm"] == "full-bpo-v1"
     assert audit["reward_profile"] == "none"
 
+    step0_contract = json.loads(environment["SHOPPING_BPO_STEP0_CONTRACT_JSON"])
+    step0_digest = train_bpo.validate_contract(step0_contract)
+    assert environment["SHOPPING_BPO_STEP0_CONTRACT_SHA256"] == step0_digest
+    assert Path(environment["SHOPPING_BPO_STEP0_CACHE_PATH"]).name == (
+        f"{step0_digest}.json"
+    )
+    assert audit["step0_validation"]["contract_sha256"] == step0_digest
+
+    args.output.mkdir()
+    destination = train_bpo.write_contract(environment, audit)
+    run_contract = json.loads(destination.read_text(encoding="utf-8"))
+    frozen_step0 = json.loads(
+        (args.output / "step0_validation_contract.json").read_text(encoding="utf-8")
+    )
+    assert run_contract["step0_validation"]["contract_sha256"] == step0_digest
+    assert run_contract["step0_validation"]["reuse_policy"] == (
+        "exact-contract-sha256-v1"
+    )
 
 def test_bpo_launcher_rejects_an_external_ray_address(monkeypatch):
     monkeypatch.setenv("RAY_ADDRESS", "127.0.0.1:26379")

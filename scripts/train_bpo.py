@@ -13,6 +13,10 @@ import subprocess
 import sys
 
 from shopping_grpo.training.grpo.data_manifest import validate_grpo_data_manifest
+from shopping_grpo.training.bpo.step0_validation import (
+    build_validation_contract,
+    validate_contract,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/bpo.yaml"
@@ -23,6 +27,7 @@ BPO_RUNTIME_MANIFEST = ROOT / "data/environment-bpo-v1.json"
 DATA_MANIFEST = ROOT / "data/grpo/formal-v2/manifest.json"
 TRAIN_DATA = ROOT / "data/grpo/formal-v2/multiturn-train.parquet"
 VALIDATION_DATA = ROOT / "data/grpo/formal-v2/multiturn-validation.parquet"
+STEP0_CACHE_ROOT = ROOT / "outputs/bpo/step0-validation-cache"
 
 
 def parse_args():
@@ -38,6 +43,17 @@ def parse_args():
     parser.add_argument("--experiment-name", default="bpo-native-v4-step200-r1600")
     parser.add_argument("--logger", choices=("console", "swanlab"), default="swanlab")
     parser.add_argument("--seed", type=int, default=20260823)
+    parser.add_argument(
+        "--step0-cache-dir",
+        type=Path,
+        default=STEP0_CACHE_ROOT,
+        help="Shared content-addressed cache for deterministic step-0 validation.",
+    )
+    parser.add_argument(
+        "--refresh-step0-validation",
+        action="store_true",
+        help="Recompute and atomically replace the matching step-0 cache entry.",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--preflight-only", action="store_true")
@@ -66,6 +82,72 @@ def _file(path, description):
 
 def _sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+def _git_commit():
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+
+
+def _step0_validation_contract(args, *, model, val_data, manifest):
+    model_files = {
+        f"model/{path.name}": path
+        for path in sorted(model.iterdir())
+        if path.is_file()
+    }
+    if not model_files:
+        raise SystemExit(f"BPO model directory has no files: {model}")
+    runtime_inputs = {
+        "validation_data": val_data,
+        "data_manifest": manifest,
+        "bpo_config": CONFIG,
+        "bpo_agent_config": AGENT_CONFIG,
+        "tool_config": TOOL_CONFIG,
+        "data_environment_manifest": DATA_ENVIRONMENT_MANIFEST,
+        "bpo_runtime_manifest": BPO_RUNTIME_MANIFEST,
+        "verl_dynamic_sampling_patch": (
+            ROOT / "patches/verl-0.8.0-shopping-dynamic-sampling.patch"
+        ),
+        "bpo_agent_loop": (
+            ROOT / "src/shopping_grpo/training/bpo/agent_loop.py"
+        ),
+        "bpo_step0_validation": (
+            ROOT / "src/shopping_grpo/training/bpo/step0_validation.py"
+        ),
+        "bpo_runtime": ROOT / "src/shopping_grpo/training/bpo/runtime.py",
+        "grpo_agent_loop": (
+            ROOT / "src/shopping_grpo/training/grpo/adapter/agent_loop.py"
+        ),
+        "grpo_session": (
+            ROOT / "src/shopping_grpo/training/grpo/adapter/session.py"
+        ),
+        "grpo_runtime": (
+            ROOT / "src/shopping_grpo/training/grpo/adapter/runtime.py"
+        ),
+        "grpo_dynamic_sampling": (
+            ROOT / "src/shopping_grpo/training/grpo/dynamic_sampling.py"
+        ),
+        **model_files,
+    }
+    try:
+        return build_validation_contract(
+            root=ROOT,
+            git_commit=_git_commit(),
+            inputs=runtime_inputs,
+            settings={
+                "algorithm": "full-bpo-v1",
+                "environment_url": str(args.env_url),
+                "reward_profile": "none",
+                "reward_version": "shopsimulator-reward-v4",
+                "seed": int(args.seed),
+                "shopper_base_url": str(args.shopper_base_url or ""),
+                "shopper_model": str(args.shopper_model),
+                "validation_sampling": "deterministic-n1",
+                "hydra_overrides": list(args.hydra_overrides),
+            },
+        )
+    except ValueError as exc:
+        raise SystemExit(f"invalid BPO step-0 validation contract: {exc}") from exc
 
 
 def _overrides(args):
@@ -118,6 +200,19 @@ def build(args):
     if args.logger == "swanlab" and not os.environ.get("SWANLAB_API_KEY"):
         raise SystemExit("BPO SwanLab logging requires SWANLAB_API_KEY")
 
+    step0_contract = _step0_validation_contract(
+        args, model=model, val_data=val_data, manifest=manifest
+    )
+    step0_contract_sha256 = validate_contract(step0_contract)
+    step0_cache_dir = Path(
+        getattr(args, "step0_cache_dir", STEP0_CACHE_ROOT)
+    ).expanduser().resolve()
+    if step0_cache_dir.exists() and not step0_cache_dir.is_dir():
+        raise SystemExit(
+            f"BPO step-0 cache directory is not a directory: {step0_cache_dir}"
+        )
+    step0_cache_path = step0_cache_dir / f"{step0_contract_sha256}.json"
+
     environment = dict(os.environ)
     environment.update(
         {
@@ -152,6 +247,14 @@ def build(args):
             "SHOPPING_TOOL_CONFIG": str(TOOL_CONFIG),
             "SHOPPING_BPO_DATA_MANIFEST": str(manifest),
             "GRPO_CONFIG_NAME": "bpo",
+            "SHOPPING_BPO_STEP0_CACHE_PATH": str(step0_cache_path),
+            "SHOPPING_BPO_STEP0_CONTRACT_SHA256": step0_contract_sha256,
+            "SHOPPING_BPO_STEP0_CONTRACT_JSON": json.dumps(
+                step0_contract, ensure_ascii=False, sort_keys=True
+            ),
+            "SHOPPING_BPO_STEP0_REFRESH": (
+                "1" if getattr(args, "refresh_step0_validation", False) else "0"
+            ),
         }
     )
     if args.logger == "swanlab":
@@ -180,6 +283,11 @@ def build(args):
         "logger": args.logger,
         "reward_version": "shopsimulator-reward-v4",
         "reward_profile": "none",
+        "step0_validation": {
+            "cache_path": str(step0_cache_path),
+            "contract_sha256": step0_contract_sha256,
+            "refresh": bool(getattr(args, "refresh_step0_validation", False)),
+        },
     }
     return command, environment, audit
 
@@ -198,6 +306,16 @@ def write_contract(environment, audit):
     }
     status = subprocess.check_output(
         ["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=ROOT
+    )
+    step0_contract = json.loads(environment["SHOPPING_BPO_STEP0_CONTRACT_JSON"])
+    step0_contract_sha256 = validate_contract(step0_contract)
+    step0_contract_path = (
+        Path(environment["BPO_OUTPUT_DIR"]) / "step0_validation_contract.json"
+    )
+    step0_contract_path.write_text(
+        json.dumps(step0_contract, ensure_ascii=False, indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
     )
     contract = {
         "schema_version": "shopping-bpo-run-contract-v1",
@@ -251,6 +369,13 @@ def write_contract(environment, audit):
         "inputs": {
             name: {"path": str(Path(path).resolve()), "sha256": _sha256(path)}
             for name, path in input_paths.items()
+        },
+        "step0_validation": {
+            "contract_path": str(step0_contract_path),
+            "contract_sha256": step0_contract_sha256,
+            "cache_path": environment["SHOPPING_BPO_STEP0_CACHE_PATH"],
+            "refresh": environment["SHOPPING_BPO_STEP0_REFRESH"] == "1",
+            "reuse_policy": "exact-contract-sha256-v1",
         },
     }
     destination = Path(environment["BPO_OUTPUT_DIR"]) / "run_contract.json"

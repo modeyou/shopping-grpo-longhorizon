@@ -8,6 +8,7 @@ import json
 import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
 from scripts import check_grpo_runtime as common
@@ -540,6 +541,69 @@ def validate_finalize_hook():
     )
 
 
+def validate_step0_validation_cache():
+    from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+
+    from shopping_grpo.training.bpo.step0_validation import (
+        CACHE_PATH_ENV,
+        CONTRACT_SHA256_ENV,
+        REFRESH_ENV,
+        freeze_validation_cache,
+        install_step0_validation_cache,
+        validate_contract,
+    )
+
+    try:
+        contract = json.loads(os.environ["SHOPPING_BPO_STEP0_CONTRACT_JSON"])
+        expected_sha256 = os.environ[CONTRACT_SHA256_ENV]
+        cache_path = Path(os.environ[CACHE_PATH_ENV]).resolve()
+    except (KeyError, json.JSONDecodeError) as exc:
+        raise SystemExit("BPO step-0 validation contract environment is invalid") from exc
+    actual_sha256 = validate_contract(contract)
+    if actual_sha256 != expected_sha256:
+        raise SystemExit("BPO step-0 validation contract environment hash mismatch")
+    if cache_path.name != f"{actual_sha256}.json":
+        raise SystemExit("BPO step-0 validation cache is not content-addressed")
+
+    original_environment = {
+        name: os.environ.get(name)
+        for name in (CACHE_PATH_ENV, CONTRACT_SHA256_ENV, REFRESH_ENV)
+    }
+    with tempfile.TemporaryDirectory(prefix="shopping-bpo-step0-preflight-") as directory:
+        probe_cache = Path(directory) / f"{actual_sha256}.json"
+        freeze_validation_cache(
+            probe_cache,
+            contract_sha256_value=actual_sha256,
+            metrics={"val-shopping/reward/strict_mean": 0.5},
+        )
+        os.environ[CACHE_PATH_ENV] = str(probe_cache)
+        os.environ[CONTRACT_SHA256_ENV] = actual_sha256
+        os.environ[REFRESH_ENV] = "0"
+        try:
+            install_step0_validation_cache()
+            metrics = RayPPOTrainer._validate(SimpleNamespace(global_steps=0))
+        finally:
+            for name, value in original_environment.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+    if metrics.get("val-shopping/reward/strict_mean") != 0.5:
+        raise SystemExit("BPO step-0 validation cache changed a frozen metric")
+    if metrics.get("val-step0/cache_hit") != 1.0:
+        raise SystemExit("BPO step-0 validation cache hook did not reuse the probe")
+    print(
+        "BPO step-0 validation cache preflight passed: "
+        + json.dumps(
+            {
+                "cache_path": str(cache_path),
+                "contract_sha256": actual_sha256,
+                "swanlab_replay": True,
+            },
+            sort_keys=True,
+        )
+    )
+
 def validate_visible_gpu_headroom(torch, *, minimum_free_gib=20.0):
     device_count = int(torch.cuda.device_count())
     if device_count != 4:
@@ -606,6 +670,7 @@ def main():
     validate_entropy_patch(verl_source)
     validate_xml_tool_parser_patch(verl_source)
     common.validate_dynamic_sampling(config, verl_source, installed)
+    validate_step0_validation_cache()
     validate_finalize_hook()
     validate_bpo_runtime_hooks(config)
     print(
