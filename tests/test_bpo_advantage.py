@@ -5,7 +5,9 @@ from omegaconf import OmegaConf
 from scripts.check_bpo_runtime import validate_bpo_runtime_hooks
 from shopping_grpo.training.bpo.advantage import (
     audit_bpo_rollout_batch,
+    build_bpo_policy_weights,
     compute_bpo_advantage,
+    summarize_bpo_actor_batch,
 )
 
 
@@ -58,6 +60,49 @@ def test_bpo_outcome_reward_is_not_dropped_by_actor_response_mask():
     assert torch.allclose(advantages[:, 2], expected)
     assert torch.all(advantages[:, 1] == 0)
     assert torch.all(advantages[:, 3] == 0)
+
+
+def test_bpo_actor_diagnostics_expose_mask_and_advantage_support():
+    rewards = torch.zeros((4, 5), dtype=torch.float32)
+    rewards[:, 4] = torch.tensor([1.0, 0.0, -1.0, 2.0])
+    mask = torch.tensor([[1.0, 1.0, 1.0, 0.0, 0.0]] * 4)
+    metadata = {
+        "bpo_group_id": ["g"] * 4,
+        "bpo_sibling_index": [0, 1, 2, 3],
+        "bpo_branch_action": [1] * 4,
+        "bpo_action_token_starts": [[0, 2]] * 4,
+    }
+
+    advantages, returns, internals = compute_bpo_advantage(
+        rewards,
+        mask,
+        metadata=metadata,
+        sibling_count=4,
+        upstream_lambda=0.5,
+        return_diagnostics=True,
+    )
+    policy_weights = build_bpo_policy_weights(
+        mask,
+        metadata=metadata,
+        sibling_count=4,
+        upstream_lambda=0.5,
+        dtype=rewards.dtype,
+    )
+    diagnostics = summarize_bpo_actor_batch(
+        rewards,
+        mask,
+        advantages,
+        returns,
+        policy_weights,
+    )
+
+    assert torch.equal(policy_weights, internals["policy_weights"])
+    assert diagnostics["response_mask_total_tokens"] == 12
+    assert diagnostics["response_mask_nonzero_rows"] == 4
+    assert diagnostics["policy_mask_nonzero_tokens"] == 12
+    assert diagnostics["advantages_nonzero_tokens"] == 12
+    assert diagnostics["advantages_abs_sum"] > 0.0
+    assert diagnostics["all_finite"] is True
 
 
 def test_bpo_rejects_incomplete_sibling_group():

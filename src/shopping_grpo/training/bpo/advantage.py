@@ -132,6 +132,116 @@ def _validate_metadata(metadata, batch_size, sibling_count):
     return groups
 
 
+def build_bpo_policy_weights(
+    response_mask,
+    *,
+    metadata,
+    sibling_count=4,
+    upstream_lambda=0.95,
+    dtype=None,
+):
+    """Build token weights before veRL's actor loss/remove-padding path."""
+    import torch
+
+    if response_mask.ndim != 2:
+        raise ValueError("BPO response mask must be a two-dimensional tensor")
+    if sibling_count < 2:
+        raise ValueError("BPO sibling_count must be at least two")
+    if not 0.0 <= float(upstream_lambda) <= 1.0:
+        raise ValueError("BPO upstream_lambda must be in [0, 1]")
+
+    batch_size, response_length = response_mask.shape
+    _validate_metadata(metadata, batch_size, sibling_count)
+    weight_dtype = dtype if dtype is not None else response_mask.dtype
+    weights = torch.zeros(
+        (batch_size, response_length),
+        dtype=weight_dtype,
+        device=response_mask.device,
+    )
+    for row in range(batch_size):
+        branch_action = int(metadata["bpo_branch_action"][row])
+        starts = [int(value) for value in metadata["bpo_action_token_starts"][row]]
+        if not starts or branch_action < 0 or branch_action >= len(starts):
+            raise ValueError("invalid BPO action boundary metadata")
+        if (
+            starts != sorted(starts)
+            or starts[0] < 0
+            or starts[-1] >= response_length
+        ):
+            raise ValueError("BPO action boundaries are not valid response offsets")
+        for action_index, start in enumerate(starts):
+            end = (
+                starts[action_index + 1]
+                if action_index + 1 < len(starts)
+                else response_length
+            )
+            distance = max(branch_action - action_index, 0)
+            weights[row, start:end] = float(upstream_lambda) ** distance
+    return weights
+
+
+def summarize_bpo_actor_batch(
+    token_level_rewards,
+    response_mask,
+    advantages,
+    returns,
+    policy_weights,
+):
+    """Return JSON-safe actor-side support and advantage diagnostics."""
+    import torch
+
+    tensors = {
+        "token_level_rewards": token_level_rewards,
+        "response_mask": response_mask,
+        "advantages": advantages,
+        "returns": returns,
+        "policy_weights": policy_weights,
+    }
+    shape = tuple(int(value) for value in response_mask.shape)
+    if any(
+        tuple(int(value) for value in tensor.shape) != shape
+        for tensor in tensors.values()
+    ):
+        raise ValueError("BPO actor diagnostics tensors must have equal shapes")
+
+    def finite(tensor):
+        return bool(torch.isfinite(tensor.detach().float()).all().item())
+
+    mask = response_mask.detach()
+    policy = policy_weights.detach()
+    policy_mask = (policy != 0) & (mask != 0)
+    advantage_float = advantages.detach().float()
+    reward_float = token_level_rewards.detach().float()
+    return_float = returns.detach().float()
+    row_counts = mask.ne(0).sum(dim=-1).detach().cpu().tolist()
+    return {
+        "batch_size": shape[0],
+        "response_length": shape[1],
+        "response_mask_total_tokens": int(mask.ne(0).sum().item()),
+        "response_mask_nonzero_rows": int(
+            (mask.ne(0).sum(dim=-1) > 0).sum().item()
+        ),
+        "response_mask_row_min": int(min(row_counts, default=0)),
+        "response_mask_row_max": int(max(row_counts, default=0)),
+        "response_mask_row_mean": (
+            float(sum(row_counts) / len(row_counts)) if row_counts else 0.0
+        ),
+        "policy_weight_nonzero_tokens": int(policy.ne(0).sum().item()),
+        "policy_mask_nonzero_tokens": int(policy_mask.sum().item()),
+        "policy_mask_weight_sum": float((policy * mask).float().sum().item()),
+        "token_reward_abs_sum": float(reward_float.abs().sum().item()),
+        "advantages_nonzero_tokens": int(advantages.ne(0).sum().item()),
+        "advantages_abs_sum": float(advantage_float.abs().sum().item()),
+        "advantages_abs_max": (
+            float(advantage_float.abs().max().item())
+            if advantage_float.numel()
+            else 0.0
+        ),
+        "returns_abs_sum": float(return_float.abs().sum().item()),
+        "all_finite": all(finite(tensor) for tensor in tensors.values()),
+    }
+
+
 def compute_bpo_advantage(
     token_level_rewards,
     response_mask,
@@ -139,6 +249,7 @@ def compute_bpo_advantage(
     metadata,
     sibling_count=4,
     upstream_lambda=0.95,
+    return_diagnostics=False,
 ):
     """Compute local LOO sibling advantages and propagate them to shared actions."""
     import torch
@@ -169,21 +280,18 @@ def compute_bpo_advantage(
                 sibling_mean = (total - group_scores[local_index]) / (sibling_count - 1)
                 scalar_advantages[row] = scores[row] - sibling_mean
 
-        weights = torch.zeros_like(response_mask, dtype=token_level_rewards.dtype)
-        for row in range(batch_size):
-            branch_action = int(metadata["bpo_branch_action"][row])
-            starts = [int(value) for value in metadata["bpo_action_token_starts"][row]]
-            if not starts or branch_action < 0 or branch_action >= len(starts):
-                raise ValueError("invalid BPO action boundary metadata")
-            if starts != sorted(starts) or starts[0] < 0 or starts[-1] >= response_length:
-                raise ValueError("BPO action token starts are not valid response offsets")
-            for action_index, start in enumerate(starts):
-                end = (
-                    starts[action_index + 1]
-                    if action_index + 1 < len(starts)
-                    else response_length
-                )
-                distance = max(branch_action - action_index, 0)
-                weights[row, start:end] = float(upstream_lambda) ** distance
+        weights = build_bpo_policy_weights(
+            response_mask,
+            metadata=metadata,
+            sibling_count=sibling_count,
+            upstream_lambda=upstream_lambda,
+            dtype=token_level_rewards.dtype,
+        )
         advantages = scalar_advantages.unsqueeze(-1) * weights * response_mask
+    if return_diagnostics:
+        return advantages, advantages.clone(), {
+            "policy_weights": weights,
+            "scalar_advantages": scalar_advantages,
+            "scores": scores,
+        }
     return advantages, advantages.clone()

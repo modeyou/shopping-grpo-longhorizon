@@ -10,14 +10,168 @@ import os
 from shopping_grpo.training.bpo.advantage import (
     audit_bpo_rollout_batch,
     compute_bpo_advantage,
+    summarize_bpo_actor_batch,
 )
 from shopping_grpo.training.bpo.step0_validation import install_step0_validation_cache
 from shopping_grpo.training.grpo.compat import install_torch_padding_fallback
+from shopping_grpo.training.grpo.dynamic_sampling import append_training_diagnostic
 
 _INSTALLED = False
 _SPARSE_CUDA_MAPPING_MARKER = "SHOPPING_BPO_SPARSE_CUDA_MAPPING_V1"
 _OPTIMIZER_AUDIT_MARKER = "SHOPPING_BPO_OPTIMIZER_AUDIT_V1"
 _SCHEDULER_CONTRACT_MARKER = "SHOPPING_BPO_SCHEDULER_CONTRACT_V1"
+_FORWARD_BACKWARD_AUDIT_MARKER = "SHOPPING_BPO_FORWARD_BACKWARD_AUDIT_V1"
+_FORWARD_BACKWARD_AUDIT_COUNT = 0
+
+
+def _diagnostic_global_step(meta_info):
+    """Normalize veRL's scalar/list global-step metadata for diagnostics."""
+    raw = meta_info.get("global_steps", meta_info.get("global_step", -1))
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else -1
+    item = getattr(raw, "item", None)
+    if callable(item):
+        raw = item()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return -1
+
+
+def _append_runtime_diagnostic(event, global_step, **payload):
+    """Persist diagnostics without making logging failures change training."""
+    path = os.environ.get("SHOPPING_GRPO_DIAGNOSTICS_PATH")
+    if not path:
+        return
+    try:
+        append_training_diagnostic(path, event, global_step, **payload)
+    except (OSError, TypeError, ValueError) as exc:
+        print(
+            "BPO diagnostic write skipped: "
+            + json.dumps(
+                {"event": event, "error": f"{type(exc).__name__}:{exc}"},
+                sort_keys=True,
+            )
+        )
+
+
+def _tensor_support(value):
+    """Summarize a tensor without retaining it after the forward call."""
+    import torch
+
+    if not torch.is_tensor(value):
+        return None
+    tensor = value.detach()
+    flat = tensor.float()
+    return {
+        "shape": [int(item) for item in tensor.shape],
+        "numel": int(tensor.numel()),
+        "nonzero": int(tensor.ne(0).sum().item()),
+        "sum": float(flat.sum().item()),
+        "finite": bool(torch.isfinite(flat).all().item()),
+    }
+
+
+def _extract_loss_scalar(value):
+    """Best-effort extraction that never changes the upstream loss object."""
+    import torch
+    from collections.abc import Mapping
+
+    if torch.is_tensor(value):
+        if value.numel() == 1:
+            return float(value.detach().float().item())
+        return None
+    if isinstance(value, Mapping):
+        for key in ("loss", "actor_loss", "policy_loss"):
+            if key in value:
+                scalar = _extract_loss_scalar(value[key])
+                if scalar is not None:
+                    return scalar
+        return None
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            scalar = _extract_loss_scalar(item)
+            if scalar is not None:
+                return scalar
+    return None
+
+
+def install_forward_backward_audit():
+    """Capture the actual actor loss-mask support before remove-padding."""
+    from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
+
+    current = FSDPEngine.forward_backward_batch
+    if (
+        getattr(current, "_shopping_bpo_marker", None)
+        == _FORWARD_BACKWARD_AUDIT_MARKER
+    ):
+        return
+    _require_pinned_signature(
+        current,
+        ("self", "data", "loss_function"),
+        "FSDPEngine.forward_backward_batch",
+    )
+
+    def forward_backward_batch(engine, data, loss_function, forward_only=False):
+        global _FORWARD_BACKWARD_AUDIT_COUNT
+        if forward_only:
+            return current(
+                engine,
+                data,
+                loss_function,
+                forward_only=forward_only,
+            )
+
+        loss_values = []
+
+        def audited_loss_function(*args, **kwargs):
+            result = loss_function(*args, **kwargs)
+            scalar = _extract_loss_scalar(result)
+            if scalar is not None:
+                loss_values.append(scalar)
+            return result
+
+        result = current(
+            engine,
+            data,
+            audited_loss_function,
+            forward_only=forward_only,
+        )
+        limit = int(os.environ.get("SHOPPING_BPO_LOSS_AUDIT_LIMIT", "8"))
+        if _FORWARD_BACKWARD_AUDIT_COUNT < max(0, limit):
+            _FORWARD_BACKWARD_AUDIT_COUNT += 1
+            loss_mask = None
+            attention_mask = None
+            try:
+                loss_mask = data["loss_mask"]
+            except (KeyError, TypeError):
+                pass
+            try:
+                attention_mask = data["attention_mask"]
+            except (KeyError, TypeError):
+                pass
+            diagnostics = {
+                "loss_mask": _tensor_support(loss_mask),
+                "attention_mask": _tensor_support(attention_mask),
+                "loss_values": [
+                    float(value)
+                    for value in loss_values[: max(1, limit)]
+                ],
+                "forward_only": False,
+            }
+            _append_runtime_diagnostic(
+                "bpo_actor_loss_batch",
+                -1,
+                diagnostics=diagnostics,
+            )
+            print(
+                "BPO actor loss batch diagnostics: "
+                + json.dumps(diagnostics, sort_keys=True)
+            )
+        return result
+
+    forward_backward_batch._shopping_bpo_marker = _FORWARD_BACKWARD_AUDIT_MARKER
+    FSDPEngine.forward_backward_batch = forward_backward_batch
 
 
 def _require_pinned_signature(function, expected_prefix, label):
@@ -229,6 +383,21 @@ def install_optimizer_update_audit():
             "trainable_parameter_tensors": int(global_trainable),
         }
         print("BPO optimizer update audit: " + json.dumps(audit, sort_keys=True))
+        rank = 0
+        distributed = getattr(torch, "distributed", None)
+        if (
+            distributed is not None
+            and distributed.is_available()
+            and distributed.is_initialized()
+        ):
+            rank = int(distributed.get_rank())
+        if rank == 0:
+            _append_runtime_diagnostic(
+                "bpo_optimizer_backward",
+                -1,
+                audit=audit,
+                phase="optimizer_step",
+            )
         if global_trainable <= 0:
             raise RuntimeError("BPO optimizer has no trainable parameters")
         if global_nonfinite > 0:
@@ -391,6 +560,7 @@ def install_bpo_runtime():
     install_torch_padding_fallback()
     install_sparse_cuda_mapping()
     install_optimizer_update_audit()
+    install_forward_backward_audit()
     install_scheduler_contract()
     install_step0_validation_cache()
     if _INSTALLED:
@@ -447,15 +617,39 @@ def install_bpo_runtime():
             metadata=metadata,
             sibling_count=int(bpo_config.get("sibling_count", 4)),
         )
-        advantages, returns = compute_bpo_advantage(
+        advantages, returns, internals = compute_bpo_advantage(
             data.batch["token_level_rewards"],
             data.batch["response_mask"],
             metadata=metadata,
             sibling_count=int(bpo_config.get("sibling_count", 4)),
             upstream_lambda=float(bpo_config.get("upstream_lambda", 0.95)),
+            return_diagnostics=True,
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+        actor_batch = summarize_bpo_actor_batch(
+            data.batch["token_level_rewards"],
+            data.batch["response_mask"],
+            advantages,
+            returns,
+            internals["policy_weights"],
+        )
+        global_step = _diagnostic_global_step(data.meta_info)
+        actor_payload = {
+            "diagnostics": actor_batch,
+            "tree_count": len(audits),
+            "sibling_count": int(bpo_config.get("sibling_count", 4)),
+            "tree_audits": audits,
+        }
+        _append_runtime_diagnostic(
+            "bpo_actor_batch",
+            global_step,
+            **actor_payload,
+        )
+        print(
+            "BPO actor batch diagnostics: "
+            + json.dumps(actor_payload, sort_keys=True)
+        )
         scores = data.batch["token_level_rewards"].sum(dim=-1)
         for audit in audits:
             rows = [
