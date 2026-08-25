@@ -12,6 +12,7 @@ from shopping_grpo.training.bpo.runtime import (
     _OPTIMIZER_AUDIT_MARKER,
     _SCHEDULER_CONTRACT_MARKER,
     _SPARSE_CUDA_MAPPING_MARKER,
+    _require_pinned_signature,
     cuda_logical_ordinal,
     install_optimizer_update_audit,
     install_scheduler_contract,
@@ -20,6 +21,22 @@ from shopping_grpo.training.bpo.runtime import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_pinned_signature_guard_rejects_incompatible_hook():
+    def compatible(self, optimizer):
+        return self, optimizer
+
+    def incompatible(self):
+        return self
+
+    _require_pinned_signature(
+        compatible, ("self", "optimizer"), "scheduler fixture"
+    )
+    with pytest.raises(RuntimeError, match="signature mismatch"):
+        _require_pinned_signature(
+            incompatible, ("self", "optimizer"), "scheduler fixture"
+        )
 
 
 def test_formal_bpo_config_is_independent_and_frozen():
@@ -228,8 +245,8 @@ def test_scheduler_contract_decouples_curve_from_formal_stop(monkeypatch, capsys
     calls = []
 
     class _FSDPEngine:
-        def _build_lr_scheduler(self):
-            calls.append(dict(vars(self.optimizer_config)))
+        def _build_lr_scheduler(self, optimizer):
+            calls.append((dict(vars(self.optimizer_config)), optimizer))
             return "scheduler"
 
     transformer = types.ModuleType("verl.workers.engine.fsdp.transformer_impl")
@@ -242,15 +259,42 @@ def test_scheduler_contract_decouples_curve_from_formal_stop(monkeypatch, capsys
     install_scheduler_contract()
     engine = _FSDPEngine()
     engine.optimizer_config = SimpleNamespace(total_training_steps=100)
-    assert engine._build_lr_scheduler() == "scheduler"
-    assert calls == [{
-        "total_training_steps": 500,
-        "lr_warmup_steps": 10,
-        "lr_scheduler_type": "cosine",
-        "min_lr_ratio": 0.1,
-    }]
+    optimizer = object()
+    assert engine._build_lr_scheduler(optimizer) == "scheduler"
+    assert calls == [(
+        {
+            "total_training_steps": 500,
+            "lr_warmup_steps": 10,
+            "lr_scheduler_type": "cosine",
+            "min_lr_ratio": 0.1,
+        },
+        optimizer,
+    )]
     assert "BPO scheduler contract" in capsys.readouterr().out
     assert (
         getattr(_FSDPEngine._build_lr_scheduler, "_shopping_bpo_marker", None)
         == _SCHEDULER_CONTRACT_MARKER
     )
+
+
+def test_scheduler_contract_forwards_keyword_arguments(monkeypatch):
+    calls = []
+
+    class _FSDPEngine:
+        def _build_lr_scheduler(self, optimizer):
+            calls.append(optimizer)
+            return "scheduler"
+
+    transformer = types.ModuleType("verl.workers.engine.fsdp.transformer_impl")
+    transformer.FSDPEngine = _FSDPEngine
+    monkeypatch.setitem(sys.modules, transformer.__name__, transformer)
+    monkeypatch.setenv("SHOPPING_BPO_SCHEDULER_HORIZON", "500")
+    monkeypatch.setenv("SHOPPING_BPO_WARMUP_STEPS", "10")
+    monkeypatch.setenv("SHOPPING_BPO_MIN_LR_RATIO", "0.1")
+
+    install_scheduler_contract()
+    engine = _FSDPEngine()
+    engine.optimizer_config = SimpleNamespace(total_training_steps=200)
+    optimizer = object()
+    assert engine._build_lr_scheduler(optimizer=optimizer) == "scheduler"
+    assert calls == [optimizer]

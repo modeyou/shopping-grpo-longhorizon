@@ -6,8 +6,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import check_grpo_runtime as common
 from shopping_grpo.training.bpo.entropy_patch import PATCH_MARKER
@@ -214,6 +216,37 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
         != _SCHEDULER_CONTRACT_MARKER
     ):
         raise SystemExit("BPO scheduler contract hook was not installed")
+    # Exercise the exact veRL 0.8.0 call shape on CPU.  A marker/signature
+    # check alone cannot prove that a wrapper forwards the optimizer argument.
+    probe_parameter = torch.nn.Parameter(torch.tensor([0.0]))
+    probe_optimizer = torch.optim.AdamW([probe_parameter], lr=1.0e-6)
+    probe_engine = SimpleNamespace(
+        optimizer_config=deepcopy(config.actor_rollout_ref.actor.optim)
+    )
+    try:
+        probe_scheduler = FSDPEngine._build_lr_scheduler(
+            probe_engine, probe_optimizer
+        )
+    except Exception as exc:
+        raise SystemExit(
+            "BPO scheduler hook failed the real veRL CPU call contract: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if int(probe_engine.optimizer_config.total_training_steps) != 500:
+        raise SystemExit("BPO scheduler hook did not install the 500-step horizon")
+    if not hasattr(probe_scheduler, "step"):
+        raise SystemExit("BPO scheduler hook returned an invalid scheduler")
+    print(
+        "BPO scheduler CPU call-contract preflight passed: "
+        + json.dumps(
+            {
+                "call": "FSDPEngine._build_lr_scheduler(engine, optimizer)",
+                "horizon": 500,
+                "scheduler_type": type(probe_scheduler).__name__,
+            },
+            sort_keys=True,
+        )
+    )
     use_critic = need_critic(config)
     use_reference_policy = need_reference_policy(config)
     if use_critic:

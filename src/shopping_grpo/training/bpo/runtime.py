@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 
@@ -16,6 +17,26 @@ _INSTALLED = False
 _SPARSE_CUDA_MAPPING_MARKER = "SHOPPING_BPO_SPARSE_CUDA_MAPPING_V1"
 _OPTIMIZER_AUDIT_MARKER = "SHOPPING_BPO_OPTIMIZER_AUDIT_V1"
 _SCHEDULER_CONTRACT_MARKER = "SHOPPING_BPO_SCHEDULER_CONTRACT_V1"
+
+
+def _require_pinned_signature(function, expected_prefix, label):
+    """Reject an incompatible veRL hook target before replacing it."""
+    parameters = list(inspect.signature(function).parameters.values())
+    actual_prefix = [item.name for item in parameters[:len(expected_prefix)]]
+    if actual_prefix != list(expected_prefix):
+        raise RuntimeError(
+            f"pinned veRL {label} signature mismatch: expected prefix "
+            f"{list(expected_prefix)!r}, got {actual_prefix!r}"
+        )
+    for parameter in parameters[:len(expected_prefix)]:
+        if parameter.kind not in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            raise RuntimeError(
+                f"pinned veRL {label} parameter {parameter.name!r} "
+                "is not positional"
+            )
 
 
 def _is_bpo(value):
@@ -70,6 +91,9 @@ def install_sparse_cuda_mapping():
     current = Worker._setup_env_cuda_visible_devices
     if getattr(current, "_shopping_bpo_marker", None) == _SPARSE_CUDA_MAPPING_MARKER:
         return
+    _require_pinned_signature(
+        current, ("self",), "Worker._setup_env_cuda_visible_devices"
+    )
 
     def setup_env_cuda_visible_devices(worker):
         if not ray_noset_visible_devices():
@@ -117,6 +141,7 @@ def install_optimizer_update_audit():
     current = FSDPEngine.optimizer_step
     if getattr(current, "_shopping_bpo_marker", None) == _OPTIMIZER_AUDIT_MARKER:
         return
+    _require_pinned_signature(current, ("self",), "FSDPEngine.optimizer_step")
 
     def optimizer_step(engine):
         enabled = os.environ.get("SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE") == "1"
@@ -225,8 +250,11 @@ def install_scheduler_contract():
     current = FSDPEngine._build_lr_scheduler
     if getattr(current, "_shopping_bpo_marker", None) == _SCHEDULER_CONTRACT_MARKER:
         return
+    _require_pinned_signature(
+        current, ("self", "optimizer"), "FSDPEngine._build_lr_scheduler"
+    )
 
-    def build_lr_scheduler(engine):
+    def build_lr_scheduler(engine, *args, **kwargs):
         horizon = int(os.environ.get("SHOPPING_BPO_SCHEDULER_HORIZON", "500"))
         warmup = int(os.environ.get("SHOPPING_BPO_WARMUP_STEPS", "10"))
         min_lr_ratio = float(
@@ -241,7 +269,10 @@ def install_scheduler_contract():
         optimizer_config.lr_warmup_steps = warmup
         optimizer_config.lr_scheduler_type = "cosine"
         optimizer_config.min_lr_ratio = min_lr_ratio
-        scheduler = current(engine)
+        # veRL 0.8.0 passes the freshly-built optimizer positionally.  Forward
+        # every argument so the contract remains compatible with later veRL
+        # signatures instead of shadowing the upstream method shape.
+        scheduler = current(engine, *args, **kwargs)
         print(
             "BPO scheduler contract: "
             + json.dumps(
@@ -354,6 +385,16 @@ def install_bpo_runtime():
 
     original_generate = agent_module.AgentLoopWorker.generate_sequences
     original_advantage = ray_trainer.compute_advantage
+    _require_pinned_signature(
+        original_generate,
+        ("self", "batch"),
+        "AgentLoopWorker.generate_sequences",
+    )
+    _require_pinned_signature(
+        original_advantage,
+        ("data", "adv_estimator"),
+        "ray_trainer.compute_advantage",
+    )
 
     async def generate_sequences(worker, batch):
         enabled = bool(worker.config.get("shopping_bpo", {}).get("enable", False))
