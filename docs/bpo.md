@@ -231,8 +231,14 @@ BeautifulSoup 对象缓存，包含循环父子引用，因此不得深拷贝；
 向量不会进入 AgentLoop output 或训练 batch。actor update 仍需计算被选 token 的 log-prob，
 因此启用 fused output head，避免为完整长序列常驻 sequence-by-vocabulary logits。
 `actor.calculate_entropy=false`：BPO 已由独立的一 token 精确探针记录分叉熵，且训练 entropy
-系数为 0，不再为无用的全序列 entropy 分配显存。Liger 与 fused output head 分工不同，二者
-与 remove-padding 同时开启。
+系数为 0，不要求 trainer 保存或汇总常规 actor entropy；torch fused output head 仍可能在
+内部生成紧凑的逐 token entropy，这是该算子实现细节，不是 BPO 分叉熵。Liger 与 fused
+output head 分工不同，二者与 remove-padding 同时开启。
+
+`fused=true + remove-padding=false` 不属于支持配置：fused forward 返回 no-padding
+`log_probs`，而 dense 分支与 PPO loss 的 `no_padding_2_padding()` 元数据无法对齐，会触发
+`sequence_offsets[-1] != values.shape[0]`。因此预检必须把 fused 与 remove-padding 同时冻结为
+true；不能为了规避该断言关闭 fused，也不能为了规避非 fused 全词表 OOM 关闭 remove-padding。
 
 ## 5. 安装补丁与预检
 
