@@ -180,7 +180,30 @@ def test_real_verl_dispatcher_accepts_bpo_on_cpu():
                     "upstream_lambda": 0.95,
                 }
             },
-            "actor_rollout_ref": {"actor": {"use_kl_loss": False}},
+            "actor_rollout_ref": {
+                "actor": {
+                    "use_kl_loss": False,
+                    # Keep this fixture isomorphic to the formal BPO optimizer
+                    # contract. Runtime hook validation executes the pinned
+                    # veRL scheduler builder, so an actor-only stub would hide
+                    # the exact call path that formal training uses.
+                    "optim": {
+                        "lr": 1e-6,
+                        "lr_warmup_steps_ratio": 0.0,
+                        "total_training_steps": 200,
+                        "weight_decay": 0.01,
+                        "lr_warmup_steps": 10,
+                        "betas": [0.9, 0.999],
+                        "clip_grad": 1.0,
+                        "optimizer": "AdamW",
+                        "optimizer_impl": "torch.optim",
+                        "min_lr_ratio": 0.1,
+                        "lr_scheduler_type": "cosine",
+                        "num_cycles": 0.5,
+                        "zero_indexed_step": True,
+                    },
+                }
+            },
         }
     )
     validate_bpo_runtime_hooks(config, validate_official_config=False)
