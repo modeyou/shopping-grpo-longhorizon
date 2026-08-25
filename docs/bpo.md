@@ -458,3 +458,13 @@ Git 忽略的本地产物通常会跨分支保留；若未跟踪文件与目标�
 ShopSimulator 进程会继续使用启动时已加载的 Python 代码，不会随 `git switch` 自动刷新。
 两个方向切换后都要重启服务：BPO 需要含 `snapshot`、`clone`、`drop_snapshot` 的版本；
 GRPO 为严格复现也应重启到对应分支代码。切换 Git 分支不等于切换完整运行环境。
+
+## 14. 重复任务的 session 清理
+
+ShopSimulator 的环境槽与任务编号会形成确定性的 session id。同一任务稍后再次落到
+同一环境槽时，BPO API 必须在成功 reset 后清除上一条轨迹遗留的 `done`、reward 和
+终止诊断；否则新建 snapshot 会被错误识别为 terminal。
+
+该清理只允许发生在 reset 边界。真正的 terminal snapshot 仍必须被拒绝，不能通过
+忽略 clone 返回的 `done=true` 继续执行。`data/environment-bpo-v1.json` 同时绑定
+`pack_api.py` 与 `snapshot_store.py` 的哈希，保证服务器必须运行包含此修复的代码。

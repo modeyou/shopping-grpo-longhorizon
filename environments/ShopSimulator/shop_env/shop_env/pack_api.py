@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify, Response
 sys.path.append("../")
 from shop_agent import shop_agent
 from slot_lease_pool import SlotLeasePool
-from snapshot_store import SnapshotStore
+from snapshot_store import SnapshotStore, reset_terminal_session_state
 from web_agent_site.utils import DEBUG_PROD_SIZE
 from web_agent_site.envs.web_agent_text_env import WebAgentTextEnv
 
@@ -133,6 +133,12 @@ def api_some_function() -> Response:
             envs[env_idx], env_idx, action, idx, response,
             if_multiturn=if_multiturn,
         )
+
+        if action == 'reset':
+            # Slots use deterministic ``slot-{env_idx}-{task_id}`` sessions.
+            # A later rollout of the same task in the same slot must not
+            # inherit terminal state or reward fields from the earlier run.
+            reset_terminal_session_state(envs[env_idx])
 
         # The caller owns the lease until release_one.  Auto-releasing here
         # races with the caller's finally-release: another worker can lease

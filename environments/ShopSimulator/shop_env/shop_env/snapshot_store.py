@@ -9,11 +9,37 @@ _ENV_FIELDS = (
     "prev_actions", "history", "user_persona", "reason_key",
 )
 
+_TERMINAL_SESSION_FIELDS = (
+    "reward",
+    "reward_detail",
+    "verbose_info",
+)
+
 
 def _rewrite_session(value, old_session, new_session):
     if isinstance(value, str):
         return value.replace(str(old_session), str(new_session))
     return value
+
+
+def reset_terminal_session_state(env):
+    """Clear terminal residue when a deterministic slot/task session is reused.
+
+    ``WebAgentTextEnv`` derives its session id from both the leased slot and
+    task id.  Re-running the same task in a later rollout can therefore reuse
+    a server session that ended previously.  The underlying reset path
+    refreshes navigation state but historically left ``done`` and reward
+    fields behind, which made a fresh BPO snapshot look terminal when cloned.
+    """
+    session = getattr(env, "session", None)
+    server = getattr(env, "server", None)
+    sessions = getattr(server, "user_sessions", None)
+    if session is None or not isinstance(sessions, dict) or session not in sessions:
+        raise RuntimeError("reset did not create an active ShopSimulator session")
+    state = sessions[session]
+    state["done"] = False
+    for name in _TERMINAL_SESSION_FIELDS:
+        state.pop(name, None)
 
 
 class SnapshotStore:

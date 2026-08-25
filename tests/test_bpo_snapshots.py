@@ -91,6 +91,77 @@ def test_snapshot_store_clones_server_and_browser_state():
     assert store.drop(snapshot_id) is False
 
 
+def test_reused_slot_task_session_clears_terminal_residue_before_snapshot():
+    import sys
+    from pathlib import Path
+
+    module_path = (
+        Path(__file__).resolve().parents[1]
+        / "environments/ShopSimulator/shop_env/shop_env"
+    )
+    sys.path.insert(0, str(module_path))
+    try:
+        from snapshot_store import SnapshotStore, reset_terminal_session_state
+    finally:
+        sys.path.remove(str(module_path))
+
+    session_id = "slot-4-10284"
+    server = SimpleNamespace(
+        user_sessions={
+            session_id: {
+                "goal": {"instruction_text": "goal"},
+                "done": True,
+                "reward": 1.0,
+                "reward_detail": {"reward_type": "gold_purchase"},
+                "verbose_info": {"stale": True},
+                "cart": [],
+            }
+        }
+    )
+    source = SimpleNamespace(
+        session=session_id,
+        server=server,
+        browser=SimpleNamespace(
+            session_id=session_id,
+            current_url=f"http://shop/{session_id}",
+            page_source=f"{session_id} page",
+        ),
+        idx=10284,
+        history=[],
+        get_available_actions=lambda: None,
+    )
+
+    terminal_store = SnapshotStore()
+    terminal_snapshot = terminal_store.create(source, 4)
+    terminal_target = SimpleNamespace(
+        server=server,
+        browser=SimpleNamespace(),
+        get_available_actions=lambda: None,
+    )
+    terminal_result = terminal_store.clone_into(
+        terminal_snapshot, terminal_target, 6
+    )
+    assert terminal_result["done"] is True
+
+    reset_terminal_session_state(source)
+    fresh = server.user_sessions[session_id]
+    assert fresh["done"] is False
+    assert "reward" not in fresh
+    assert "reward_detail" not in fresh
+    assert "verbose_info" not in fresh
+
+    store = SnapshotStore()
+    snapshot_id = store.create(source, 4)
+    target = SimpleNamespace(
+        server=server,
+        browser=SimpleNamespace(),
+        get_available_actions=lambda: None,
+    )
+    result = store.clone_into(snapshot_id, target, 5)
+    assert result["done"] is False
+    assert server.user_sessions[target.session]["done"] is False
+
+
 def test_cloned_branch_session_binds_and_releases_coroutine_local_state():
     clone = SimpleNamespace(release_count=0)
 
