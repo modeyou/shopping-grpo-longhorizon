@@ -1,6 +1,7 @@
 import os
 import sys
 import types
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,14 +28,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_scheduler_probe_matches_pinned_verl_receiver_contract():
-    optimizer_config = SimpleNamespace(total_training_steps=200)
+    optimizer_config = SimpleNamespace(
+        lr=1.0e-6,
+        lr_warmup_steps_ratio=0.0,
+        total_training_steps=200,
+        lr_warmup_steps=10,
+        min_lr_ratio=0.1,
+        lr_scheduler_type="cosine",
+        num_cycles=0.5,
+        zero_indexed_step=True,
+    )
     config = SimpleNamespace(
         actor_rollout_ref=SimpleNamespace(
             actor=SimpleNamespace(optim=optimizer_config)
         )
     )
 
-    probe = build_scheduler_probe_engine(config)
+    probe = build_scheduler_probe_engine(
+        config, optimizer_config_class=SimpleNamespace
+    )
 
     assert probe.rank == 0
     assert probe.optimizer_config is not optimizer_config
@@ -43,6 +55,14 @@ def test_scheduler_probe_matches_pinned_verl_receiver_contract():
 
 def test_scheduler_probe_executes_rank_dependent_upstream_contract(monkeypatch):
     calls = []
+
+    class _FrozenOptimizerConfig(SimpleNamespace):
+        _mutable_fields = {"total_training_steps", "lr_warmup_steps"}
+
+        def __setattr__(self, name, value):
+            if name in self.__dict__ and name not in self._mutable_fields:
+                raise FrozenInstanceError(f"Field '{name}' is frozen")
+            super().__setattr__(name, value)
 
     class _FSDPEngine:
         def _build_lr_scheduler(self, optimizer):
@@ -73,6 +93,8 @@ def test_scheduler_probe_executes_rank_dependent_upstream_contract(monkeypatch):
         actor_rollout_ref=SimpleNamespace(
             actor=SimpleNamespace(
                 optim=SimpleNamespace(
+                    lr=1.0e-6,
+                    lr_warmup_steps_ratio=0.0,
                     total_training_steps=200,
                     lr_warmup_steps=10,
                     lr_scheduler_type="cosine",
@@ -83,7 +105,9 @@ def test_scheduler_probe_executes_rank_dependent_upstream_contract(monkeypatch):
             )
         )
     )
-    engine = build_scheduler_probe_engine(config)
+    engine = build_scheduler_probe_engine(
+        config, optimizer_config_class=_FrozenOptimizerConfig
+    )
     optimizer = object()
 
     scheduler = _FSDPEngine._build_lr_scheduler(engine, optimizer)
@@ -338,7 +362,12 @@ def test_scheduler_contract_decouples_curve_from_formal_stop(monkeypatch, capsys
 
     install_scheduler_contract()
     engine = _FSDPEngine()
-    engine.optimizer_config = SimpleNamespace(total_training_steps=100)
+    engine.optimizer_config = SimpleNamespace(
+        total_training_steps=100,
+        lr_warmup_steps=10,
+        lr_scheduler_type="cosine",
+        min_lr_ratio=0.1,
+    )
     optimizer = object()
     assert engine._build_lr_scheduler(optimizer) == "scheduler"
     assert calls == [(
@@ -374,7 +403,49 @@ def test_scheduler_contract_forwards_keyword_arguments(monkeypatch):
 
     install_scheduler_contract()
     engine = _FSDPEngine()
-    engine.optimizer_config = SimpleNamespace(total_training_steps=200)
+    engine.optimizer_config = SimpleNamespace(
+        total_training_steps=200,
+        lr_warmup_steps=10,
+        lr_scheduler_type="cosine",
+        min_lr_ratio=0.1,
+    )
     optimizer = object()
     assert engine._build_lr_scheduler(optimizer=optimizer) == "scheduler"
     assert calls == [optimizer]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("lr_warmup_steps", 9, "warmup does not match"),
+        ("lr_scheduler_type", "constant", "type does not match"),
+        ("min_lr_ratio", 0.2, "minimum LR ratio does not match"),
+    ],
+)
+def test_scheduler_contract_rejects_recipe_drift(
+    monkeypatch, field, value, message
+):
+    class _FSDPEngine:
+        def _build_lr_scheduler(self, optimizer):
+            return optimizer
+
+    transformer = types.ModuleType("verl.workers.engine.fsdp.transformer_impl")
+    transformer.FSDPEngine = _FSDPEngine
+    monkeypatch.setitem(sys.modules, transformer.__name__, transformer)
+    monkeypatch.setenv("SHOPPING_BPO_SCHEDULER_HORIZON", "500")
+    monkeypatch.setenv("SHOPPING_BPO_WARMUP_STEPS", "10")
+    monkeypatch.setenv("SHOPPING_BPO_MIN_LR_RATIO", "0.1")
+
+    install_scheduler_contract()
+    values = {
+        "total_training_steps": 200,
+        "lr_warmup_steps": 10,
+        "lr_scheduler_type": "cosine",
+        "min_lr_ratio": 0.1,
+    }
+    values[field] = value
+    engine = _FSDPEngine()
+    engine.optimizer_config = SimpleNamespace(**values)
+
+    with pytest.raises(RuntimeError, match=message):
+        engine._build_lr_scheduler(object())

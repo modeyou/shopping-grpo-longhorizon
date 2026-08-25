@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import SimpleNamespace
@@ -170,14 +169,29 @@ def validate_xml_tool_parser_patch(verl_source):
     )
 
 
-def build_scheduler_probe_engine(config):
-    """Build the complete minimal receiver used by veRL 0.8.0's scheduler."""
+def build_scheduler_probe_engine(config, *, optimizer_config_class=None):
+    """Build the frozen receiver used by veRL 0.8.0's scheduler."""
+    if optimizer_config_class is None:
+        from verl.workers.config.optimizer import FSDPOptimizerConfig
+
+        optimizer_config_class = FSDPOptimizerConfig
+    source = config.actor_rollout_ref.actor.optim
+    optimizer_config = optimizer_config_class(
+        lr=float(source.lr),
+        lr_warmup_steps_ratio=float(source.lr_warmup_steps_ratio),
+        total_training_steps=int(source.total_training_steps),
+        lr_warmup_steps=int(source.lr_warmup_steps),
+        min_lr_ratio=float(source.min_lr_ratio),
+        lr_scheduler_type=str(source.lr_scheduler_type),
+        num_cycles=float(source.num_cycles),
+        zero_indexed_step=bool(source.zero_indexed_step),
+    )
     return SimpleNamespace(
         # FSDPEngine._build_lr_scheduler logs its resolved horizon on rank 0.
         # Keep the probe on that path so preflight exercises every branch of
         # the pinned upstream method instead of bypassing rank-dependent code.
         rank=0,
-        optimizer_config=deepcopy(config.actor_rollout_ref.actor.optim),
+        optimizer_config=optimizer_config,
     )
 
 

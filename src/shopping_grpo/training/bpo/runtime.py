@@ -265,10 +265,24 @@ def install_scheduler_contract():
         if not 0 <= warmup < horizon:
             raise RuntimeError("formal BPO scheduler warmup/horizon is invalid")
         optimizer_config = engine.optimizer_config
+        # veRL BaseConfig freezes fields that are not explicitly listed in
+        # _mutable_fields.  In v0.8.0 min_lr_ratio is frozen, while the formal
+        # YAML already binds the warmup/scheduler/minimum ratio.  Validate those
+        # immutable recipe values and only override the officially mutable
+        # horizon needed to make an N200 run resumable to 500 updates.
+        if int(optimizer_config.lr_warmup_steps) != warmup:
+            raise RuntimeError(
+                "formal BPO scheduler warmup does not match the contract"
+            )
+        if str(optimizer_config.lr_scheduler_type) != "cosine":
+            raise RuntimeError(
+                "formal BPO scheduler type does not match the contract"
+            )
+        if float(optimizer_config.min_lr_ratio) != min_lr_ratio:
+            raise RuntimeError(
+                "formal BPO minimum LR ratio does not match the contract"
+            )
         optimizer_config.total_training_steps = horizon
-        optimizer_config.lr_warmup_steps = warmup
-        optimizer_config.lr_scheduler_type = "cosine"
-        optimizer_config.min_lr_ratio = min_lr_ratio
         # veRL 0.8.0 passes the freshly-built optimizer positionally.  Forward
         # every argument so the contract remains compatible with later veRL
         # signatures instead of shadowing the upstream method shape.
