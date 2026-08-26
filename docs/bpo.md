@@ -491,6 +491,110 @@ BPO 与 GRPO 不得同时占用 GPU 0–3、同一 Ray runtime 或同一批 Shop
   --log "$BPO_FORMAL_LOG"
 ```
 
+### 8.1 导出 step 200
+
+正式验收通过后，将 veRL FSDP actor checkpoint 导出为可由 vLLM 直接加载的
+Hugging Face 模型。导出目录必须是全新的，不能覆盖 SFT merged model 或训练
+checkpoint：
+
+```bash
+cd ~/shopping-grpo
+export PYTHONPATH=./src
+export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
+
+BPO_RUN="$PWD/outputs/models/bpo-native-v4-step200-r1600-seed20260823-20260826-113750-r3"
+BPO_SOURCE="$BPO_RUN/global_step_200"
+BPO_EVAL_MODEL="$PWD/outputs/models/bpo-native-v4-step200-r1600-seed20260823-export"
+
+test -d "$BPO_SOURCE/actor"
+test "$(<"$BPO_RUN/latest_checkpointed_iteration.txt")" = "200"
+test ! -e "$BPO_EVAL_MODEL"
+
+bash scripts/export_grpo.sh \
+  "$BPO_SOURCE/actor" \
+  "$BPO_EVAL_MODEL"
+```
+
+### 8.2 冻结 dev500 三面板评测
+
+下面的独立入口不经过 SFT LoRA merge，不会把 BPO 伪装成 SFT checkpoint。它会绑定
+原始 `global_step_200`、检查导出模型、验证 dev500 manifest、实时探测
+ShopSimulator Environment v2.1 / Reward v4、检查 Shopper API，并在评测审计中明确记录
+`final_evaluation_used=false`。
+
+GPU 1 当前留给共享 OCR 服务，因此示例使用物理 GPU 0/2/3/4：
+
+```bash
+: "${SHOPPER_MODEL:?SHOPPER_MODEL 未设置}"
+: "${SHOPPER_BASE_URL:?SHOPPER_BASE_URL 未设置}"
+: "${SHOPPER_API_KEY:?SHOPPER_API_KEY 未设置}"
+: "${SHOPSIM_BASE_URL:?SHOPSIM_BASE_URL 未设置}"
+
+VLLM_BIN=/home/gjx/.venvs/shopping-grpo/bin/vllm
+DEV500_ASSETS="$PWD/outputs/evaluation/checkpoint-sweep-dev500-v1/assets"
+BPO_DEV500_TAG=bpo-native-v4-step200-r1600-dev500-v1
+BPO_DEV500_ROOT="$PWD/outputs/evaluation/$BPO_DEV500_TAG"
+BPO_DEV500_ACTORS="$PWD/outputs/evaluation/actors/$BPO_DEV500_TAG"
+BPO_DEV500_LOG="$BPO_DEV500_ROOT/run.log"
+BPO_DEV500_PID_FILE="$BPO_DEV500_ROOT/evaluation.pid"
+
+BPO_DEV500_CMD=(
+  "$GRPO_PYTHON" -u scripts/run_standalone_checkpoint_evaluation.py
+  --model "$BPO_EVAL_MODEL"
+  --model-name qwen35-2b-bpo-step200
+  --source-checkpoint "$BPO_SOURCE"
+  --assets "$DEV500_ASSETS"
+  --output-root "$BPO_DEV500_ROOT/results"
+  --actor-log-root "$BPO_DEV500_ACTORS"
+  --vllm-bin "$VLLM_BIN"
+  --actor-ports 18102 18103 18104 18105
+  --gpu-indices 0 2 3 4
+  --startup-timeout 900
+)
+
+"${BPO_DEV500_CMD[@]}" --preflight-only
+```
+
+预检输出中的 `asset_manifest_sha256` 必须严格等于
+`b363a64628f68a588292832f6d01a5a2c5687f29e2f8f119714a46140f5fe03f`，并且必须打印：
+
+```text
+ShopSimulator Environment v2.1 / Reward v4 preflight passed
+Shopper API preflight passed
+STANDALONE CHECKPOINT EVALUATION PREFLIGHT PASSED
+```
+
+确认后后台运行：
+
+```bash
+test ! -e "$BPO_DEV500_ROOT"
+test ! -e "$BPO_DEV500_ACTORS"
+mkdir -p "$BPO_DEV500_ROOT"
+
+nohup "${BPO_DEV500_CMD[@]}" \
+  >"$BPO_DEV500_LOG" 2>&1 < /dev/null &
+
+BPO_DEV500_PID=$!
+printf '%s\n' "$BPO_DEV500_PID" > "$BPO_DEV500_PID_FILE"
+echo "BPO_DEV500_PID=$BPO_DEV500_PID"
+echo "BPO_DEV500_LOG=$BPO_DEV500_LOG"
+```
+
+完成标志必须是 `STANDALONE CHECKPOINT EVALUATION COMPLETED`。随后执行同口径验收，
+并与 SFT checkpoint-325 的既有 dev500×3 结果比较：
+
+```bash
+"$GRPO_PYTHON" scripts/audit_standalone_checkpoint_evaluation.py \
+  --results "$BPO_DEV500_ROOT/results/evaluation_results.json" \
+  --expected-asset-manifest-sha256 \
+    b363a64628f68a588292832f6d01a5a2c5687f29e2f8f119714a46140f5fe03f \
+  --expected-source-step 200 \
+  --expected-model-name qwen35-2b-bpo-step200 \
+  --baseline-results \
+    outputs/evaluation/checkpoint-sweep-dev500-three-v1/results/sweep_results.json \
+  --baseline-checkpoint checkpoint-325
+```
+
 - gap + ask enabled；
 - gap + ask disabled；
 - complete + ask enabled。
