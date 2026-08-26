@@ -58,7 +58,7 @@ def test_json_safe_supports_swanlab_response_objects():
 
 def test_report_contains_decision_steps_resources_and_alerts():
     custom = {
-        "summary/strict_success_rate": [
+        "val-shopping/summary/strict_success_rate": [
             MetricPoint(0, 0.60),
             MetricPoint(50, 0.66),
             MetricPoint(200, 0.67),
@@ -82,7 +82,7 @@ def test_export_entrypoint_writes_complete_snapshot_and_report(tmp_path, monkeyp
     custom_payload = {
         "data": [
             {
-                "key": "summary/strict_success_rate",
+                "key": "val-shopping/summary/strict_success_rate",
                 "list": [{"step": 0, "value": 0.60}, {"step": 200, "value": 0.67}],
             },
             {
@@ -107,7 +107,7 @@ def test_export_entrypoint_writes_complete_snapshot_and_report(tmp_path, monkeyp
         def series(self, *, metric_type, metric_class):
             assert metric_type == "SCALAR"
             keys = (
-                ["summary/strict_success_rate", "actor/grad_norm"]
+                ["val-shopping/summary/strict_success_rate", "actor/grad_norm"]
                 if metric_class == "CUSTOM"
                 else ["system/gpu.0.utilization"]
             )
@@ -140,6 +140,6 @@ def test_export_entrypoint_writes_complete_snapshot_and_report(tmp_path, monkeyp
     report = (tmp_path / "swanlab-analysis.md").read_text(encoding="utf-8")
 
     assert snapshot["schema_version"] == "shopping-swanlab-history-v1"
-    assert snapshot["parsed_points"]["custom"]["summary/strict_success_rate"][-1]["step"] == 200
+    assert snapshot["parsed_points"]["custom"]["val-shopping/summary/strict_success_rate"][-1]["step"] == 200
     assert "step 200" in report
     assert "system/gpu.0.utilization" in report

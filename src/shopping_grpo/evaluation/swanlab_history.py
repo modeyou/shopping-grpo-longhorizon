@@ -186,16 +186,25 @@ def build_markdown_report(*, run_path: str, run_metadata: Mapping[str, Any], cus
         f"- 自定义指标：{len(custom_series)} 个；系统指标：{len(system_series)} 个",
         "", "## 决策节点验证曲线", "",
     ]
-    validation = {key: points for key, points in custom_series.items() if key.startswith("summary/") and points}
+    validation = {
+        key: points
+        for key, points in custom_series.items()
+        if key.startswith("val-shopping/summary/") and points
+    }
     if validation:
         lines.append("| 指标 | " + " | ".join(f"step {step}" for step in DECISION_STEPS) + " |")
         lines.append("|---|" + "---:|" * len(DECISION_STEPS))
-        for key in sorted(validation, key=_priority):
+        for key in sorted(
+            validation, key=lambda name: _priority(name.removeprefix("val-shopping/"))
+        ):
             by_step = {point.step: point for point in validation[key]}
             values = [_fmt(by_step.get(step).value if step in by_step else None) for step in DECISION_STEPS]
             lines.append(f"| `{key}` | " + " | ".join(values) + " |")
     else:
-        lines.append("未从响应中解析出 `summary/*` 曲线；原始响应已保存在 JSON 快照中。")
+        lines.append(
+            "未从响应中解析出 `val-shopping/summary/*` 曲线；"
+            "原始响应已保存在 JSON 快照中。"
+        )
 
     lines.extend(["", "## 重要训练指标", ""])
     training = {key: points for key, points in custom_series.items() if points and not key.startswith(("summary/", "val-shopping/", "val-core/"))}
