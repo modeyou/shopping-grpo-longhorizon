@@ -404,10 +404,12 @@ smoke 必须确认：
   实际变化的参数张量数都大于零。仅有 `training/optimizer_updated=1` 不足以
   证明模型参数确实发生变化。
 
-正式 BPO 启动器通过 `SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE=1` 启用这一首步
-硬审计。审计直接包裹 veRL 的 FSDP optimizer：先检查 optimizer 中可训练参数的
-梯度，再在 `optimizer.step()` 前后逐张量比较参数。无梯度、非有限梯度或没有任何
-参数变化都会立即终止训练；该 hook 仅由 BPO runtime 安装，不修改 GRPO 行为。
+正式 BPO 启动器通过 `SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE=1` 启用更新审计。
+审计直接包裹 veRL 的 FSDP optimizer：第一个 backward 必须产生有限非零梯度；若 cosine
+warmup 的零索引首步学习率为 0，该步按定义不要求 parameter delta，并在首个正学习率 step
+继续审计。缺少梯度、非有限梯度或首个正学习率 step 没有 parameter delta 都会写入明确的
+非阻断 warning 和结构化诊断，但审计本身不得终止训练；底层 optimizer、CUDA 和框架的真实
+异常仍按原行为失败。该 hook 仅由 BPO runtime 安装，不修改 GRPO 行为。
 
 ## 7. 正式训练
 

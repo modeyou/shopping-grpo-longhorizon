@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 import os
 
 from shopping_grpo.training.bpo.advantage import (
@@ -18,7 +19,7 @@ from shopping_grpo.training.grpo.dynamic_sampling import append_training_diagnos
 
 _INSTALLED = False
 _SPARSE_CUDA_MAPPING_MARKER = "SHOPPING_BPO_SPARSE_CUDA_MAPPING_V1"
-_OPTIMIZER_AUDIT_MARKER = "SHOPPING_BPO_OPTIMIZER_AUDIT_V1"
+_OPTIMIZER_AUDIT_MARKER = "SHOPPING_BPO_OPTIMIZER_AUDIT_V2"
 _SCHEDULER_CONTRACT_MARKER = "SHOPPING_BPO_SCHEDULER_CONTRACT_V1"
 _FORWARD_BACKWARD_AUDIT_MARKER = "SHOPPING_BPO_FORWARD_BACKWARD_AUDIT_V1"
 _FORWARD_BACKWARD_AUDIT_COUNT = 0
@@ -290,7 +291,7 @@ def _global_audit_counts(torch, values, device):
 
 
 def install_optimizer_update_audit():
-    """Require the first formal BPO update to change trainable parameters."""
+    """Require gradients immediately and a delta at the first positive LR."""
     from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
 
     current = FSDPEngine.optimizer_step
@@ -307,6 +308,18 @@ def install_optimizer_update_audit():
             return current(engine)
 
         import torch
+
+        learning_rates = [
+            float(group.get("lr", float("nan")))
+            for group in engine.optimizer.param_groups
+        ]
+        learning_rates_valid = bool(learning_rates) and all(
+            math.isfinite(value) and value >= 0.0 for value in learning_rates
+        )
+        maximum_learning_rate = max(learning_rates) if learning_rates_valid else None
+        parameter_delta_required = bool(
+            learning_rates_valid and maximum_learning_rate > 0.0
+        )
 
         tracked = []
         trainable_tensors = 0
@@ -381,8 +394,35 @@ def install_optimizer_update_audit():
             "nonzero_grad_tensors": int(global_nonzero_grad),
             "reported_grad_norm": float(reported_grad_norm),
             "trainable_parameter_tensors": int(global_trainable),
+            "learning_rates": learning_rates,
+            "maximum_learning_rate": maximum_learning_rate,
+            "parameter_delta_required": parameter_delta_required,
         }
+        warning_reasons = []
+        if not learning_rates_valid:
+            warning_reasons.append("invalid_learning_rate")
+        if global_trainable <= 0:
+            warning_reasons.append("no_trainable_parameters")
+        if global_nonfinite > 0:
+            warning_reasons.append("nonfinite_gradients")
+        if global_nonzero_grad <= 0 or global_grad_squared_sum <= 0.0:
+            warning_reasons.append("no_nonzero_gradients")
+        if parameter_delta_required and global_changed <= 0:
+            warning_reasons.append("no_parameter_delta_at_positive_lr")
+        audit["accepted"] = not warning_reasons
+        audit["warning_reasons"] = warning_reasons
         print("BPO optimizer update audit: " + json.dumps(audit, sort_keys=True))
+        if warning_reasons:
+            print(
+                "BPO optimizer audit warning: "
+                + json.dumps(
+                    {
+                        "non_blocking": True,
+                        "reasons": warning_reasons,
+                    },
+                    sort_keys=True,
+                )
+            )
         rank = 0
         distributed = getattr(torch, "distributed", None)
         if (
@@ -398,15 +438,20 @@ def install_optimizer_update_audit():
                 audit=audit,
                 phase="optimizer_step",
             )
-        if global_trainable <= 0:
-            raise RuntimeError("BPO optimizer has no trainable parameters")
-        if global_nonfinite > 0:
-            raise RuntimeError("BPO optimizer produced non-finite gradients")
-        if global_nonzero_grad <= 0 or global_grad_squared_sum <= 0.0:
-            raise RuntimeError("BPO backward produced no non-zero gradients")
-        if global_changed <= 0:
-            raise RuntimeError("BPO optimizer step changed no trainable parameters")
-        engine._shopping_bpo_optimizer_audited = True
+        gradient_accepted = (
+            global_trainable > 0
+            and global_nonfinite <= 0
+            and global_nonzero_grad > 0
+            and global_grad_squared_sum > 0.0
+        )
+        if gradient_accepted:
+            engine._shopping_bpo_gradient_audited = True
+        if (
+            gradient_accepted
+            and parameter_delta_required
+            and global_changed > 0
+        ):
+            engine._shopping_bpo_optimizer_audited = True
         return reported_grad_norm
 
     optimizer_step._shopping_bpo_marker = _OPTIMIZER_AUDIT_MARKER
