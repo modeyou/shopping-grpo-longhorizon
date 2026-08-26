@@ -97,18 +97,23 @@ hash 和 branch metadata；三个 clone 必须拥有互异的环境 lease。
 
 ## 3. 动态采样审计
 
-正式 BPO 仍以 2 个有效 group 为目标，最多生成 3 个 batch；三批后允许 1 个真实 K=4 group
-完成一次较小更新，0 个才跳过。逐分支验证：
+正式 BPO 的冻结值是
+`target=2/minimum=2/require_full_batch=true/soft_warning=10/max_batches=30`。第一棵有效树会跨候选
+generation batch 保留，但不得用单棵 K=4 tree 完成较小更新；只有凑满 2 棵树、8 个 sibling
+returns 后才能进入 optimizer。逐分支验证：
 
-1. `target=2/minimum=1/max_batches=3` 没有被误解成永久 batch 1；
+1. `target=2/minimum=2/require_full_batch=true/max_batches=30` 在 Hydra 合并配置、run contract
+   和 trainer 实际执行路径中保持一致；
 2. 0 个有效 group 的路径不会对空列表执行 `DataProto.concat()`；
-3. 1 个有效 group 能通过 balance、log-prob、advantage 和 actor mini-batch 的尺寸/整除约束，
-   不只是越过筛选条件；这是本次最高优先级的独立检查；
-4. 2 个有效 group 保持原正式路径；超过目标时不会混入额外或半个 sibling group；
-5. skip/partial/ready 后的计数器重置、profiling、replica sleep/wake 和 global step 正确；
-6. 连续 10 次无更新才停止，已有一个有效 group 时不会错误累计 skip；
-7. GRPO 没有设置 `minimum_accepted_prompts=1` 时，默认值仍等于 train batch size，原 GRPO
-   动态采样语义不能被共享 patch 改坏；
+3. 只有 1 个有效 group 时会跨 generation batch 正确保留，且不会提前进入 balance、log-prob、
+   advantage 或 actor update；
+4. 第 10 个 candidate batch 只产生慢批告警，不改变 batch 要求；第 30 个仍未凑齐时必须
+   fail closed，不能单树更新或伪造第二棵树；
+5. 2 个有效 group 的正式路径不会混入额外或半个 sibling group；每次 optimizer batch 必须是
+   2 棵树和 8 个 sibling returns；
+6. ready、告警和硬停止路径的计数器、profiling、replica sleep/wake、checkpoint 与 global step
+   语义正确，未完成的 step 不计数；
+7. GRPO 未显式设置 BPO 的 full-batch 参数时，原 GRPO 动态采样语义不能被共享 patch 改坏；
 8. 从多个 generation batch concat 后，所有 tensor/non-tensor 字段仍逐 trajectory 对齐。
 
 审查仓库 patch 时还要把它实际应用到冻结的官方 veRL 0.8 `ray_trainer.py` 副本，确认所有 hunk
