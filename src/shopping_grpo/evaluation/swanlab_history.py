@@ -225,4 +225,3 @@ def build_markdown_report(*, run_path: str, run_metadata: Mapping[str, Any], cus
     lines.append("- 自动规则只能用于定位异常；算法结论仍应以冻结 dev500 三面板与逐任务配对审计为准。")
     lines.append("")
     return "\n".join(lines)
-
