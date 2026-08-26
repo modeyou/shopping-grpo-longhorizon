@@ -84,12 +84,25 @@ def validate_bpo_config(config):
         raise SystemExit("formal BPO requires four GPUs")
     if int(bpo.effective_return_budget) != 1600:
         raise SystemExit("formal BPO requires effective_return_budget=1600")
-    if int(config.trainer.total_training_steps) != 200:
-        raise SystemExit("formal BPO requires exactly 200 global steps")
-    if int(config.trainer.save_freq) != 25 or int(config.trainer.test_freq) != 50:
-        raise SystemExit(
-            "formal BPO requires checkpoints every 25 steps and validation every 50"
-        )
+    diagnostic_steps = str(
+        os.environ.get("SHOPPING_BPO_DIAGNOSTIC_STEPS", "")
+    ).strip()
+    if diagnostic_steps:
+        if diagnostic_steps != "1":
+            raise SystemExit("BPO diagnostic mode supports exactly one step")
+        if int(config.trainer.total_training_steps) != 1:
+            raise SystemExit("BPO diagnostic mode requires exactly one global step")
+        if bool(config.trainer.val_before_train):
+            raise SystemExit("BPO diagnostic mode must disable validation")
+        if int(config.trainer.save_freq) != -1 or int(config.trainer.test_freq) != -1:
+            raise SystemExit("BPO diagnostic mode must disable save/test")
+    else:
+        if int(config.trainer.total_training_steps) != 200:
+            raise SystemExit("formal BPO requires exactly 200 global steps")
+        if int(config.trainer.save_freq) != 25 or int(config.trainer.test_freq) != 50:
+            raise SystemExit(
+                "formal BPO requires checkpoints every 25 steps and validation every 50"
+            )
     if int(config.trainer.max_actor_ckpt_to_keep) != 9:
         raise SystemExit("formal BPO must retain step 10 plus eight 25-step checkpoints")
     if int(config.data.seed) != 20260823:

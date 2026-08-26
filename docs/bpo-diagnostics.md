@@ -22,6 +22,23 @@ For a one-step validation run, set:
 
     export SHOPPING_BPO_LOSS_AUDIT_LIMIT=8
 
+Launch it through the explicit diagnostic contract. Do not override the formal
+trainer step count directly:
+
+    bash scripts/bpo.sh \
+      --model "$BPO_MODEL" \
+      --output "$BPO_DIAGNOSTIC_OUT" \
+      --experiment-name "$BPO_DIAGNOSTIC_NAME" \
+      --logger console \
+      --shopper-model "$SHOPPER_MODEL" \
+      --shopper-base-url "$SHOPPER_BASE_URL" \
+      --seed 20260823 \
+      --diagnostic-steps 1
+
+The diagnostic still requires two accepted trees, non-zero gradients and an
+actual parameter delta. It disables checkpointing and validation and must not
+be promoted as a formal training result.
+
 Then inspect training_diagnostics.jsonl for the three events in order:
 
     grep -E 'bpo_actor_batch|bpo_actor_loss_batch|bpo_optimizer_backward' \

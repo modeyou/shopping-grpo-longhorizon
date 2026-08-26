@@ -31,6 +31,7 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
         experiment_name="bpo-test",
         logger="console",
         seed=20260823,
+        diagnostic_steps=None,
         dry_run=False,
         preflight_only=True,
         hydra_overrides=[],
@@ -50,6 +51,7 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
     )
     assert audit["algorithm"] == "full-bpo-v1"
     assert audit["reward_profile"] == "none"
+    assert audit["execution_mode"] == "formal"
 
     step0_contract = json.loads(environment["SHOPPING_BPO_STEP0_CONTRACT_JSON"])
     step0_digest = train_bpo.validate_contract(step0_contract)
@@ -74,3 +76,33 @@ def test_bpo_launcher_rejects_an_external_ray_address(monkeypatch):
     monkeypatch.setenv("RAY_ADDRESS", "127.0.0.1:26379")
     with pytest.raises(SystemExit, match="launcher-owned local Ray runtime"):
         train_bpo.validate_launcher_owned_ray()
+
+
+def test_bpo_diagnostic_mode_owns_safe_one_step_overrides():
+    args = Namespace(
+        logger="console",
+        experiment_name="bpo-diagnostic",
+        diagnostic_steps=1,
+        hydra_overrides=[],
+    )
+
+    assert train_bpo._overrides(args) == [
+        "trainer.logger=[console]",
+        "trainer.experiment_name=bpo-diagnostic",
+        "trainer.total_training_steps=1",
+        "trainer.val_before_train=false",
+        "trainer.save_freq=-1",
+        "trainer.test_freq=-1",
+    ]
+
+
+def test_bpo_diagnostic_mode_rejects_conflicting_step_override():
+    args = Namespace(
+        logger="console",
+        experiment_name="bpo-diagnostic",
+        diagnostic_steps=1,
+        hydra_overrides=["--", "trainer.total_training_steps=2"],
+    )
+
+    with pytest.raises(SystemExit, match="owns trainer step/save/test overrides"):
+        train_bpo._overrides(args)

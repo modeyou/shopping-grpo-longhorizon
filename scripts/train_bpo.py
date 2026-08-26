@@ -44,6 +44,16 @@ def parse_args():
     parser.add_argument("--logger", choices=("console", "swanlab"), default="swanlab")
     parser.add_argument("--seed", type=int, default=20260823)
     parser.add_argument(
+        "--diagnostic-steps",
+        type=int,
+        choices=(1,),
+        help=(
+            "Run one real parameter-update step with formal data and all "
+            "gradient/delta gates enabled. This is a diagnostic run, not a "
+            "formal checkpoint."
+        ),
+    )
+    parser.add_argument(
         "--step0-cache-dir",
         type=Path,
         default=STEP0_CACHE_ROOT,
@@ -144,6 +154,7 @@ def _step0_validation_contract(args, *, model, val_data, manifest):
                 "shopper_model": str(args.shopper_model),
                 "validation_sampling": "deterministic-n1",
                 "hydra_overrides": list(args.hydra_overrides),
+                "diagnostic_steps": args.diagnostic_steps,
             },
         )
     except ValueError as exc:
@@ -155,11 +166,35 @@ def _overrides(args):
     if extra[:1] == ["--"]:
         extra = extra[1:]
     logger = "[console,swanlab]" if args.logger == "swanlab" else "[console]"
-    return [
+    overrides = [
         f"trainer.logger={logger}",
         f"trainer.experiment_name={args.experiment_name}",
-        *extra,
     ]
+    if args.diagnostic_steps is not None:
+        forbidden = (
+            "trainer.total_training_steps=",
+            "trainer.val_before_train=",
+            "trainer.save_freq=",
+            "trainer.test_freq=",
+        )
+        conflicts = [
+            value for value in extra if str(value).startswith(forbidden)
+        ]
+        if conflicts:
+            raise SystemExit(
+                "--diagnostic-steps owns trainer step/save/test overrides: "
+                + ", ".join(conflicts)
+            )
+        overrides.extend(
+            [
+                f"trainer.total_training_steps={args.diagnostic_steps}",
+                "trainer.val_before_train=false",
+                "trainer.save_freq=-1",
+                "trainer.test_freq=-1",
+            ]
+        )
+    overrides.extend(extra)
+    return overrides
 
 
 def validate_launcher_owned_ray(environ=None):
@@ -220,6 +255,11 @@ def build(args):
             "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
             "SHOPPING_BPO_ROOT": str(ROOT),
             "SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE": "1",
+            "SHOPPING_BPO_DIAGNOSTIC_STEPS": (
+                str(args.diagnostic_steps)
+                if args.diagnostic_steps is not None
+                else ""
+            ),
             "SHOPPING_BPO_SCHEDULER_HORIZON": "500",
             "SHOPPING_BPO_WARMUP_STEPS": "10",
             "SHOPPING_BPO_MIN_LR_RATIO": "0.1",
@@ -283,6 +323,10 @@ def build(args):
         "logger": args.logger,
         "reward_version": "shopsimulator-reward-v4",
         "reward_profile": "none",
+        "execution_mode": (
+            "diagnostic" if args.diagnostic_steps is not None else "formal"
+        ),
+        "diagnostic_steps": args.diagnostic_steps,
         "step0_validation": {
             "cache_path": str(step0_cache_path),
             "contract_sha256": step0_contract_sha256,
