@@ -178,6 +178,7 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn('"bpo_cost/shopper_api_calls_total"', fit_source)
             self.assertIn('"rollout/generated_response_tokens_total"', fit_source)
             self.assertIn('"training/optimizer_updated": 0', fit_source)
+            self.assertIn("logger.finish()", fit_source)
             self.assertIn(
                 "logger.log(data=skipped_metrics, step=self.global_steps)",
                 fit_source,

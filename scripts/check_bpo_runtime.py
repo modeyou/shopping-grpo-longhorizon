@@ -747,6 +747,7 @@ def main():
     validate_xml_tool_parser_patch(verl_source)
     validate_fused_ppo_gradient_patch(verl_source)
     common.validate_dynamic_sampling(config, verl_source, installed)
+    common.validate_tracking_finish_patch(verl_source)
     validate_step0_validation_cache()
     validate_finalize_hook()
     validate_bpo_runtime_hooks(config)

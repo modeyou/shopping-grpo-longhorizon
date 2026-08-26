@@ -75,6 +75,18 @@ def test_combined_installer_loads_fused_gradient_patcher_by_file_path():
     assert callable(module.apply)
 
 
+def test_dynamic_installer_loads_tracking_patcher_by_file_path():
+    import scripts.apply_verl_dynamic_sampling_patch as dynamic_patcher
+
+    module = dynamic_patcher.load_tracking_patcher()
+    assert Path(module.__file__).resolve() == (
+        Path(dynamic_patcher.__file__).resolve().with_name(
+            "apply_verl_tracking_finish_patch.py"
+        )
+    )
+    assert callable(module.apply)
+
+
 def test_zero_probability_logprob_does_not_create_nan():
     values = [math.log(0.5), math.log(0.5), -math.inf]
     probabilities = [

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
+import importlib.util
 import py_compile
 import shutil
 import subprocess
@@ -45,6 +46,21 @@ BPO_COMPATIBILITY_NEW = '''            dynamic_adv_estimator = (
                     "shopping_dynamic_sampling only supports GRPO or BPO"
                 )
 '''
+
+
+def load_tracking_patcher():
+    """Load the sibling tracking lifecycle installer by path."""
+    path = Path(__file__).resolve().with_name(
+        "apply_verl_tracking_finish_patch.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_shopping_grpo_tracking_patcher", path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load veRL tracking patcher: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def sha256(path: Path) -> str:
@@ -284,6 +300,19 @@ def main() -> None:
             print(f"verified veRL dynamic-sampling patch: {target}")
         else:
             apply_patch(target)
+        if args.target is None:
+            tracking_patch = load_tracking_patcher()
+            tracking_target = tracking_patch.resolve_target()
+            if args.restore:
+                tracking_patch.restore(tracking_target)
+            elif args.check:
+                tracking_patch.verify(tracking_target)
+                print(
+                    "verified veRL tracking finish patch: "
+                    f"{tracking_target}"
+                )
+            else:
+                tracking_patch.apply(tracking_target)
     except (OSError, RuntimeError, subprocess.CalledProcessError, py_compile.PyCompileError) as exc:
         raise SystemExit(f"veRL dynamic-sampling patch error: {exc}") from exc
 

@@ -284,6 +284,33 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
     )
 
 
+def validate_tracking_finish_patch(verl_source: Path):
+    """Require deterministic tracker shutdown before a formal run starts."""
+    target = verl_source.parent / "utils" / "tracking.py"
+    if not target.is_file():
+        raise SystemExit(f"cannot locate installed veRL tracking source: {target}")
+    from scripts.apply_verl_tracking_finish_patch import (
+        expected_patched_sha256,
+        sha256,
+    )
+
+    try:
+        expected = expected_patched_sha256(target)
+    except RuntimeError as exc:
+        raise SystemExit(
+            f"veRL tracking finish patch mismatch: {exc}; "
+            "run scripts/apply_verl_dynamic_sampling_patch.py first"
+        ) from exc
+    actual = sha256(target)
+    if actual != expected:
+        raise SystemExit(
+            "veRL tracking finish patch mismatch: "
+            f"expected {expected}, got {actual}; "
+            "run scripts/apply_verl_dynamic_sampling_patch.py first"
+        )
+    print(f"veRL tracking finish patch preflight passed: {target}")
+
+
 def validate_swanlab_tracking(config):
     """Validate SwanLab only when the user explicitly enables it."""
     logger_backends = list(config.trainer.get("logger", []))
@@ -520,6 +547,7 @@ def main():
     if "swanlab" not in Tracking.supported_backend:
         raise SystemExit("veRL 0.8 SwanLab tracking backend is unavailable")
     validate_dynamic_sampling(config, verl_source, installed)
+    validate_tracking_finish_patch(verl_source)
     validate_swanlab_tracking(config)
     install_torch_padding_fallback()
     print(

@@ -264,6 +264,11 @@ export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
 "$GRPO_PYTHON" scripts/apply_verl_bpo_patch.py
 ```
 
+第一条命令会同时安装动态采样补丁和幂等 Tracking 收尾补丁。后者会在最后一条
+训练或验证指标写入后，由训练主线程显式调用 `finish()` 结束 SwanLab 运行，避免
+对象析构发生在 SwanLab terminal worker 线程时触发 `cannot join current thread`，
+并保证正式预检校验精确的源码哈希。
+
 预检不再只判断补丁 marker。动态采样补丁必须匹配由冻结原始源码和项目 diff
 确定性派生的 `ray_trainer.py` SHA256；精确熵补丁必须精确匹配冻结的
 `vllm_async_server.py` 唯一 SHA256；该值由冻结的原始 veRL 0.8 文件和确定性 V2

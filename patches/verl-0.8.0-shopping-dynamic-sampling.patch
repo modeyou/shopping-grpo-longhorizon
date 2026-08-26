@@ -870,7 +870,7 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750 +2562,15 @@
+@@ -1750 +2562,17 @@
 -                logger.log(data=metrics, step=self.global_steps)
 +                append_training_diagnostic(
 +                    diagnostics_path,
@@ -887,7 +887,9 @@
 +                    ),
 +                )
 +                logger.log(data=metrics, step=current_step)
-@@ -1753 +2579,6 @@
++                if is_last_step:
++                    logger.finish()
+@@ -1753 +2581,6 @@
 -                self.global_steps += 1
 +                if dynamic_sampling_enabled and not optimizer_updated:
 +                    raise RuntimeError(
