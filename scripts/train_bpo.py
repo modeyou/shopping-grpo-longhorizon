@@ -125,6 +125,9 @@ def _step0_validation_contract(args, *, model, val_data, manifest):
             ROOT / "src/shopping_grpo/training/bpo/step0_validation.py"
         ),
         "bpo_runtime": ROOT / "src/shopping_grpo/training/bpo/runtime.py",
+        "bpo_fused_ppo_gradient_patch": (
+            ROOT / "src/shopping_grpo/training/bpo/fused_ppo_grad_patch.py"
+        ),
         "grpo_agent_loop": (
             ROOT / "src/shopping_grpo/training/grpo/adapter/agent_loop.py"
         ),
@@ -346,6 +349,9 @@ def write_contract(environment, audit):
         "tool_config": TOOL_CONFIG,
         "data_environment_manifest": DATA_ENVIRONMENT_MANIFEST,
         "bpo_runtime_manifest": BPO_RUNTIME_MANIFEST,
+        "bpo_fused_ppo_gradient_patch": (
+            ROOT / "src/shopping_grpo/training/bpo/fused_ppo_grad_patch.py"
+        ),
         "model_config": Path(audit["model"]) / "config.json",
     }
     status = subprocess.check_output(
@@ -396,6 +402,7 @@ def write_contract(environment, audit):
             "dynamic_max_generation_batches": 30,
             "dataloader_num_workers": 0,
             "tolerant_xml_parameter_parser": True,
+            "fused_ppo_input_gradient_backport": "ctx-needs-input-grad-v1",
             "optimizer_update_audit": "first-step-nonzero-gradient-and-delta-v1",
             "scheduler": "cosine",
             "scheduler_horizon": 500,
@@ -449,6 +456,11 @@ def main():
     if args.preflight_only:
         print("BPO runtime preflight-only passed")
         return
+    # CPU preflight deliberately exercises a synthetic BPO tree.  It shares
+    # the diagnostics hook with training, so remove only that launcher-owned
+    # file before the real process starts to keep audits unambiguous.
+    diagnostics_path = Path(environment["SHOPPING_GRPO_DIAGNOSTICS_PATH"])
+    diagnostics_path.unlink(missing_ok=True)
     print(f"BPO run contract written: {write_contract(environment, audit)}")
     raise SystemExit(subprocess.call(command, cwd=ROOT, env=environment))
 

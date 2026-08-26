@@ -9,7 +9,7 @@
 - `configs/bpo_agent_loop.yaml`：分叉 AgentLoop 注册；
 - `src/shopping_grpo/training/bpo/`：分叉、优势估计和 veRL 适配；
 - `scripts/bpo.sh`、`scripts/train_bpo.py`：独立启动入口；
-- `scripts/apply_verl_bpo_patch.py`：精确全词表熵与容错 XML 参数解析补丁。
+- `scripts/apply_verl_bpo_patch.py`：精确全词表熵、容错 XML 参数解析与 fused PPO 梯度补丁。
 
 ## 1. 训练目标
 
@@ -243,6 +243,13 @@ output head 分工不同，二者与 remove-padding 同时开启。
 `log_probs`，而 dense 分支与 PPO loss 的 `no_padding_2_padding()` 元数据无法对齐，会触发
 `sequence_offsets[-1] != values.shape[0]`。因此预检必须把 fused 与 remove-padding 同时冻结为
 true；不能为了规避该断言关闭 fused，也不能为了规避非 fused 全词表 OOM 关闭 remove-padding。
+
+veRL 0.8.0 的 `FusedLinearForPPOFunction.backward` 还有一个独立的静默梯度缺陷：custom
+autograd forward 内部把非连续 hidden states `flatten` 成副本后，不能根据保存副本的
+`requires_grad` 决定是否返回输入梯度。项目按上游修复改用 `ctx.needs_input_grad`，并把
+非连续 hidden states 的真实 fused forward/backward CPU 回归加入每次启动前预检。该回归必须
+得到有限非零输入梯度；只校验 patch marker 或只看到非零 forward loss 均不够。预检生成的
+合成 tree 诊断会在真实训练开始前清除，因此训练目录中的首条 actor audit 必须来自正式 parquet。
 
 ## 5. 安装补丁与预检
 

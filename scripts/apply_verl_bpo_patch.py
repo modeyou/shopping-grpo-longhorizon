@@ -38,6 +38,21 @@ def load_xml_patcher():
     return module
 
 
+def load_fused_grad_patcher():
+    """Load the pinned fused-PPO gradient backport installer by path."""
+    path = Path(__file__).resolve().with_name(
+        "apply_verl_bpo_fused_grad_patch.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_shopping_grpo_bpo_fused_grad_patcher", path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load BPO fused-gradient patcher: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -168,6 +183,18 @@ def main():
                 print(f"verified veRL BPO XML parser patch: {xml_target}")
             else:
                 xml_patch.apply(xml_target)
+            fused_grad_patch = load_fused_grad_patcher()
+            fused_grad_target = fused_grad_patch.resolve_target()
+            if args.restore:
+                fused_grad_patch.restore(fused_grad_target)
+            elif args.check:
+                fused_grad_patch.verify(fused_grad_target)
+                print(
+                    "verified veRL BPO fused-PPO gradient patch: "
+                    f"{fused_grad_target}"
+                )
+            else:
+                fused_grad_patch.apply(fused_grad_target)
     except (OSError, RuntimeError, ValueError, py_compile.PyCompileError) as exc:
         raise SystemExit(f"veRL BPO patch error: {exc}") from exc
 

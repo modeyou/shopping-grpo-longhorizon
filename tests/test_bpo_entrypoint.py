@@ -71,6 +71,10 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
     assert run_contract["step0_validation"]["reuse_policy"] == (
         "exact-contract-sha256-v1"
     )
+    assert run_contract["frozen_method"]["fused_ppo_input_gradient_backport"] == (
+        "ctx-needs-input-grad-v1"
+    )
+    assert "bpo_fused_ppo_gradient_patch" in run_contract["inputs"]
 
 def test_bpo_launcher_rejects_an_external_ray_address(monkeypatch):
     monkeypatch.setenv("RAY_ADDRESS", "127.0.0.1:26379")

@@ -183,6 +183,69 @@ def validate_xml_tool_parser_patch(verl_source):
     )
 
 
+def validate_fused_ppo_gradient_patch(verl_source):
+    """Verify the backport and reproduce the formerly silent grad drop on CPU."""
+    import torch
+
+    from scripts.apply_verl_bpo_fused_grad_patch import expected_patched_sha256
+    from shopping_grpo.training.bpo.fused_ppo_grad_patch import PATCH_MARKER
+
+    target = verl_source.parent / "utils/experimental/torch_functional.py"
+    if not target.is_file():
+        raise SystemExit(f"BPO fused-PPO source is missing: {target}")
+    actual_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    try:
+        expected_sha256 = expected_patched_sha256(target)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if actual_sha256 != expected_sha256:
+        raise SystemExit(
+            "BPO fused-PPO gradient patch hash mismatch: "
+            f"expected {expected_sha256}, got {actual_sha256}; "
+            "run scripts/apply_verl_bpo_patch.py first"
+        )
+    if target.read_text(encoding="utf-8").count(PATCH_MARKER) != 1:
+        raise SystemExit("BPO fused-PPO gradient patch marker is missing")
+
+    from verl.utils.experimental import torch_functional as fused
+
+    # A transpose makes flatten(0, 1) allocate a new tensor inside the custom
+    # autograd forward.  veRL 0.8.0 incorrectly inspected that saved copy's
+    # requires_grad flag and returned no hidden-state gradient.
+    base = torch.randn(2, 3, 5, dtype=torch.float32, requires_grad=True)
+    hidden_states = base.transpose(0, 1)
+    if hidden_states.is_contiguous():
+        raise SystemExit("BPO fused-PPO gradient probe must be non-contiguous")
+    vocab_weights = torch.randn(11, 5, dtype=torch.float32)
+    input_ids = torch.randint(0, 11, hidden_states.shape[:2])
+    flash_available = fused._FLASH_ATTN_CROSS_ENTROPY_AVAILABLE
+    fused._FLASH_ATTN_CROSS_ENTROPY_AVAILABLE = False
+    try:
+        log_probs, _ = fused.FusedLinearForPPO(chunk_size=4)(
+            hidden_states, vocab_weights, input_ids
+        )
+        (-log_probs.mean()).backward()
+    finally:
+        fused._FLASH_ATTN_CROSS_ENTROPY_AVAILABLE = flash_available
+    if base.grad is None or not torch.isfinite(base.grad).all():
+        raise SystemExit("BPO fused-PPO gradient probe produced no finite gradient")
+    gradient_abs_sum = float(base.grad.abs().sum().item())
+    if gradient_abs_sum <= 0.0:
+        raise SystemExit("BPO fused-PPO gradient probe produced an all-zero gradient")
+    print(
+        "BPO fused-PPO input-gradient preflight passed: "
+        + json.dumps(
+            {
+                "gradient_abs_sum": gradient_abs_sum,
+                "noncontiguous_hidden_states": True,
+                "path": str(target),
+                "sha256": actual_sha256,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def build_scheduler_probe_engine(config, *, optimizer_config_class=None):
     """Build the frozen receiver used by veRL 0.8.0's scheduler."""
     if optimizer_config_class is None:
@@ -682,6 +745,7 @@ def main():
     validate_bpo_config(config)
     validate_entropy_patch(verl_source)
     validate_xml_tool_parser_patch(verl_source)
+    validate_fused_ppo_gradient_patch(verl_source)
     common.validate_dynamic_sampling(config, verl_source, installed)
     validate_step0_validation_cache()
     validate_finalize_hook()
