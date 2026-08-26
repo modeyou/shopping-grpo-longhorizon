@@ -22,10 +22,10 @@
 3. **超参数与优化强度问题**：LR、scheduler、KL/reference 设置、PPO clip、M/K、batch、训练预算
    或 LoRA 容量使更新过弱、过强或高方差；
 4. **评测与统计问题**：当前差值可能处于随机波动范围，但至少没有证据表明 BPO 已产生项目要求的
-   显著提升；需要说明怎样用最小成本区分“确实无效”和“评测噪声”。
+   显著提升；需要说明区分“确实无效”和“评测噪声”还缺少哪些证据。
 
-最终建议必须落到可证伪的最小对照实验：每个实验只改变一个主要因素，写明预期现象、成功/停止
-条件、需要的 steps/trees/returns、GPU 时间和 Shopper API 成本。不能只建议“再多跑一些步”。
+第一轮交接只要求列出可能原因、支持与反对证据、可能影响和需要补充的信息，并与用户讨论优先级。
+不要直接冻结实验矩阵、训练参数或执行计划；后续实验必须等用户讨论并明确确认后再设计。
 
 ## 1. 仓库与边界
 
@@ -374,14 +374,14 @@ target=2 / minimum=2 / require_full_batch=true / soft_warning=10 / max_batches=3
 2. `M=2` 棵有效树/step、`K=4` sibling 的 batch、mask、loss aggregation 和梯度尺度是否正确。
 3. `loss_agg_mode=token-mean` 是否适合不同 continuation 长度的 BPO tree。
 4. `upstream_lambda=0.95` 与组内 LOO advantage 的前缀梯度是否按预期抵消或产生有效信号。
-5. 当前没有 KL reward、没有 actor KL loss、没有 reference policy；这与论文主实验不同，是否需要小规模对照。
+5. 当前没有 KL reward、没有 actor KL loss、没有 reference policy；这与论文主实验不同，是否可能解释结果。
 6. 学习率 `1e-6`、warmup 10、cosine horizon 500，但正式只跑 200 步；是否导致有效更新过保守。
 7. 每步严格凑满 2 棵有效树、最多 30 个候选 batch，是否值得保留；候选有效率低的主要原因是什么。
 8. 最大首 token 熵是否总能选到与购物决策相关的边界；分叉位置分布、工具类型和失败类型之间是否存在偏差。
 9. Reward v4 的连续奖励、strict success 与 BPO sibling 相对优势是否对齐。
 10. `complete-ask-enabled` 中 `gold_purchase -> unknown` 的 4 条轨迹、`gap-ask-disabled` 中 `gold_purchase -> wrong_purchase` 的 2 条轨迹应逐条审计。
 11. 训练 validation 全程 Shopper question rate 为 100%，需要核对验证任务组成、指标定义和策略行为。
-12. 是否只调整 BPO 配置做小规模可归因实验，还是继续延长训练；不得同时改变算法、Reward、LR、K/M 和数据后再把差异归因给单一因素。
+12. 后续可能调整 BPO 配置还是继续延长训练；先讨论各方向的理由、风险和可归因性，不在本轮直接确定实验。
 
 ## 12. 可直接复制给新对话的提示词
 
@@ -426,17 +426,18 @@ loss 有限、训练稳定”当作“训练目标有效”的证明。
 5. 重点评估 Reward v4 与 strict gold purchase 的一致性、有效树过滤是否产生选择偏差、最大熵
    分叉是否命中购买关键决策、LOO/upstream credit assignment、token-mean loss、LR、scheduler
    horizon、KL/reference、M/K、full-batch dynamic sampling 和 200-step 预算。
-6. 给出最少数量、可归因、预算可控的下一轮 BPO 对照实验。每个实验只改变一个主要变量，写明
-   预期现象、成功阈值、提前停止条件以及 steps/trees/returns/GPU-hour/API 成本。不能只建议延长训练。
-7. 明确说明什么结果可以证明 BPO 值得继续，什么结果应停止 BPO 并把资源转向 GRPO。
-8. 不要启动训练、合并模型或使用正式 final200，除非我之后明确授权。
+6. 列出可能的改进方向及其依据、预期作用、风险和相互冲突之处；按“更可能/较可能/证据不足”
+   分层，但不要直接给出冻结实验矩阵或最终训练参数。
+7. 指出需要和我讨论的关键选择，以及为了判断这些可能性还需要我从服务器补充哪些原始证据。
+8. 在讨论完成前，不要确定下一轮实验，不要修改代码，不要启动训练、合并模型或使用正式
+   final200。
 
 报告格式：
 - 原始证据清单
 - 配置/实现 findings（按严重程度）
 - 已验证与未验证
 - 对“实现错误、超参数不合适、训练信号不合适、样本预算不足”四类解释分别给证据
-- 推荐的最小实验矩阵、停止条件、预计 return/GPU-hour/API 成本
+- 可能改进方向、证据强弱、风险与需要讨论的取舍（本轮不输出冻结实验矩阵）
 - 需要我从服务器补充的精确文件或命令
 ```
 
