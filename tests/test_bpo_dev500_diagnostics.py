@@ -129,6 +129,25 @@ def test_compare_condition_rejects_reward_v3():
         compare_condition(baseline, candidate, [1], "gap-ask-enabled")
 
 
+def test_compare_condition_keeps_unverifiable_row_without_reward_version():
+    baseline = [trajectory(1)]
+    candidate = [trajectory(1)]
+    del candidate[0]["terminal_result"]["reward_detail"]["reward_version"]
+    candidate[0]["terminal_result"]["reward_detail"]["reward_type"] = (
+        "reward_unverifiable"
+    )
+
+    result = compare_condition(
+        baseline, candidate, [1], "gap-ask-enabled"
+    )
+
+    assert result["paired_tasks"] == 1
+    assert result["strict_net"] == 0
+    assert result["reward_type_transitions"] == {
+        "wrong_purchase -> reward_unverifiable": 1
+    }
+
+
 def test_parse_validation_curve_supports_console_and_dict_formats():
     log = "\n".join(
         [

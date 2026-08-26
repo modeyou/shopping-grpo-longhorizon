@@ -67,13 +67,26 @@ def _index(rows: list[dict], expected: set[int], condition: str, label: str) -> 
                 f"{row.get('interaction_mode')!r}"
             )
         detail = _reward_detail(row)
-        if detail.get("reward_version") != REWARD_V4:
+        reward_version = detail.get("reward_version")
+        if reward_version is not None and reward_version != REWARD_V4:
             raise ValueError(f"{label} task {task_id} did not use Reward v4")
         indexed[task_id] = row
     if set(indexed) != expected:
         missing = sorted(expected - set(indexed))
         raise ValueError(f"{label} task set mismatch; missing={missing[:10]}")
     return indexed
+
+
+def _validate_condition_summary(path: Path, expected_tasks: int, label: str) -> dict:
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    if int(summary.get("completed_tasks", -1)) != expected_tasks:
+        raise ValueError(f"{label} summary is incomplete")
+    if summary.get("missing_tasks") != []:
+        raise ValueError(f"{label} summary contains missing tasks")
+    protocol = summary.get("protocol") or {}
+    if protocol.get("reward_contract") != REWARD_V4:
+        raise ValueError(f"{label} summary did not use Reward v4")
+    return summary
 
 
 def _question_count(row: dict) -> int:
@@ -282,6 +295,25 @@ def main() -> None:
         )
         for condition in CONDITIONS
     }
+    baseline_summaries = {
+        condition: args.baseline_root.resolve() / condition / "summary.json"
+        for condition in CONDITIONS
+    }
+    candidate_summaries = {
+        condition: args.candidate_root.resolve() / condition / "summary.json"
+        for condition in CONDITIONS
+    }
+    for condition in CONDITIONS:
+        _validate_condition_summary(
+            baseline_summaries[condition],
+            len(expected_task_ids),
+            f"baseline/{condition}",
+        )
+        _validate_condition_summary(
+            candidate_summaries[condition],
+            len(expected_task_ids),
+            f"candidate/{condition}",
+        )
     result = {
         "schema_version": "shopping-bpo-dev500-diagnostics-v1",
         "input_audit": {
@@ -294,6 +326,8 @@ def main() -> None:
                 condition: {
                     "path": str(path),
                     "sha256": _sha256(path),
+                    "summary_path": str(baseline_summaries[condition]),
+                    "summary_sha256": _sha256(baseline_summaries[condition]),
                 }
                 for condition, path in baseline_paths.items()
             },
@@ -301,6 +335,8 @@ def main() -> None:
                 condition: {
                     "path": str(path),
                     "sha256": _sha256(path),
+                    "summary_path": str(candidate_summaries[condition]),
+                    "summary_sha256": _sha256(candidate_summaries[condition]),
                 }
                 for condition, path in candidate_paths.items()
             },
