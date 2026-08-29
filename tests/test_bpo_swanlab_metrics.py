@@ -3,8 +3,10 @@ from __future__ import annotations
 import pytest
 
 from shopping_grpo.training.grpo.dynamic_sampling import (
+    SWANLAB_DASHBOARD_SECTIONS,
     aggregate_bpo_tree_metrics,
     aggregate_shopping_metrics,
+    swanlab_dashboard_metrics,
     swanlab_key_metrics,
 )
 
@@ -56,6 +58,30 @@ def test_compact_swanlab_summary_selects_the_decision_metrics():
     assert metrics["summary/mean_reward"] == 0.5
     assert metrics["summary/done_rate"] == 1.0
     assert len(swanlab_key_metrics(metrics)) == 11
+
+
+def test_swanlab_dashboard_has_exactly_five_readable_top_level_sections():
+    dashboard = swanlab_dashboard_metrics(
+        {
+            "val-shopping/summary/purchase_success_rate": 0.7,
+            "bpo_batch/local_groups": 1,
+            "reward/train_return_mean": 0.8,
+            "actor/pg_loss": 0.02,
+            "timing_s/gen": 12.0,
+            "reward/shaped_mean": 999.0,
+        }
+    )
+
+    assert dashboard == {
+        "validation/completion_success": 0.7,
+        "sampling/accepted_local_groups": 1,
+        "credit/train_return_mean": 0.8,
+        "optimization/pg_loss": 0.02,
+        "runtime/timing_s.gen": 12.0,
+    }
+    assert {name.split("/", 1)[0] for name in dashboard} == (
+        SWANLAB_DASHBOARD_SECTIONS
+    )
 
 
 def test_bpo_tree_metrics_capture_branch_diversity_and_return_spread():

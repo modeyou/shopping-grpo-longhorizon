@@ -575,8 +575,13 @@ async def _generate_bpo_sequences(worker, batch):
             + ["search_recovery"] * 5,
         )
     )
+    raw_group_types = batch.non_tensor_batch.get("bpo_group_type")
+    if raw_group_types is None:
+        raise RuntimeError(
+            "CARL-BPO requires driver-assigned bpo_group_type before worker sharding"
+        )
 
-    async def run_group(start, group_ordinal):
+    async def run_group(start):
         rows = list(range(start, start + sibling_count))
         kwargs = {
             key: value[start]
@@ -584,11 +589,20 @@ async def _generate_bpo_sequences(worker, batch):
             if key != "__do_sample__"
         }
         agent_name = str(kwargs.pop("agent_name"))
-        group_type = group_schedule[group_ordinal % len(group_schedule)]
+        scheduled_types = {str(raw_group_types[row]) for row in rows}
+        if len(scheduled_types) != 1:
+            raise RuntimeError(
+                "CARL-BPO sibling rows disagree on driver-assigned group type"
+            )
+        group_type = str(kwargs.pop("bpo_group_type"))
+        if scheduled_types != {group_type} or group_type not in group_schedule:
+            raise RuntimeError(
+                "CARL-BPO worker received an invalid driver-assigned group type"
+            )
         kwargs["bpo_group_type"] = group_type
         if group_type == "local":
             kwargs["bpo_stage_target"] = stage_schedule[
-                (step + group_ordinal) % len(stage_schedule)
+                max(step - 1, 0) % len(stage_schedule)
             ]
         registry = module._agent_loop_registry
         if agent_name not in registry:
@@ -625,9 +639,7 @@ async def _generate_bpo_sequences(worker, batch):
         return processed
 
     starts = sibling_group_starts(index, sibling_count)
-    groups = await asyncio.gather(
-        *[run_group(start, ordinal) for ordinal, start in enumerate(starts)]
-    )
+    groups = await asyncio.gather(*[run_group(start) for start in starts])
     outputs = [item for group in groups for item in group]
     return worker._postprocess(
         outputs,
@@ -695,7 +707,9 @@ def install_bpo_runtime():
             if name in data.non_tensor_batch
         }
         if "bpo_group_type" not in metadata:
-            metadata["bpo_group_type"] = ["local"] * len(data.batch["responses"])
+            raise RuntimeError(
+                "CARL-BPO optimizer batch is missing driver-assigned bpo_group_type"
+            )
         audits = audit_bpo_rollout_batch(
             data.batch["prompts"],
             data.batch["responses"],

@@ -27,20 +27,21 @@
 +            from shopping_grpo.training.grpo.dynamic_sampling import aggregate_shopping_metrics
 +            validation_metrics.update({f"val-shopping/{key}": value for key, value in aggregate_shopping_metrics(sample_shopping).items()})
 +        return validation_metrics
-@@ -1380,0 +1398,12 @@
+@@ -1380,0 +1398,13 @@
 +        )
 +
 +        import time
 +        from shopping_grpo.training.grpo.dynamic_sampling import (
 +            aggregate_shopping_metrics,
 +            append_training_diagnostic,
++            build_carl_group_assignments,
 +            build_rollout_diagnostics,
 +            extract_aligned_bpo_fields,
 +            effective_group_update_target,
 +            extract_shopping_group_signals,
 +            select_reward_varying_groups,
 +            summarize_bpo_group_diagnostics,
-@@ -1381,0 +1411,156 @@
+@@ -1381,0 +1412,156 @@
 +
 +        diagnostics_path = os.environ.get("SHOPPING_GRPO_DIAGNOSTICS_PATH")
 +
@@ -197,19 +198,19 @@
 +                    sort_keys=True,
 +                )
 +            )
-@@ -1409,2 +1594,4 @@
+@@ -1409,2 +1595,4 @@
 -        # we start from step 1
 -        self.global_steps += 1
 +        # The unpatched trainer uses a one-based in-flight step. Dynamic sampling
 +        # keeps the committed counter unchanged until an optimizer update occurs.
 +        if not dynamic_sampling_enabled:
 +            self.global_steps += 1
-@@ -1414,0 +1602 @@
+@@ -1414,0 +1603 @@
 +        first_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
-@@ -1416 +1604 @@
+@@ -1416 +1605 @@
 -            self.global_steps in self.config.global_profiler.steps
 +            first_step in self.config.global_profiler.steps
-@@ -1423,0 +1612,17 @@
+@@ -1423,0 +1613,17 @@
 +                current_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
 +                optimizer_updated = False
 +                dynamic_budget_checkpoint_due = False
@@ -227,17 +228,25 @@
 +                    )
 +                except ValueError as exc:
 +                    raise RuntimeError(str(exc)) from exc
-@@ -1446 +1651 @@
+@@ -1441,0 +1648,7 @@
++                if dynamic_sampling_enabled:
++                    batch.non_tensor_batch["bpo_group_type"] = np.asarray(
++                        build_carl_group_assignments(
++                            len(batch.batch), dynamic_group_schedule
++                        ),
++                        dtype=object,
++                    )
+@@ -1446 +1659 @@
 -                gen_batch.meta_info["global_steps"] = self.global_steps
 +                gen_batch.meta_info["global_steps"] = current_step
-@@ -1464 +1669 @@
+@@ -1464 +1677 @@
 -                is_last_step = self.global_steps >= self.total_training_steps
 +                is_last_step = current_step >= self.total_training_steps
-@@ -1471 +1676,2 @@
+@@ -1471 +1684,2 @@
 -                        self.checkpoint_manager.sleep_replicas()
 +                        if not dynamic_sampling_enabled:
 +                            self.checkpoint_manager.sleep_replicas()
-@@ -1524,0 +1731,476 @@
+@@ -1524,0 +1739,488 @@
 +                        reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 +
 +                    if dynamic_sampling_enabled:
@@ -268,6 +277,18 @@
 +                            sampling_invalid=sampling_invalid, sampling_invalid_reasons=sampling_invalid_reasons,
 +                            tolerance=dynamic_reward_tolerance,
 +                        )
++                        generated_group_type_counts = {
++                            group_type: sum(
++                                group["group_type"] == group_type
++                                for group in group_stats["groups"]
++                            )
++                            for group_type in dynamic_group_schedule
++                        }
++                        if generated_group_type_counts != {"root": 1, "local": 1}:
++                            raise RuntimeError(
++                                "CARL-BPO generated batch must contain exactly one Root and "
++                                f"one Local group; got {generated_group_type_counts}"
++                            )
 +                        invalid_group_sizes = [
 +                            len(group["indices"])
 +                            for group in group_stats["groups"]
@@ -714,7 +735,7 @@
 +                                or dynamic_effective_returns_total
 +                                >= dynamic_effective_return_budget
 +                            )
-@@ -1525,0 +2208,146 @@
+@@ -1525,0 +2228,146 @@
 +                        metrics.update(
 +                            {
 +                                "group/generated": dynamic_generated_groups,
@@ -861,7 +882,7 @@
 +                        dynamic_bpo_shopper_api_calls = 0
 +                        dynamic_acquisition_started = time.monotonic()
 +                        dynamic_seconds_to_first_tree = None
-@@ -1526,0 +2355,45 @@
+@@ -1526,0 +2375,45 @@
 +                    if "shopping" not in batch.non_tensor_batch:
 +                        raise RuntimeError(
 +                            "Shopping GRPO requires AgentLoop shopping diagnostics"
@@ -907,38 +928,38 @@
 +                            }
 +                        )
 +
-@@ -1643 +2516 @@
+@@ -1643 +2536 @@
 -                    if self.config.trainer.critic_warmup > self.global_steps:
 +                    if self.config.trainer.critic_warmup > current_step:
-@@ -1645 +2518 @@
+@@ -1645 +2538 @@
 -                        self.checkpoint_manager.update_weights(self.global_steps)
 +                        self.checkpoint_manager.update_weights(current_step)
-@@ -1649,0 +2523,3 @@
+@@ -1649,0 +2543,3 @@
 +                        optimizer_updated = True
 +                        if dynamic_sampling_enabled:
 +                            self.global_steps = current_step
-@@ -1665 +2541,3 @@
+@@ -1665 +2561,3 @@
 -                            or self.global_steps % self.config.trainer.save_freq == 0
 +                            or current_step % self.config.trainer.save_freq == 0
 +                            or current_step in dynamic_checkpoint_steps
 +                            or dynamic_budget_checkpoint_due
-@@ -1675 +2553 @@
+@@ -1675 +2573 @@
 -                            self.checkpoint_manager.update_weights(self.global_steps)
 +                            self.checkpoint_manager.update_weights(current_step)
-@@ -1687 +2565,3 @@
+@@ -1687 +2585,3 @@
 -                    is_last_step or self.global_steps % self.config.trainer.test_freq == 0
 +                    is_last_step
 +                    or current_step % self.config.trainer.test_freq == 0
 +                    or current_step in dynamic_validation_steps
-@@ -1697 +2577 @@
+@@ -1697 +2597 @@
 -                        self.global_steps + 1 in self.config.global_profiler.steps
 +                        current_step + 1 in self.config.global_profiler.steps
-@@ -1715 +2595 @@
+@@ -1715 +2615 @@
 -                        "training/global_step": self.global_steps,
 +                        "training/global_step": current_step,
-@@ -1716,0 +2597 @@
+@@ -1716,0 +2617 @@
 +                        "training/optimizer_updated": int(optimizer_updated),
-@@ -1718,0 +2600,12 @@
+@@ -1718,0 +2620,12 @@
 +                if dynamic_sampling_enabled:
 +                    metrics.update(
 +                        {
@@ -951,7 +972,7 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750 +2643,17 @@
+@@ -1750 +2663,17 @@
 -                logger.log(data=metrics, step=self.global_steps)
 +                append_training_diagnostic(
 +                    diagnostics_path,
@@ -970,7 +991,7 @@
 +                logger.log(data=metrics, step=current_step)
 +                if is_last_step:
 +                    logger.finish()
-@@ -1753 +2662,6 @@
+@@ -1753 +2682,6 @@
 -                self.global_steps += 1
 +                if dynamic_sampling_enabled and not optimizer_updated:
 +                    raise RuntimeError(

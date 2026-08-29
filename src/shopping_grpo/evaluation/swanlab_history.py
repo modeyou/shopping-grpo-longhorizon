@@ -12,6 +12,7 @@ from typing import Any
 
 DECISION_STEPS = (0, 10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500)
 IMPORTANT_PREFIXES = (
+    "validation/", "sampling/", "credit/", "optimization/", "runtime/",
     "summary/", "val-shopping/", "val-core/", "bpo_", "bpo-", "carl_", "carl-", "group/",
     "rollout/", "actor/", "critic/", "training/", "perf/", "timing_",
     "response_length/",
@@ -144,6 +145,13 @@ def _fmt(value: float | None) -> str:
 
 def _priority(key: str) -> tuple[int, str]:
     ordered = (
+        "validation/gold_purchase_success", "validation/completion_success",
+        "validation/reward_mean", "validation/terminal_utility_mean",
+        "validation/done_rate", "validation/average_steps",
+        "validation/sampling_invalid_rate",
+        "validation/infrastructure_invalid_rate",
+        "validation/reward_unverifiable_rate",
+        "validation/shopper_question_rate",
         "summary/strict_success_rate", "summary/purchase_success_rate",
         "summary/mean_reward", "summary/terminal_utility_mean", "summary/done_rate",
         "summary/average_steps", "summary/sampling_invalid_rate",
@@ -189,7 +197,12 @@ def build_markdown_report(*, run_path: str, run_metadata: Mapping[str, Any], cus
     validation = {
         key: points
         for key, points in custom_series.items()
-        if key.startswith("val-shopping/summary/") and points
+        if (
+            key.startswith("validation/")
+            and not key.startswith("validation/step0_")
+            or key.startswith("val-shopping/summary/")
+        )
+        and points
     }
     if validation:
         lines.append("| 指标 | " + " | ".join(f"step {step}" for step in DECISION_STEPS) + " |")
@@ -202,12 +215,17 @@ def build_markdown_report(*, run_path: str, run_metadata: Mapping[str, Any], cus
             lines.append(f"| `{key}` | " + " | ".join(values) + " |")
     else:
         lines.append(
-            "未从响应中解析出 `val-shopping/summary/*` 曲线；"
+            "未从响应中解析出 `validation/*` 曲线；"
             "原始响应已保存在 JSON 快照中。"
         )
 
     lines.extend(["", "## 重要训练指标", ""])
-    training = {key: points for key, points in custom_series.items() if points and not key.startswith(("summary/", "val-shopping/", "val-core/"))}
+    training = {
+        key: points
+        for key, points in custom_series.items()
+        if points
+        and not key.startswith(("validation/", "summary/", "val-shopping/", "val-core/"))
+    }
     if training:
         lines.extend(["| 指标 | 点数 | 首值 | 末值 | 最小值 | 最大值 |", "|---|---:|---:|---:|---:|---:|"])
         for key in sorted(training):

@@ -43,6 +43,11 @@ def test_extract_metric_points_accepts_direct_key_pairs():
 
 
 def test_key_selection_covers_bpo_training_and_system_metrics():
+    assert is_important_key("validation/gold_purchase_success")
+    assert is_important_key("sampling/seconds_to_full_batch")
+    assert is_important_key("credit/train_return_mean")
+    assert is_important_key("optimization/grad_norm")
+    assert is_important_key("runtime/shopper_api_calls")
     assert is_important_key("bpo_sampling/seconds_to_full_batch")
     assert is_important_key("actor/ppo_kl")
     assert is_important_key("system/gpu.0.memoryAllocated", system=True)
@@ -58,12 +63,12 @@ def test_json_safe_supports_swanlab_response_objects():
 
 def test_report_contains_decision_steps_resources_and_alerts():
     custom = {
-        "val-shopping/summary/strict_success_rate": [
+        "validation/gold_purchase_success": [
             MetricPoint(0, 0.60),
             MetricPoint(50, 0.66),
             MetricPoint(200, 0.67),
         ],
-        "actor/grad_norm": [MetricPoint(1, 1.0), MetricPoint(2, 120.0)],
+        "optimization/grad_norm": [MetricPoint(1, 1.0), MetricPoint(2, 120.0)],
     }
     system = {"system/gpu.0.utilization": [MetricPoint(1, 80.0)]}
     report = build_markdown_report(

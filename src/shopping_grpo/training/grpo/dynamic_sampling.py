@@ -50,6 +50,18 @@ def effective_group_update_target(
     return current_target, min(update_minimum, current_target)
 
 
+def build_carl_group_assignments(group_count: int, group_schedule) -> tuple[str, ...]:
+    """Freeze Root/Local roles on the driver before rollout-worker sharding."""
+    schedule = tuple(str(value) for value in group_schedule)
+    if schedule != ("root", "local"):
+        raise ValueError("CARL-BPO group schedule must be exactly ('root', 'local')")
+    if int(group_count) != len(schedule):
+        raise ValueError(
+            "CARL-BPO driver batch must contain exactly one Root and one Local prompt"
+        )
+    return schedule
+
+
 def build_rollout_diagnostics(
     uids: Sequence[Hashable],
     shopping_infos: Sequence[object],
@@ -532,6 +544,142 @@ def swanlab_key_metrics(
             raise ValueError(f"shopping validation metric {source} is not finite")
         summary[f"summary/{alias}"] = value
     return summary
+
+
+SWANLAB_DASHBOARD_SECTIONS = frozenset(
+    {"validation", "sampling", "credit", "optimization", "runtime"}
+)
+
+_SWANLAB_DASHBOARD_ALIASES = {
+    # Frozen validation: primary acceptance and validity.
+    "val-shopping/summary/strict_success_rate": "validation/gold_purchase_success",
+    "val-shopping/summary/purchase_success_rate": "validation/completion_success",
+    "val-shopping/summary/mean_reward": "validation/reward_mean",
+    "val-shopping/summary/terminal_utility_mean": "validation/terminal_utility_mean",
+    "val-shopping/summary/done_rate": "validation/done_rate",
+    "val-shopping/summary/average_steps": "validation/average_steps",
+    "val-shopping/summary/sampling_invalid_rate": "validation/sampling_invalid_rate",
+    "val-shopping/summary/infrastructure_invalid_rate": "validation/infrastructure_invalid_rate",
+    "val-shopping/summary/reward_unverifiable_rate": "validation/reward_unverifiable_rate",
+    "val-shopping/summary/shopper_question_rate": "validation/shopper_question_rate",
+    "val-step0/cache_hit": "validation/step0_cache_hit",
+    "val-step0/contract_verified": "validation/step0_contract_verified",
+    # Sampling contract and accepted-budget progress.
+    "bpo_batch/trees": "sampling/accepted_groups",
+    "bpo_batch/sibling_returns": "sampling/accepted_returns",
+    "bpo_batch/root_groups": "sampling/accepted_root_groups",
+    "bpo_batch/local_groups": "sampling/accepted_local_groups",
+    "bpo_batch/full_batch": "sampling/full_root_local_batch",
+    "bpo_sampling/candidate_batches": "sampling/candidate_batches",
+    "bpo_sampling/candidate_trees": "sampling/candidate_groups",
+    "bpo_sampling/accepted_trees_pending": "sampling/accepted_groups_pending",
+    "bpo_sampling/seconds_to_first_tree": "sampling/seconds_to_first_accept",
+    "bpo_sampling/seconds_to_full_batch": "sampling/seconds_to_full_batch",
+    "bpo_sampling/slow_full_batch_warning": "sampling/slow_batch_warning",
+    "bpo_sampling/full_batch_timeout": "sampling/full_batch_timeout",
+    "group/generated": "sampling/generated_groups",
+    "group/trained": "sampling/trained_groups",
+    "group/effective_ratio": "sampling/effective_group_ratio",
+    "group/all_equal_ratio": "sampling/constant_return_ratio",
+    "group/all_zero_utility_ratio": "sampling/all_zero_utility_ratio",
+    "group/no_purchase_success_ratio": "sampling/no_completion_ratio",
+    "group/all_purchase_success_ratio": "sampling/all_completion_ratio",
+    "group/sampling_invalid": "sampling/invalid_groups",
+    "group/completion_contrast": "sampling/completion_contrast_groups",
+    "group/gold_contrast": "sampling/gold_contrast_groups",
+    "group/failure_utility_contrast": "sampling/failure_utility_contrast_groups",
+    "bpo_stage/product_count": "sampling/local_product_groups",
+    "bpo_stage/option_count": "sampling/local_option_groups",
+    "bpo_stage/search_recovery_count": "sampling/local_search_recovery_groups",
+    "bpo_stage/fallback_count": "sampling/local_fallback_groups",
+    "bpo_stage/unavailable_count": "sampling/local_stage_unavailable_groups",
+    "bpo_diversity/unique_branch_actions_mean": "sampling/unique_branch_actions_mean",
+    "bpo_diversity/unique_tool_sequences_mean": "sampling/unique_tool_sequences_mean",
+    "carl_budget/accepted_groups_total": "sampling/accepted_groups_total",
+    "carl_budget/accepted_returns_total": "sampling/accepted_returns_total",
+    "carl_budget/target_returns": "sampling/target_returns",
+    # Return signal and branching-credit coverage.
+    "reward/train_return_mean": "credit/train_return_mean",
+    "reward/train_return_min": "credit/train_return_min",
+    "reward/train_return_max": "credit/train_return_max",
+    "reward/native_terminal_utility_mean": "credit/native_terminal_utility_mean",
+    "reward/strict_mean": "credit/train_rollout_gold_rate",
+    "reward/purchase_success_rate": "credit/train_rollout_completion_rate",
+    "reward/partial_purchase_rate": "credit/train_rollout_partial_rate",
+    "reward/model_failure_rate": "credit/train_rollout_model_failure_rate",
+    "reward/valid_rate": "credit/train_rollout_reward_valid_rate",
+    "trajectory/repeat_loop_rate": "credit/train_rollout_repeat_loop_rate",
+    "trajectory/max_steps_rate": "credit/train_rollout_max_steps_rate",
+    "trajectory/overlong_rate": "credit/train_rollout_overlong_rate",
+    "bpo_return/sibling_std_mean": "credit/sibling_return_std_mean",
+    "bpo_return/sibling_range_mean": "credit/sibling_return_range_mean",
+    "bpo_return/sibling_unique_count_mean": "credit/sibling_unique_returns_mean",
+    "bpo_branch/entropy_mean": "credit/branch_entropy_mean",
+    "bpo_branch/relative_position_mean": "credit/branch_relative_position_mean",
+    "bpo_branch/backbone_actions_mean": "credit/backbone_actions_mean",
+    "bpo_branch/prefix_steps_mean": "credit/prefix_steps_mean",
+    "bpo_branch/prefix_shopper_calls_mean": "credit/prefix_shopper_calls_mean",
+    "bpo_branch/prefix_environment_transitions_mean": "credit/prefix_environment_transitions_mean",
+    # Optimizer state.
+    "training/global_step": "optimization/global_step",
+    "training/optimizer_updated": "optimization/optimizer_updated",
+    "shopping_dynamic_sampling/skipped_update": "optimization/skipped_update",
+    "shopping_dynamic_sampling/skipped_updates_total": "optimization/skipped_updates_total",
+    "shopping_dynamic_sampling/consecutive_skips": "optimization/consecutive_skips",
+}
+
+
+def swanlab_dashboard_metrics(metrics: Mapping[str, object]) -> dict[str, object]:
+    """Project raw trainer metrics into five readable SwanLab sections.
+
+    The raw dictionary remains authoritative for console output and local JSONL
+    diagnostics. This compact projection is exclusively for the SwanLab backend.
+    """
+    dashboard = {}
+    for raw_name, value in metrics.items():
+        name = str(raw_name)
+        alias = _SWANLAB_DASHBOARD_ALIASES.get(name)
+        if alias is None and name.startswith("val-core/"):
+            alias = "validation/condition." + name.removeprefix("val-core/").replace(
+                "/", "."
+            )
+        if alias is None and name.startswith("actor/"):
+            metric = name.removeprefix("actor/")
+            if any(
+                fragment in metric.lower()
+                for fragment in (
+                    "loss",
+                    "grad_norm",
+                    "learning_rate",
+                    "lr",
+                    "kl",
+                    "clip",
+                    "entropy",
+                )
+            ):
+                alias = "optimization/" + metric.replace("/", ".")
+        if alias is None and name.startswith(("timing_s/", "perf/", "response_length/")):
+            alias = "runtime/" + name.replace("/", ".")
+        if alias is None and name.startswith("bpo_cost/"):
+            alias = "runtime/" + name.removeprefix("bpo_cost/")
+        if alias is None and name in {
+            "rollout/generated_response_tokens",
+            "rollout/generated_response_tokens_total",
+            "rollout/generated_total",
+            "rollout/generated_total_cumulative",
+        }:
+            alias = "runtime/" + name.removeprefix("rollout/")
+        if alias is not None:
+            dashboard[alias] = value
+    unknown_sections = {
+        name.split("/", 1)[0] for name in dashboard if "/" in name
+    }.difference(SWANLAB_DASHBOARD_SECTIONS)
+    if unknown_sections:
+        raise ValueError(
+            "SwanLab dashboard projection produced unknown sections: "
+            + ", ".join(sorted(unknown_sections))
+        )
+    return dashboard
 
 
 def aggregate_bpo_tree_metrics(

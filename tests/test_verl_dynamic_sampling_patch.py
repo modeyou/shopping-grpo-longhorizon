@@ -146,6 +146,12 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
             fit_source = target.read_text(encoding="utf-8").split("    def fit(self):", 1)[1]
+            role_assignment = fit_source.index(
+                'batch.non_tensor_batch["bpo_group_type"] = np.asarray('
+            )
+            role_repeat = fit_source.index(
+                "gen_batch.repeat(repeat_times=rollout_n, interleave=True)"
+            )
             generation = fit_source.index("generate_sequences(combined_gen_batch)")
             reward_filter = fit_source.index("SHOPPING_GRPO_DYNAMIC_SAMPLING_BATCH")
             skipped = fit_source.index("SHOPPING_GRPO_DYNAMIC_SAMPLING_SKIPPED")
@@ -158,6 +164,8 @@ class VerlPatchScriptTest(unittest.TestCase):
             advantage = fit_source.index("batch = compute_advantage(", reference)
             update = fit_source.index("actor_output = self._update_actor(batch)", advantage)
 
+            self.assertLess(role_assignment, role_repeat)
+            self.assertLess(role_repeat, generation)
             self.assertLess(generation, reward_filter)
             self.assertLess(reward_filter, skipped)
             self.assertLess(reward_filter, ready)
@@ -181,6 +189,11 @@ class VerlPatchScriptTest(unittest.TestCase):
                 fit_source,
             )
             self.assertIn("extract_shopping_group_signals", fit_source)
+            self.assertIn("build_carl_group_assignments", fit_source)
+            self.assertIn(
+                "CARL-BPO generated batch must contain exactly one Root", fit_source
+            )
+            self.assertIn("one Local group; got", fit_source)
             self.assertIn("aggregate_shopping_metrics", fit_source)
             self.assertIn("terminal_utilities=terminal_utilities", fit_source)
             self.assertIn("sampling_invalid=sampling_invalid", fit_source)

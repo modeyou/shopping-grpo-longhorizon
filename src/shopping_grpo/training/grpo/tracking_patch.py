@@ -1,6 +1,27 @@
-"""Deterministic veRL 0.8 tracking-lifecycle source transform."""
+"""Deterministic veRL 0.8 tracking and SwanLab-dashboard transform."""
 
-PATCH_MARKER = "SHOPPING_GRPO_TRACKING_FINISH_PATCH_V1"
+PATCH_MARKER = "SHOPPING_GRPO_TRACKING_DASHBOARD_PATCH_V2"
+LEGACY_PATCH_MARKERS = ("SHOPPING_GRPO_TRACKING_FINISH_PATCH_V1",)
+
+ORIGINAL_LOG = '''    def log(self, data, step, backend=None):
+        for default_backend, logger_instance in self.logger.items():
+            if backend is None or default_backend in backend:
+                logger_instance.log(data=data, step=step)
+'''
+
+DASHBOARD_LOG = '''    def log(self, data, step, backend=None):
+        for default_backend, logger_instance in self.logger.items():
+            if backend is None or default_backend in backend:
+                backend_data = data
+                if default_backend == "swanlab":
+                    from shopping_grpo.training.grpo.dynamic_sampling import (
+                        swanlab_dashboard_metrics,
+                    )
+
+                    backend_data = swanlab_dashboard_metrics(data)
+                if backend_data:
+                    logger_instance.log(data=backend_data, step=step)
+'''
 
 ORIGINAL_CLOSE = '''    def __del__(self):
         if "wandb" in self.logger:
@@ -49,15 +70,21 @@ FINISH = '''    def finish(self):
 
 
 def patch_source(source: str) -> str:
-    """Add an idempotent explicit finish contract to veRL's Tracking."""
+    """Add an idempotent finish contract and SwanLab-only metric projection."""
     if PATCH_MARKER in source:
         return source
     anchor = "        self.logger = {}\n"
-    if source.count(anchor) != 1 or source.count(ORIGINAL_CLOSE) != 1:
+    if (
+        any(marker in source for marker in LEGACY_PATCH_MARKERS)
+        or source.count(anchor) != 1
+        or source.count(ORIGINAL_LOG) != 1
+        or source.count(ORIGINAL_CLOSE) != 1
+    ):
         raise ValueError("pinned veRL Tracking source anchors mismatch")
     source = source.replace(
         anchor,
         anchor + f"        # {PATCH_MARKER}\n        self._shopping_finished = False\n",
         1,
     )
+    source = source.replace(ORIGINAL_LOG, DASHBOARD_LOG, 1)
     return source.replace(ORIGINAL_CLOSE, FINISH, 1)

@@ -417,24 +417,22 @@ SwanLab config 和本地 run contract 必须共同记录：
 
 ### 12.2 指标命名空间
 
-底层字段继续使用 `bpo_*`，因为 Root/Local 都复用 BPO 的 sibling、快照和 PPO 适配契约；
-CARL 专属预算和候选采样同时提供 `carl_*` 别名。当前实现的稳定命名如下：
+底层 console 与 `training_diagnostics.jsonl` 继续使用 `bpo_*`、`carl_*` 和 veRL 原始字段，
+保证正式审计不依赖云端展示别名。SwanLab 后端在 `Tracking.log()` 边界单独投影为五个顶级
+命名空间；console 不投影，未进入清单的冗余训练标量不上传 SwanLab。当前稳定展示如下：
 
-| 证据 | 当前稳定命名 |
-|---|---|
-| CARL预算 | `carl_budget/*`，并保留兼容审计所需的 `bpo_budget/*` |
-| 候选采样 | `carl_sampling/*`、`group/*`、`bpo_sampling/*` |
-| Root/Local与阶段 | `bpo_group/*`、`bpo_stage/*`、`bpo_branch/*` |
-| return | `reward/train_return_*`、`bpo_return/*`，native事实在 `summary/*` |
-| 实际生成成本 | `bpo_cost/*`、`rollout/*` |
-| mask、LOO和树级信用 | 本地 `bpo_actor_batch` 与 optimizer-step diagnostics |
-| PPO与优化器 | veRL原生 `actor/*`、`training/*` 加本地 optimizer audit |
-| 确定性验证 | `val-shopping/*` |
+| SwanLab 板块 | 内容 | 主要来源（本地保留原名） |
+|---|---|---|
+| `validation/*` | gold、combined completion、效用、有效性与三个条件 | `val-shopping/*`、`val-core/*` |
+| `sampling/*` | Root/Local、候选效率、contrast、Local阶段与accepted budget | `bpo_batch/*`、`bpo_sampling/*`、`group/*`、`bpo_stage/*`、`carl_budget/*` |
+| `credit/*` | train return、native utility、sibling差异、branch位置与熵 | `reward/*`、`bpo_return/*`、`bpo_branch/*` |
+| `optimization/*` | loss、LR、grad norm、KL、clip、entropy、更新/跳过状态 | `actor/*`、`training/*`、`shopping_dynamic_sampling/*` |
+| `runtime/*` | rollout/token、环境与Shopper调用、timing与perf | `bpo_cost/*`、`rollout/*`、`timing_s/*`、`perf/*` |
 
 不得为了名字整齐重复上传同一批高频标量。SwanLab 保存聚合曲线；逐树 return、LOO、mask、
 prefix hash、梯度张量计数和参数 delta 以 `training_diagnostics.jsonl` 与完整日志为权威证据。
 
-#### A. 预算与成本：`carl_budget/*`、`bpo_cost/*`、`rollout/*`
+#### A. 预算与成本：`sampling/*`、`runtime/*`
 
 - optimizer step；
 - accepted Root/Local groups 单步与累计值；
@@ -447,7 +445,7 @@ prefix hash、梯度张量计数和参数 delta 以 `training_diagnostics.jsonl`
 SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` 只表示进入 optimizer 的
 4000 个 returns，不能隐藏被筛掉候选所消耗的 rollout、token 和外部 API 成本。
 
-#### B. 采样组成：`carl_sampling/*`、`bpo_sampling/*`、`group/*`
+#### B. 采样组成：`sampling/*`
 
 - candidate groups 总量与每步 accepted Root/Local 数量；
 - completion、gold、failure、constant 和 invalid candidate 数量；
@@ -460,7 +458,7 @@ SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` �
 两类 acceptance rate；需要时应从本地 rollout diagnostics 离线统计，不能把 accepted 50/50
 误写成候选供给50/50。
 
-#### C. Local 阶段：`bpo_stage/*`、`bpo_branch/*`
+#### C. Local 阶段：`sampling/*`、`credit/*`
 
 对 `product`、`option`、`search_recovery` 分别记录：
 
@@ -470,7 +468,7 @@ SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` �
 
 面板同时显示软目标 `40/35/25` 与实际滚动比例，不能只记录最终累计值。
 
-#### D. Return 与信用：`reward/*`、`bpo_return/*` 与本地 LOO 审计
+#### D. Return 与信用：`credit/*` 与本地 LOO 审计
 
 - Reward v4 native utility 与 CARL `train_return` 分开记录；
 - gold、valid alternative、partial、wrong、repeat、model failure 计数；
@@ -483,7 +481,7 @@ SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` �
 
 不得把训练 return 命名为 Reward v4 total，避免训练目标与评测事实判定混淆。
 
-#### E. Mask 与 loss：本地 actor-batch 审计与 veRL `actor/*`
+#### E. Mask 与 loss：本地 actor-batch 审计与 `optimization/*`
 
 - Root first-action trainable coverage；
 - Root/Local active policy tokens；
@@ -497,7 +495,7 @@ SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` �
 `approx KL` 必须标注为新旧policy的PPO batch诊断，不能写成对SFT-325的reference KL。
 若增加只读的policy-to-SFT drift指标，应使用独立命名 `carl_drift/sft_reference_kl`。
 
-#### F. 优化器：veRL `training/*`、`actor/*` 与本地 optimizer audit
+#### F. 优化器：`optimization/*` 与本地 optimizer audit
 
 - actual learning rate及scheduler progress；
 - gradient norm；
@@ -511,7 +509,7 @@ SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` �
 
 500-step horizon下必须画出真实LR，而不是只在run config中记录peak `1e-6`。
 
-#### G. Validation：`val-shopping/*`
+#### G. Validation：`validation/*`
 
 在 step `0/10/50/.../500` 记录：
 
@@ -534,7 +532,9 @@ validation结果混入on-policy return。
 
 ### 12.3 面板布局
 
-建议固定五个dashboard section：
+SwanLab 官方按第一个 `/` 前缀自动分组。当前 tracking patch 只向 SwanLab 上传以下五个顶级
+前缀，因此新 run 会自动生成五个自定义指标板块；SwanLab 自带的 GPU/CPU system 板块仍独立
+存在，不计入这五个自定义板块：
 
 1. **Primary validation**：combined、gold和三个条件分项；
 2. **Sampling contract**：Root/Local、contrast组成、fallback、阶段分布和采样成本；

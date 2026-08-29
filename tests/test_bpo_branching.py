@@ -12,6 +12,7 @@ from shopping_grpo.training.bpo.branching import (
     validate_tree_outputs,
 )
 from shopping_grpo.training.bpo.runtime import sibling_group_starts
+from shopping_grpo.training.grpo.dynamic_sampling import build_carl_group_assignments
 
 
 def test_full_vocabulary_entropy_requires_normalized_distribution():
@@ -55,6 +56,17 @@ def test_sibling_groups_must_be_contiguous_repeats():
     assert sibling_group_starts([7, 7, 7, 7, 9, 9, 9, 9], 4) == [0, 4]
     with pytest.raises(ValueError, match="contiguous"):
         sibling_group_starts([7, 7, 9, 7], 4)
+
+
+def test_carl_group_roles_are_frozen_before_worker_sharding():
+    assert build_carl_group_assignments(2, ["root", "local"]) == (
+        "root",
+        "local",
+    )
+    with pytest.raises(ValueError, match="exactly one Root and one Local"):
+        build_carl_group_assignments(1, ["root", "local"])
+    with pytest.raises(ValueError, match="group schedule"):
+        build_carl_group_assignments(2, ["root", "root"])
 
 
 def test_tree_outputs_share_exact_prefix_and_isolated_clone_leases():

@@ -11,7 +11,11 @@ import shutil
 import sys
 from pathlib import Path
 
-from shopping_grpo.training.grpo.tracking_patch import PATCH_MARKER, patch_source
+from shopping_grpo.training.grpo.tracking_patch import (
+    LEGACY_PATCH_MARKERS,
+    PATCH_MARKER,
+    patch_source,
+)
 
 EXPECTED_VERL_VERSION = "0.8.0"
 EXPECTED_ORIGINAL_SHA256 = "a96d48404c53425d4c6f44eb164e72d7a55edfea3337e4279ad9fd8f4695db77"
@@ -60,8 +64,13 @@ def verify(target):
         '    def finish(self):\n'
         '        """Finish tracking once, from the trainer thread when possible."""\n'
     )
-    if source.count(PATCH_MARKER) != 1 or source.count(finish_contract) != 1:
-        raise RuntimeError("veRL Tracking.finish contract is missing")
+    dashboard_contract = '                if default_backend == "swanlab":\n'
+    if (
+        source.count(PATCH_MARKER) != 1
+        or source.count(finish_contract) != 1
+        or source.count(dashboard_contract) != 1
+    ):
+        raise RuntimeError("veRL Tracking dashboard/finish contract is missing")
     py_compile.compile(str(target), doraise=True)
 
 
@@ -74,6 +83,15 @@ def apply(target):
         verify(target)
         print(f"veRL tracking finish patch already applied: {target}")
         return
+    source = target.read_text(encoding="utf-8")
+    if any(marker in source for marker in LEGACY_PATCH_MARKERS):
+        if not backup.is_file() or sha256(backup) != EXPECTED_ORIGINAL_SHA256:
+            raise RuntimeError(
+                "cannot upgrade legacy tracking patch without its verified original backup"
+            )
+        shutil.copy2(backup, target)
+        actual = EXPECTED_ORIGINAL_SHA256
+        print(f"upgrading legacy veRL tracking patch from verified backup: {target}")
     if actual != EXPECTED_ORIGINAL_SHA256:
         raise RuntimeError(
             f"refusing to patch unknown tracking.py: expected {EXPECTED_ORIGINAL_SHA256}, got {actual}"
