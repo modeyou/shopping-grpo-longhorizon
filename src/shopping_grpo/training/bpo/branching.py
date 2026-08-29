@@ -12,6 +12,7 @@ class BranchCandidate:
     token_offset: int
     entropy: float
     snapshot_id: str
+    stage: str = "unknown"
     payload: object = None
 
 
@@ -95,7 +96,7 @@ def select_nonterminal_branch_candidate(candidates, *, action_count):
 
 
 def validate_tree_outputs(outputs, *, sibling_count=4):
-    """Fail before PPO if restored siblings do not share one exact prefix/state."""
+    """Fail before PPO if a Root/Local group violates its sampling contract."""
     values = list(outputs)
     if len(values) != int(sibling_count):
         raise ValueError("BPO tree must contain exactly K sibling outputs")
@@ -120,18 +121,34 @@ def validate_tree_outputs(outputs, *, sibling_count=4):
     if int(metadata[0]["bpo_return_budget"]) != int(sibling_count):
         raise ValueError("BPO return budget must equal sibling count for M=1")
 
+    group_type = str(metadata[0].get("bpo_group_type", "local"))
+    if group_type not in {"root", "local"}:
+        raise ValueError(f"unknown CARL-BPO group type: {group_type!r}")
+
     env_indices = [int(item.get("bpo_env_idx", -1)) for item in metadata]
     clone_env_indices = env_indices[1:]
-    if min(env_indices) < 0 or len(set(clone_env_indices)) != int(sibling_count) - 1:
-        raise ValueError("BPO clone siblings must use K-1 distinct leases")
+    if min(env_indices) < 0:
+        raise ValueError("BPO siblings must use non-negative environment leases")
+    if group_type == "local" and len(set(clone_env_indices)) != int(sibling_count) - 1:
+        raise ValueError("CARL Local clone siblings must use K-1 distinct leases")
+
+    prompts = [tuple(output.prompt_ids) for output in values]
+    if len(set(prompts)) != 1:
+        raise ValueError("BPO siblings do not share one original prompt")
+    if group_type == "root":
+        return {
+            "group_id": str(metadata[0]["bpo_group_id"]),
+            "group_type": group_type,
+            "branch_action": -1,
+            "branch_entropy": 0.0,
+            "prefix_tokens": 0,
+            "env_indices": env_indices,
+        }
 
     branch_action = int(metadata[0]["bpo_branch_action"])
     backbone_action_count = int(metadata[0]["bpo_backbone_action_count"])
     if backbone_action_count < 2 or branch_action >= backbone_action_count - 1:
         raise ValueError("BPO branch boundary must precede the final action")
-    prompts = [tuple(output.prompt_ids) for output in values]
-    if len(set(prompts)) != 1:
-        raise ValueError("BPO siblings do not share one original prompt")
     shared_prefixes = []
     shared_masks = []
     for output, item in zip(values, metadata, strict=True):
@@ -145,6 +162,7 @@ def validate_tree_outputs(outputs, *, sibling_count=4):
         raise ValueError("BPO sibling token prefixes differ before the branch boundary")
     return {
         "group_id": str(metadata[0]["bpo_group_id"]),
+        "group_type": group_type,
         "branch_action": branch_action,
         "branch_entropy": float(metadata[0]["bpo_branch_entropy"]),
         "prefix_tokens": len(shared_prefixes[0]),

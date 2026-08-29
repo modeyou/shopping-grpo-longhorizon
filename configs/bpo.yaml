@@ -1,4 +1,4 @@
-# Formal Shopping Agent BPO v1 configuration (independent from configs/grpo.yaml).
+# CARL-BPO configuration (independent from configs/grpo.yaml).
 hydra:
   searchpath:
     - pkg://verl/trainer/config
@@ -115,7 +115,7 @@ algorithm:
   bpo:
     sibling_count: 4
     branch_count: 1
-    upstream_lambda: 0.95
+    upstream_lambda: 0.0
   rollout_correction:
     bypass_mode: true
     rollout_is: null
@@ -124,6 +124,7 @@ algorithm:
 
 shopping_bpo:
   enable: true
+  algorithm: carl-bpo-v1
   sibling_count: 4
   branch_count: 1
   return_budget: 4
@@ -132,20 +133,26 @@ shopping_bpo:
   entropy_probe: exact-full-vocabulary
   entropy_state: action-boundary-first-token
   rollout_audit: exact-tree-v1
-  # Formal comparison budget: 200 updates x M=2 trees x K=4 sibling returns.
-  effective_return_budget: 1600
+  group_schedule: [root, local]
+  # Deterministic 20-step cycle approximating the 40/35/25 semantic targets.
+  local_stage_schedule: [product, product, product, product, product, product, product, product, option, option, option, option, option, option, option, search_recovery, search_recovery, search_recovery, search_recovery, search_recovery]
+  train_return_version: completion-aligned-v1
+  gold_train_return: 1.25
+  valid_alternative_train_return: 1.0
+  # CARL budget: 500 updates x 2 groups x K=4 sibling returns.
+  effective_tree_budget: 1000
+  effective_return_budget: 4000
 
 shopping_dynamic_sampling:
   enable: true
   metric: seq_reward
-  # One global step is always a full M=2 tree batch. Accepted trees are retained
-  # across candidate-generation batches until the second tree is available.
+  # One global step is one Root plus one Local K=4 group.
   minimum_accepted_prompts: 2
   require_full_batch: true
   soft_warning_gen_batches: 10
   max_num_gen_batches: 30
-  checkpoint_steps: [10]
-  validation_steps: [10]
+  checkpoint_steps: [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+  validation_steps: [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
   max_consecutive_skipped_updates: 10
   reward_tolerance: 1.0e-8
 
@@ -159,15 +166,15 @@ ray_kwargs:
 
 trainer:
   total_epochs: 50
-  # Fixed formal horizon: 200 updates x 2 trees x 4 sibling returns = R1600.
-  total_training_steps: 200
-  save_freq: 25
-  max_actor_ckpt_to_keep: 9
+  # CARL upper bound: 500 updates x 2 groups x 4 sibling returns = R4000.
+  total_training_steps: 500
+  save_freq: 50
+  max_actor_ckpt_to_keep: 12
   test_freq: 50
   val_before_train: true
   logger: [console]
   project_name: shopping-multiturn-agentic
-  experiment_name: bpo-native-v4-step200-r1600
+  experiment_name: carl-bpo-v1-step500-r4000-seed20260823
   default_local_dir: ${oc.env:BPO_OUTPUT_DIR}
   n_gpus_per_node: 4
   nnodes: 1

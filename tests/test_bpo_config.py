@@ -159,6 +159,7 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["algorithm"]["adv_estimator"] == "bpo"
     assert config["shopping_bpo"] == {
         "enable": True,
+        "algorithm": "carl-bpo-v1",
         "sibling_count": 4,
         "branch_count": 1,
         "return_budget": 4,
@@ -167,7 +168,17 @@ def test_formal_bpo_config_is_independent_and_frozen():
         "entropy_probe": "exact-full-vocabulary",
         "entropy_state": "action-boundary-first-token",
         "rollout_audit": "exact-tree-v1",
-        "effective_return_budget": 1600,
+        "group_schedule": ["root", "local"],
+        "local_stage_schedule": [
+            "product", "product", "product", "product", "product", "product", "product", "product",
+            "option", "option", "option", "option", "option", "option", "option",
+            "search_recovery", "search_recovery", "search_recovery", "search_recovery", "search_recovery",
+        ],
+        "train_return_version": "completion-aligned-v1",
+        "gold_train_return": 1.25,
+        "valid_alternative_train_return": 1.0,
+        "effective_tree_budget": 1000,
+        "effective_return_budget": 4000,
     }
     assert rollout["n"] == 4
     assert rollout["agent"]["num_workers"] == 2
@@ -180,11 +191,11 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["actor_rollout_ref"]["actor"]["calculate_entropy"] is False
     assert config["trainer"]["n_gpus_per_node"] == 4
     assert config["trainer"]["project_name"] == "shopping-multiturn-agentic"
-    assert config["trainer"]["total_training_steps"] == 200
-    assert config["trainer"]["save_freq"] == 25
-    assert config["trainer"]["max_actor_ckpt_to_keep"] == 9
+    assert config["trainer"]["total_training_steps"] == 500
+    assert config["trainer"]["save_freq"] == 50
+    assert config["trainer"]["max_actor_ckpt_to_keep"] == 12
     assert config["trainer"]["test_freq"] == 50
-    assert config["shopping_bpo"]["effective_return_budget"] == 1600
+    assert config["shopping_bpo"]["effective_return_budget"] == 4000
     optim = config["actor_rollout_ref"]["actor"]["optim"]
     assert optim == {
         "lr": 1.0e-6,
@@ -198,8 +209,8 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["shopping_dynamic_sampling"]["require_full_batch"] is True
     assert config["shopping_dynamic_sampling"]["soft_warning_gen_batches"] == 10
     assert config["shopping_dynamic_sampling"]["max_num_gen_batches"] == 30
-    assert config["shopping_dynamic_sampling"]["checkpoint_steps"] == [10]
-    assert config["shopping_dynamic_sampling"]["validation_steps"] == [10]
+    assert config["shopping_dynamic_sampling"]["checkpoint_steps"] == [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+    assert config["shopping_dynamic_sampling"]["validation_steps"] == [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
 
 
 class _FakeCuda:

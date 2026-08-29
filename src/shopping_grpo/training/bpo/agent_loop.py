@@ -18,6 +18,7 @@ from shopping_grpo.training.bpo.branching import (
     validate_tree_outputs,
 )
 from shopping_grpo.training.bpo.session import ClonedBranchSession
+from shopping_grpo.training.bpo.reward import completion_aligned_train_return
 from shopping_grpo.training.grpo.adapter.agent_loop import ShoppingToolAgentLoop
 from shopping_grpo.training.grpo.adapter.runtime import (
     current_runtime_state,
@@ -58,6 +59,7 @@ def attach_bpo_tree_metrics(outputs):
     aligned_fields = {
         name: [output.extra_fields[name] for output in values]
         for name in BPO_DIAGNOSTIC_FIELDS
+        if all(name in output.extra_fields for output in values)
     }
     records = build_rollout_diagnostics(
         group_ids,
@@ -96,13 +98,135 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         self.branch_count = int(branch_count)
         self.entropy_probe = str(entropy_probe)
         if self.sibling_count != 4:
-            raise ValueError("formal BPO v1 requires sibling_count=4")
+            raise ValueError("CARL-BPO requires sibling_count=4")
         if self.branch_count != 1:
-            raise ValueError("formal BPO v1 requires exactly one branch boundary")
+            raise ValueError("CARL-BPO requires exactly one branch boundary")
         if self.entropy_probe != "exact-full-vocabulary":
-            raise ValueError("formal BPO v1 requires exact full-vocabulary entropy")
-        if getattr(self, "reward_shaping_profile", "none") != "none":
-            raise ValueError("formal BPO v1 uses native Reward v4 without shaping")
+            raise ValueError("CARL-BPO requires exact full-vocabulary entropy")
+
+    @staticmethod
+    def _attach_training_return(output):
+        """Expose the CARL score on outputs finalized by either run path."""
+        shopping = output.extra_fields.get("shopping")
+        if not isinstance(shopping, dict) or not isinstance(
+            shopping.get("reward"), dict
+        ):
+            raise ValueError("CARL-BPO output is missing shopping reward diagnostics")
+        train_return = completion_aligned_train_return(
+            shopping["reward"], reward_type=shopping.get("reward_type")
+        )
+        shopping["train_return"] = train_return
+        shopping["reward"]["train_return"] = train_return
+        # veRL builds token_level_rewards from AgentLoopOutput.reward_score.  The
+        # native Reward-v4 result remains in shopping["reward"] for evaluation.
+        output.reward_score = train_return
+        return output
+
+    def _finalize_shopping_output(self, output, state, task_id):
+        """Keep Reward v4 diagnostics and expose the CARL training score."""
+        output = super()._finalize_shopping_output(output, state, task_id)
+        return self._attach_training_return(output)
+
+    @staticmethod
+    def _stage_for_prefix(state):
+        """Classify a local boundary from the actions already in the prefix."""
+        steps = state.get("steps") or []
+        last_tool = str(steps[-1].get("tool", "")) if steps else ""
+        lowered = last_tool.lower()
+        observation = str(state.get("latest_observation", "")).lower()
+        if any(
+            marker in observation
+            for marker in ("被本地动作守卫拒绝", "error", "失败", "无效")
+        ):
+            return "search_recovery"
+        if any(
+            marker in observation
+            for marker in ("颜色", "尺码", "尺寸", "容量", "套装", "select_option")
+        ):
+            return "option"
+        if lowered in {"search_products", "back_to_search", "prev_page"}:
+            return "product"
+        if any(
+            word in lowered
+            for word in ("option", "variant", "select", "configure", "size", "color")
+        ):
+            return "option"
+        return "product"
+
+    @staticmethod
+    def _retain_local_candidates(candidates):
+        """Retain one high-entropy snapshot per semantic stage plus the global best."""
+        values = list(candidates)
+        best_by_stage = {}
+        for candidate in values:
+            current = best_by_stage.get(candidate.stage)
+            if current is None or (
+                float(candidate.entropy), -int(candidate.action_index)
+            ) > (float(current.entropy), -int(current.action_index)):
+                best_by_stage[candidate.stage] = candidate
+        retained = list(best_by_stage.values())
+        global_best = max(
+            values,
+            key=lambda item: (float(item.entropy), -int(item.action_index)),
+            default=None,
+        )
+        if global_best is not None and global_best not in retained:
+            retained.append(global_best)
+        return retained
+
+    @staticmethod
+    def _attach_root_metadata(output, *, group_id, sibling_index, prompt_ids):
+        prefix_digest = hashlib.sha256(
+            ",".join(str(value) for value in prompt_ids).encode("ascii")
+        ).hexdigest()
+        response_digest = hashlib.sha256(
+            ",".join(str(value) for value in output.response_ids).encode("ascii")
+        ).hexdigest()
+        output.extra_fields.update(
+            {
+                "bpo_group_id": group_id,
+                "bpo_group_type": "root",
+                "bpo_sibling_index": int(sibling_index),
+                "bpo_branch_action": -1,
+                "bpo_branch_entropy": 0.0,
+                "bpo_action_token_starts": [0],
+                "bpo_return_budget": 4,
+                "bpo_env_idx": 0,
+                "bpo_branch_prefix_sha256": prefix_digest,
+                "bpo_branch_action_sha256": response_digest,
+                "bpo_backbone_action_count": 1,
+                "bpo_branch_relative_position": 0.0,
+                "bpo_branch_prefix_steps": 0,
+                "bpo_branch_prefix_shopper_calls": 0,
+                "bpo_branch_prefix_environment_transitions": 0,
+                "bpo_local_stage": "root",
+                "bpo_local_stage_target": "root",
+                "bpo_local_stage_fallback": False,
+                "bpo_local_stage_unavailable": False,
+            }
+        )
+
+    async def _run_root(self, sampling_params, **kwargs):
+        """Generate four independent episode-level Root rollouts."""
+        group_id = uuid4().hex
+        outputs = []
+        for sibling_index in range(self.sibling_count):
+            output = await ShoppingToolAgentLoop.run(
+                self, sampling_params, **kwargs
+            )
+            # The adapter's parent ``run`` owns a second finalization path and
+            # therefore does not dispatch through this subclass override.
+            self._attach_training_return(output)
+            self._attach_root_metadata(
+                output,
+                group_id=group_id,
+                sibling_index=sibling_index,
+                prompt_ids=output.prompt_ids,
+            )
+            outputs.append(output)
+        validate_tree_outputs(outputs, sibling_count=self.sibling_count)
+        attach_bpo_tree_metrics(outputs)
+        return outputs
 
     async def _new_agent_data(self, kwargs):
         messages = list(kwargs["raw_prompt"])
@@ -280,6 +404,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         output.extra_fields.update(
             {
                 "bpo_group_id": group_id,
+                "bpo_group_type": "local",
                 "bpo_sibling_index": int(sibling_index),
                 "bpo_branch_action": int(candidate.action_index),
                 "bpo_branch_entropy": float(candidate.entropy),
@@ -295,6 +420,16 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                     int(candidate.action_index)
                     / max(1, int(candidate.payload["backbone_action_count"]) - 1)
                 ),
+                "bpo_local_stage": str(candidate.stage),
+                "bpo_local_stage_target": str(
+                    candidate.payload.get("stage_target", "auto")
+                ),
+                "bpo_local_stage_fallback": bool(
+                    candidate.payload.get("stage_fallback", False)
+                ),
+                "bpo_local_stage_unavailable": bool(
+                    candidate.payload.get("stage_fallback", False)
+                ),
                 "bpo_branch_prefix_steps": int(
                     candidate.payload["branch_prefix_steps"]
                 ),
@@ -308,7 +443,13 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         )
 
     async def run_tree(self, sampling_params, **kwargs):
-        """Return one backbone and three continuations from one shared prefix."""
+        """Return either an independent Root group or a Local sibling group."""
+        group_type = str(kwargs.pop("bpo_group_type", "local"))
+        if group_type == "root":
+            return await self._run_root(sampling_params, **kwargs)
+        if group_type != "local":
+            raise ValueError(f"unknown CARL-BPO group type: {group_type!r}")
+        stage_target = str(kwargs.pop("bpo_stage_target", "auto"))
         spec = multiturn_spec_from_kwargs(kwargs, enabled=True)
         task_id = spec["task_id"]
         session = ShopSimulatorSession(
@@ -373,6 +514,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                             token_offset=0,
                             entropy=entropy,
                             snapshot_id=snapshot_id,
+                            stage=self._stage_for_prefix(prefix_state),
                             payload={
                                 "agent_data": prefix_data,
                                 "runtime_state": prefix_state,
@@ -391,8 +533,8 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                             },
                         )
                         previous = list(retained_candidates)
-                        retained_candidates = retain_branch_candidates(
-                            [*previous, proposed], limit=2
+                        retained_candidates = self._retain_local_candidates(
+                            [*previous, proposed]
                         )
                         retained_ids = {
                             value.snapshot_id for value in retained_candidates
@@ -408,13 +550,28 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 else:
                     raise RuntimeError(f"invalid BPO backbone state: {current}")
             try:
+                eligible = [
+                    value
+                    for value in retained_candidates
+                    if int(value.action_index) < len(action_starts) - 1
+                ]
+                if stage_target != "auto":
+                    targeted = [
+                        value for value in eligible if value.stage == stage_target
+                    ]
+                    if targeted:
+                        eligible = targeted
                 candidate = select_nonterminal_branch_candidate(
-                    retained_candidates,
+                    retain_branch_candidates(eligible, limit=max(1, len(eligible))),
                     action_count=len(action_starts),
                 )
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
             candidate.payload["backbone_action_count"] = len(action_starts)
+            candidate.payload["stage_target"] = stage_target
+            candidate.payload["stage_fallback"] = bool(
+                stage_target != "auto" and candidate.stage != stage_target
+            )
             for rejected in retained_candidates:
                 if rejected is candidate:
                     continue

@@ -1,4 +1,4 @@
-"""Pinned veRL 0.8 runtime adapters for full BPO grouping and advantages."""
+"""Pinned veRL 0.8 runtime adapters for CARL-BPO grouping and advantages."""
 
 from __future__ import annotations
 
@@ -459,7 +459,7 @@ def install_optimizer_update_audit():
 
 
 def install_scheduler_contract():
-    """Keep the formal 500-step LR curve resumable beyond the N200 decision point."""
+    """Keep the CARL 500-step LR curve fixed and resumable."""
     from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
 
     current = FSDPEngine._build_lr_scheduler
@@ -484,7 +484,7 @@ def install_scheduler_contract():
         # _mutable_fields.  In v0.8.0 min_lr_ratio is frozen, while the formal
         # YAML already binds the warmup/scheduler/minimum ratio.  Validate those
         # immutable recipe values and only override the officially mutable
-        # horizon needed to make an N200 run resumable to 500 updates.
+        # horizon required by the CARL run contract.
         if int(optimizer_config.lr_warmup_steps) != warmup:
             raise RuntimeError(
                 "formal BPO scheduler warmup does not match the contract"
@@ -506,8 +506,8 @@ def install_scheduler_contract():
             "BPO scheduler contract: "
             + json.dumps(
                 {
-                    "effective_return_budget": 1600,
-                    "maximum_optimizer_steps": 200,
+                    "effective_return_budget": 4000,
+                    "maximum_optimizer_steps": 500,
                     "horizon": horizon,
                     "min_lr_ratio": min_lr_ratio,
                     "scheduler": "cosine",
@@ -547,7 +547,29 @@ async def _generate_bpo_sequences(worker, batch):
         False,
     )
 
-    async def run_group(start):
+    raw_step = batch.meta_info.get("global_steps", batch.meta_info.get("global_step", 0))
+    if isinstance(raw_step, (list, tuple)):
+        raw_step = raw_step[0] if raw_step else 0
+    step = int(getattr(raw_step, "item", lambda: raw_step)())
+    group_schedule = tuple(
+        str(value)
+        for value in worker.config.shopping_bpo.get(
+            "group_schedule", ["root", "local"]
+        )
+    )
+    stage_schedule = tuple(
+        str(value)
+        for value in worker.config.shopping_bpo.get(
+            "local_stage_schedule",
+            [
+                "product",
+            ] * 8
+            + ["option"] * 7
+            + ["search_recovery"] * 5,
+        )
+    )
+
+    async def run_group(start, group_ordinal):
         rows = list(range(start, start + sibling_count))
         kwargs = {
             key: value[start]
@@ -555,6 +577,12 @@ async def _generate_bpo_sequences(worker, batch):
             if key != "__do_sample__"
         }
         agent_name = str(kwargs.pop("agent_name"))
+        group_type = group_schedule[group_ordinal % len(group_schedule)]
+        kwargs["bpo_group_type"] = group_type
+        if group_type == "local":
+            kwargs["bpo_stage_target"] = stage_schedule[
+                (step + group_ordinal) % len(stage_schedule)
+            ]
         registry = module._agent_loop_registry
         if agent_name not in registry:
             raise ValueError(f"BPO agent loop is not registered: {agent_name}")
@@ -569,7 +597,7 @@ async def _generate_bpo_sequences(worker, batch):
             tools=module.ToolListWrap(worker.tools),
         )
         if not hasattr(loop, "run_tree"):
-            raise TypeError("formal BPO agent loop must implement run_tree")
+            raise TypeError("CARL-BPO agent loop must implement run_tree")
         outputs = await loop.run_tree(dict(sampling_params), **kwargs)
         if len(outputs) != sibling_count:
             raise RuntimeError("BPO run_tree returned the wrong sibling count")
@@ -590,7 +618,9 @@ async def _generate_bpo_sequences(worker, batch):
         return processed
 
     starts = sibling_group_starts(index, sibling_count)
-    groups = await asyncio.gather(*[run_group(start) for start in starts])
+    groups = await asyncio.gather(
+        *[run_group(start, ordinal) for ordinal, start in enumerate(starts)]
+    )
     outputs = [item for group in groups for item in group]
     return worker._postprocess(
         outputs,
@@ -644,6 +674,7 @@ def install_bpo_runtime():
             name: data.non_tensor_batch[name]
             for name in (
                 "bpo_group_id",
+                "bpo_group_type",
                 "bpo_sibling_index",
                 "bpo_branch_action",
                 "bpo_action_token_starts",
@@ -654,7 +685,10 @@ def install_bpo_runtime():
                 "bpo_backbone_action_count",
                 "bpo_branch_relative_position",
             )
+            if name in data.non_tensor_batch
         }
+        if "bpo_group_type" not in metadata:
+            metadata["bpo_group_type"] = ["local"] * len(data.batch["responses"])
         audits = audit_bpo_rollout_batch(
             data.batch["prompts"],
             data.batch["responses"],
@@ -667,7 +701,7 @@ def install_bpo_runtime():
             data.batch["response_mask"],
             metadata=metadata,
             sibling_count=int(bpo_config.get("sibling_count", 4)),
-            upstream_lambda=float(bpo_config.get("upstream_lambda", 0.95)),
+            upstream_lambda=0.0,
             return_diagnostics=True,
         )
         data.batch["advantages"] = advantages

@@ -10,9 +10,9 @@ from statistics import median
 from typing import Any
 
 
-DECISION_STEPS = (0, 10, 50, 100, 150, 200)
+DECISION_STEPS = (0, 10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500)
 IMPORTANT_PREFIXES = (
-    "summary/", "val-shopping/", "val-core/", "bpo_", "bpo-", "group/",
+    "summary/", "val-shopping/", "val-core/", "bpo_", "bpo-", "carl_", "carl-", "group/",
     "rollout/", "actor/", "critic/", "training/", "perf/", "timing_",
     "response_length/",
 )

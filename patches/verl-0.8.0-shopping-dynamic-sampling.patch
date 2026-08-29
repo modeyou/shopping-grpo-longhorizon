@@ -116,6 +116,13 @@
 +                )
 +            dynamic_rollout_n = int(self.config.actor_rollout_ref.rollout.n)
 +            bpo_config = self.config.get("shopping_bpo", {})
++            dynamic_group_schedule = tuple(
++                str(value) for value in bpo_config.get("group_schedule", ["root", "local"])
++            )
++            if dynamic_group_schedule != ("root", "local"):
++                raise ValueError(
++                    "CARL-BPO requires one Root and one Local group per optimizer step"
++                )
 +            dynamic_effective_return_budget = int(
 +                bpo_config.get("effective_return_budget", 0)
 +            )
@@ -129,8 +136,13 @@
 +                )
 +            else:
 +                dynamic_effective_tree_budget = 0
++            dynamic_budget_checkpoint_returns = {
++                int(step) * dynamic_target_prompts * dynamic_rollout_n
++                for step in dynamic_checkpoint_steps
++            }
 +            dynamic_accepted_batches = []
 +            dynamic_accepted_prompts = 0
++            dynamic_accepted_group_type_counts = {"root": 0, "local": 0}
 +            dynamic_num_gen_batches = 0
 +            dynamic_generated_groups = 0
 +            dynamic_filtered_groups = 0
@@ -139,6 +151,9 @@
 +            dynamic_all_purchase_success_groups = 0
 +            dynamic_no_purchase_success_groups = 0
 +            dynamic_sampling_invalid_groups = 0
++            dynamic_completion_contrast_groups = 0
++            dynamic_gold_contrast_groups = 0
++            dynamic_failure_utility_contrast_groups = 0
 +            dynamic_generated_trajectories = 0
 +            dynamic_generated_response_tokens = 0
 +            dynamic_generated_response_tokens_total = 0
@@ -235,10 +250,21 @@
 +                        terminal_utilities, purchase_success, sampling_invalid, sampling_invalid_reasons = extract_shopping_group_signals(
 +                            batch.non_tensor_batch["shopping"].tolist()
 +                        )
++                        raw_group_types = batch.non_tensor_batch.get("bpo_group_type")
++                        if raw_group_types is None:
++                            raise RuntimeError(
++                                "CARL-BPO requires trajectory-aligned bpo_group_type metadata"
++                            )
++                        group_types = (
++                            raw_group_types.tolist()
++                            if callable(getattr(raw_group_types, "tolist", None))
++                            else list(raw_group_types)
++                        )
 +                        _, group_stats = select_reward_varying_groups(
 +                            batch_uids,
 +                            seq_rewards,
 +                            terminal_utilities=terminal_utilities, purchase_success=purchase_success,
++                            group_types=group_types,
 +                            sampling_invalid=sampling_invalid, sampling_invalid_reasons=sampling_invalid_reasons,
 +                            tolerance=dynamic_reward_tolerance,
 +                        )
@@ -267,6 +293,15 @@
 +                        dynamic_sampling_invalid_groups += group_stats[
 +                            "sampling_invalid_group_count"
 +                        ]
++                        dynamic_completion_contrast_groups += group_stats[
++                            "completion_contrast_group_count"
++                        ]
++                        dynamic_gold_contrast_groups += group_stats[
++                            "gold_contrast_group_count"
++                        ]
++                        dynamic_failure_utility_contrast_groups += group_stats[
++                            "failure_utility_contrast_group_count"
++                        ]
 +                        dynamic_generated_trajectories += group_stats["num_trajectories"]
 +                        dynamic_generated_groups_total += group_stats["num_groups"]
 +                        dynamic_filtered_groups_total += group_stats["dropped_group_count"]
@@ -291,7 +326,25 @@
 +                            raise RuntimeError(
 +                                "BPO effective-return budget was exhausted before optimizer update"
 +                            )
-+                        accepted_uids = list(group_stats["kept_uids"][:remaining_prompts])
++                        groups_by_uid = {
++                            group["uid"]: group for group in group_stats["groups"]
++                        }
++                        pending_types = {
++                            group_type: max(
++                                0,
++                                1 - dynamic_accepted_group_type_counts[group_type],
++                            )
++                            for group_type in dynamic_group_schedule
++                        }
++                        accepted_uids = []
++                        for uid in group_stats["kept_uids"]:
++                            group_type = groups_by_uid[uid]["group_type"]
++                            if pending_types.get(group_type, 0) <= 0:
++                                continue
++                            accepted_uids.append(uid)
++                            pending_types[group_type] -= 1
++                            if len(accepted_uids) >= remaining_prompts:
++                                break
 +                        accepted_uid_set = set(accepted_uids)
 +                        accepted_indices = [
 +                            index for index, uid in enumerate(batch_uids) if uid in accepted_uid_set
@@ -345,11 +398,13 @@
 +                                {
 +                                    "uid": group["uid"],
 +                                    "rewards": group["rewards"],
++                                    "train_returns": group["train_returns"],
 +                                    "terminal_utilities": group["terminal_utilities"],
 +                                    "purchase_success": group["purchase_success"],
 +                                    "sampling_invalid": group["sampling_invalid"],
 +                                    "sampling_invalid_reasons": group["sampling_invalid_reasons"],
 +                                    "drop_reason": group["drop_reason"],
++                                    "contrast_type": group["contrast_type"],
 +                                    "kept": group["kept"],
 +                                    "accepted": group["uid"] in accepted_uid_set,
 +                                    **bpo_group_diagnostics.get(group["uid"], {}),
@@ -386,6 +441,10 @@
 +                            accepted_batch.meta_info.pop("images_seqlens", None)
 +                            dynamic_accepted_batches.append(accepted_batch)
 +                            dynamic_accepted_prompts += len(accepted_uids)
++                            for uid in accepted_uids:
++                                dynamic_accepted_group_type_counts[
++                                    groups_by_uid[uid]["group_type"]
++                                ] += 1
 +
 +                        if dynamic_accepted_prompts < dynamic_current_target_prompts:
 +                            if (
@@ -513,6 +572,9 @@
 +                                    "group/sampling_invalid": (
 +                                        dynamic_sampling_invalid_groups
 +                                    ),
++                                    "group/completion_contrast": dynamic_completion_contrast_groups,
++                                    "group/gold_contrast": dynamic_gold_contrast_groups,
++                                    "group/failure_utility_contrast": dynamic_failure_utility_contrast_groups,
 +                                    "group/resample_batches": max(
 +                                        dynamic_num_gen_batches - 1, 0
 +                                    ),
@@ -566,6 +628,7 @@
 +                                )
 +                                dynamic_accepted_batches = []
 +                                dynamic_accepted_prompts = 0
++                                dynamic_accepted_group_type_counts = {"root": 0, "local": 0}
 +                                dynamic_num_gen_batches = 0
 +                                dynamic_generated_groups = 0
 +                                dynamic_filtered_groups = 0
@@ -574,6 +637,9 @@
 +                                dynamic_all_purchase_success_groups = 0
 +                                dynamic_no_purchase_success_groups = 0
 +                                dynamic_sampling_invalid_groups = 0
++                                dynamic_completion_contrast_groups = 0
++                                dynamic_gold_contrast_groups = 0
++                                dynamic_failure_utility_contrast_groups = 0
 +                                dynamic_generated_trajectories = 0
 +                                dynamic_generated_response_tokens = 0
 +                                dynamic_bpo_backbone_rollouts = 0
@@ -637,9 +703,10 @@
 +                        dynamic_effective_returns_total = (
 +                            dynamic_trained_groups_total * dynamic_rollout_n
 +                        )
-+                        dynamic_budget_checkpoint_due = (
-+                            previous_effective_returns < 200
++                        dynamic_budget_checkpoint_due = any(
++                            previous_effective_returns < threshold
 +                            <= dynamic_effective_returns_total
++                            for threshold in dynamic_budget_checkpoint_returns
 +                        )
 +                        if dynamic_effective_return_budget:
 +                            is_last_step = (
@@ -673,6 +740,9 @@
 +                                "group/sampling_invalid": (
 +                                    dynamic_sampling_invalid_groups
 +                                ),
++                                "group/completion_contrast": dynamic_completion_contrast_groups,
++                                "group/gold_contrast": dynamic_gold_contrast_groups,
++                                "group/failure_utility_contrast": dynamic_failure_utility_contrast_groups,
 +                                "group/resample_batches": max(dynamic_num_gen_batches - 1, 0),
 +                                "group/generated_total": dynamic_generated_groups_total,
 +                                "group/filtered_total": dynamic_filtered_groups_total,
@@ -696,7 +766,12 @@
 +                                "bpo_budget/effective_trees_total": dynamic_trained_groups_total,
 +                                "bpo_budget/effective_returns_total": dynamic_effective_returns_total,
 +                                "bpo_budget/effective_return_target": dynamic_effective_return_budget,
++                                "carl_budget/accepted_groups_total": dynamic_trained_groups_total,
++                                "carl_budget/accepted_returns_total": dynamic_effective_returns_total,
++                                "carl_budget/target_returns": dynamic_effective_return_budget,
 +                                "bpo_batch/trees": dynamic_accepted_prompts,
++                                "bpo_batch/root_groups": dynamic_accepted_group_type_counts["root"],
++                                "bpo_batch/local_groups": dynamic_accepted_group_type_counts["local"],
 +                                "bpo_batch/sibling_returns": (
 +                                    dynamic_accepted_prompts * dynamic_rollout_n
 +                                ),
@@ -706,6 +781,8 @@
 +                                ),
 +                                "bpo_sampling/candidate_batches": dynamic_num_gen_batches,
 +                                "bpo_sampling/candidate_trees": dynamic_generated_groups,
++                                "carl_sampling/candidate_batches": dynamic_num_gen_batches,
++                                "carl_sampling/candidate_groups": dynamic_generated_groups,
 +                                "bpo_sampling/seconds_to_first_tree": (
 +                                    dynamic_seconds_to_first_tree
 +                                    if dynamic_seconds_to_first_tree is not None
@@ -764,6 +841,7 @@
 +                        dynamic_consecutive_skips = 0
 +                        dynamic_accepted_batches = []
 +                        dynamic_accepted_prompts = 0
++                        dynamic_accepted_group_type_counts = {"root": 0, "local": 0}
 +                        dynamic_num_gen_batches = 0
 +                        dynamic_generated_groups = 0
 +                        dynamic_filtered_groups = 0
@@ -772,6 +850,9 @@
 +                        dynamic_all_purchase_success_groups = 0
 +                        dynamic_no_purchase_success_groups = 0
 +                        dynamic_sampling_invalid_groups = 0
++                        dynamic_completion_contrast_groups = 0
++                        dynamic_gold_contrast_groups = 0
++                        dynamic_failure_utility_contrast_groups = 0
 +                        dynamic_generated_trajectories = 0
 +                        dynamic_generated_response_tokens = 0
 +                        dynamic_bpo_backbone_rollouts = 0

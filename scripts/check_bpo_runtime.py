@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preflight the pinned full-BPO runtime without loading model weights."""
+"""Preflight the pinned CARL-BPO runtime without loading model weights."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ def validate_bpo_config(config):
         "sibling_count": 4,
         "branch_count": 1,
         "return_budget": 4,
+        "algorithm": "carl-bpo-v1",
         "selection": "maximum_exact_entropy",
         "entropy_probe": "exact-full-vocabulary",
         "entropy_state": "action-boundary-first-token",
@@ -35,6 +36,13 @@ def validate_bpo_config(config):
     for key, value in expected.items():
         if bpo.get(key) != value:
             raise SystemExit(f"formal BPO requires shopping_bpo.{key}={value!r}")
+    if list(bpo.group_schedule) != ["root", "local"]:
+        raise SystemExit("CARL-BPO requires group_schedule=[root, local]")
+    expected_stage_schedule = [
+        "product",
+    ] * 8 + ["option"] * 7 + ["search_recovery"] * 5
+    if list(bpo.local_stage_schedule) != expected_stage_schedule:
+        raise SystemExit("CARL-BPO stage schedule is invalid")
     if int(rollout.n) != 4:
         raise SystemExit("formal BPO requires rollout.n=4")
     if int(rollout.agent.num_workers) != int(config.data.train_batch_size):
@@ -57,10 +65,11 @@ def validate_bpo_config(config):
         raise SystemExit("formal BPO requires a 10-generation-batch warning")
     if int(dynamic.max_num_gen_batches) != 30:
         raise SystemExit("formal BPO requires a 30-generation-batch hard limit")
-    if list(dynamic.checkpoint_steps) != [10]:
-        raise SystemExit("formal BPO requires an early step-10 checkpoint")
-    if list(dynamic.validation_steps) != [10]:
-        raise SystemExit("formal BPO requires an early step-10 validation")
+    expected_steps = [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+    if list(dynamic.checkpoint_steps) != expected_steps:
+        raise SystemExit("CARL-BPO checkpoint steps are invalid")
+    if list(dynamic.validation_steps) != expected_steps:
+        raise SystemExit("CARL-BPO validation steps are invalid")
     if int(config.data.dataloader_num_workers) != 0:
         raise SystemExit("formal BPO requires single-process parquet loading")
     if int(config.data.train_batch_size) != 2:
@@ -76,14 +85,16 @@ def validate_bpo_config(config):
             "formal BPO requires actor.calculate_entropy=false; branch entropy "
             "comes from the exact one-token vLLM probe"
         )
-    if float(algorithm.bpo.upstream_lambda) != 0.95:
-        raise SystemExit("formal BPO requires upstream_lambda=0.95")
+    if float(algorithm.bpo.upstream_lambda) != 0.0:
+        raise SystemExit("CARL-BPO requires no upstream prefix propagation")
     if float(config.actor_rollout_ref.actor.clip_ratio_low) != 0.2:
         raise SystemExit("formal BPO requires PPO clip ratio 0.2")
     if int(config.trainer.n_gpus_per_node) != 4:
         raise SystemExit("formal BPO requires four GPUs")
-    if int(bpo.effective_return_budget) != 1600:
-        raise SystemExit("formal BPO requires effective_return_budget=1600")
+    if int(bpo.effective_return_budget) != 4000:
+        raise SystemExit("CARL-BPO requires effective_return_budget=4000")
+    if int(bpo.effective_tree_budget) != 1000:
+        raise SystemExit("CARL-BPO requires effective_tree_budget=1000")
     diagnostic_steps = str(
         os.environ.get("SHOPPING_BPO_DIAGNOSTIC_STEPS", "")
     ).strip()
@@ -97,14 +108,14 @@ def validate_bpo_config(config):
         if int(config.trainer.save_freq) != -1 or int(config.trainer.test_freq) != -1:
             raise SystemExit("BPO diagnostic mode must disable save/test")
     else:
-        if int(config.trainer.total_training_steps) != 200:
-            raise SystemExit("formal BPO requires exactly 200 global steps")
-        if int(config.trainer.save_freq) != 25 or int(config.trainer.test_freq) != 50:
+        if int(config.trainer.total_training_steps) != 500:
+            raise SystemExit("CARL-BPO requires at most 500 global steps")
+        if int(config.trainer.save_freq) != 50 or int(config.trainer.test_freq) != 50:
             raise SystemExit(
-                "formal BPO requires checkpoints every 25 steps and validation every 50"
+                "CARL-BPO requires checkpoints and validation every 50 steps"
             )
-    if int(config.trainer.max_actor_ckpt_to_keep) != 9:
-        raise SystemExit("formal BPO must retain step 10 plus eight 25-step checkpoints")
+    if int(config.trainer.max_actor_ckpt_to_keep) != 12:
+        raise SystemExit("CARL-BPO must retain all registered checkpoints")
     if int(config.data.seed) != 20260823:
         raise SystemExit("formal BPO requires data seed 20260823")
     optim = config.actor_rollout_ref.actor.optim
@@ -755,16 +766,16 @@ def main():
         "BPO runtime preflight passed: "
         + json.dumps(
             {
-                "algorithm": "full-bpo-v1",
+                "algorithm": "carl-bpo-v1",
                 "agent_loop": ShoppingBPOAgentLoop.__name__,
                 "branch_count": 1,
                 "sibling_count": 4,
                 "return_budget": 4,
-                "effective_tree_budget": 400,
-                "effective_return_budget": 1600,
+                "effective_tree_budget": 1000,
+                "effective_return_budget": 4000,
                 "trees_per_optimizer_step": 2,
                 "returns_per_optimizer_step": 8,
-                "maximum_optimizer_steps": 200,
+                "maximum_optimizer_steps": 500,
                 "scheduler": "cosine",
                 "scheduler_horizon": 500,
                 "warmup_steps": 10,
@@ -783,7 +794,7 @@ def main():
                 "dynamic_max_generation_batches": int(
                     config.shopping_dynamic_sampling.max_num_gen_batches
                 ),
-                "upstream_lambda": 0.95,
+                "upstream_lambda": 0.0,
                 "gpu_memory_utilization": 0.45,
                 "max_num_seqs": 8,
                 "minimum_free_gpu_memory_gib": 20.0,

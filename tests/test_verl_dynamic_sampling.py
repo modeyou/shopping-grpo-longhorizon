@@ -163,6 +163,27 @@ class RewardGroupSelectionTest(unittest.TestCase):
         self.assertEqual(stats["kept_group_count"], 1)
         self.assertEqual(stats["dropped_group_count"], 1)
 
+    def test_group_type_is_preserved_for_root_local_batch_selection(self):
+        uids = ["root"] * 4 + ["local"] * 4
+        rewards = [1.25, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+        indices, stats = select_reward_varying_groups(
+            uids,
+            rewards,
+            group_types=["root"] * 4 + ["local"] * 4,
+            purchase_success=[True, False, False, False] + [True, False, False, False],
+        )
+        self.assertEqual(indices, list(range(8)))
+        self.assertEqual(
+            {group["uid"]: group["group_type"] for group in stats["groups"]},
+            {"root": "root", "local": "local"},
+        )
+        with self.assertRaisesRegex(ValueError, "inconsistent CARL group types"):
+            select_reward_varying_groups(
+                ["root"] * 4,
+                [1.0, 0.0, 0.0, 0.0],
+                group_types=["root", "local", "root", "root"],
+            )
+
     def test_tolerance_treats_tiny_roundoff_as_constant(self):
         indices, _ = select_reward_varying_groups(
             ["a"] * 4,

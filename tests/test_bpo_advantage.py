@@ -11,7 +11,7 @@ from shopping_grpo.training.bpo.advantage import (
 )
 
 
-def test_bpo_loo_advantage_and_upstream_action_weighting():
+def test_carl_loo_advantage_starts_at_local_branch():
     rewards = torch.tensor(
         [[0.0, 0.0, score, 0.0] for score in (1.0, 0.0, -1.0, 2.0)]
     )
@@ -32,7 +32,7 @@ def test_bpo_loo_advantage_and_upstream_action_weighting():
     expected = torch.tensor([2 / 3, -2 / 3, -2.0, 2.0])
     assert torch.allclose(advantages[:, 2], expected)
     assert torch.isclose(advantages[:, 2].sum(), torch.tensor(0.0))
-    assert torch.allclose(advantages[:, 0], expected * 0.5)
+    assert torch.all(advantages[:, 0] == 0)
     assert torch.all(advantages[:, 1] == 0)
     assert torch.equal(advantages, returns)
 
@@ -99,8 +99,8 @@ def test_bpo_actor_diagnostics_expose_mask_and_advantage_support():
     assert torch.equal(policy_weights, internals["policy_weights"])
     assert diagnostics["response_mask_total_tokens"] == 12
     assert diagnostics["response_mask_nonzero_rows"] == 4
-    assert diagnostics["policy_mask_nonzero_tokens"] == 12
-    assert diagnostics["advantages_nonzero_tokens"] == 12
+    assert diagnostics["policy_mask_nonzero_tokens"] == 4
+    assert diagnostics["advantages_nonzero_tokens"] == 4
     assert diagnostics["advantages_abs_sum"] > 0.0
     assert diagnostics["all_finite"] is True
 
@@ -222,7 +222,7 @@ def test_real_verl_dispatcher_accepts_bpo_on_cpu():
                 "use_kl_in_reward": False,
                 "bpo": {
                     "sibling_count": 4,
-                    "upstream_lambda": 0.95,
+                    "upstream_lambda": 0.0,
                 }
             },
             "actor_rollout_ref": {

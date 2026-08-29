@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the repository's independent formal full-BPO v1 recipe."""
+"""Run the repository's independent formal CARL-BPO v1 recipe."""
 
 from __future__ import annotations
 
@@ -40,7 +40,9 @@ def parse_args():
     parser.add_argument("--shopper-model", default="deepseek-v4-flash-0731")
     parser.add_argument("--shopper-base-url", default=os.environ.get("SHOPPER_BASE_URL"))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--experiment-name", default="bpo-native-v4-step200-r1600")
+    parser.add_argument(
+        "--experiment-name", default="carl-bpo-v1-step500-r4000-seed20260823"
+    )
     parser.add_argument("--logger", choices=("console", "swanlab"), default="swanlab")
     parser.add_argument("--seed", type=int, default=20260823)
     parser.add_argument(
@@ -121,6 +123,9 @@ def _step0_validation_contract(args, *, model, val_data, manifest):
         "bpo_agent_loop": (
             ROOT / "src/shopping_grpo/training/bpo/agent_loop.py"
         ),
+        "bpo_advantage": ROOT / "src/shopping_grpo/training/bpo/advantage.py",
+        "bpo_branching": ROOT / "src/shopping_grpo/training/bpo/branching.py",
+        "bpo_reward": ROOT / "src/shopping_grpo/training/bpo/reward.py",
         "bpo_step0_validation": (
             ROOT / "src/shopping_grpo/training/bpo/step0_validation.py"
         ),
@@ -148,7 +153,7 @@ def _step0_validation_contract(args, *, model, val_data, manifest):
             git_commit=_git_commit(),
             inputs=runtime_inputs,
             settings={
-                "algorithm": "full-bpo-v1",
+                "algorithm": "carl-bpo-v1",
                 "environment_url": str(args.env_url),
                 "reward_profile": "none",
                 "reward_version": "shopsimulator-reward-v4",
@@ -201,12 +206,12 @@ def _overrides(args):
 
 
 def validate_launcher_owned_ray(environ=None):
-    """Reject attachment to a Ray head that lacks the formal BPO job environment."""
+    """Reject attachment to a Ray head that lacks the launcher-owned runtime."""
     environment = os.environ if environ is None else environ
     address = str(environment.get("RAY_ADDRESS", "")).strip()
     if address:
         raise SystemExit(
-            "formal BPO requires a launcher-owned local Ray runtime; stop the "
+            "CARL-BPO requires a launcher-owned local Ray runtime; stop the "
             "manually started Ray head and unset RAY_ADDRESS"
         )
 
@@ -313,7 +318,7 @@ def build(args):
         *_overrides(args),
     ]
     audit = {
-        "algorithm": "full-bpo-v1",
+        "algorithm": "carl-bpo-v1",
         "command": command,
         "model": str(model),
         "train_data": str(train_data),
@@ -352,6 +357,17 @@ def write_contract(environment, audit):
         "bpo_fused_ppo_gradient_patch": (
             ROOT / "src/shopping_grpo/training/bpo/fused_ppo_grad_patch.py"
         ),
+        "bpo_agent_loop": ROOT / "src/shopping_grpo/training/bpo/agent_loop.py",
+        "bpo_advantage": ROOT / "src/shopping_grpo/training/bpo/advantage.py",
+        "bpo_branching": ROOT / "src/shopping_grpo/training/bpo/branching.py",
+        "bpo_reward": ROOT / "src/shopping_grpo/training/bpo/reward.py",
+        "bpo_runtime": ROOT / "src/shopping_grpo/training/bpo/runtime.py",
+        "grpo_dynamic_sampling": (
+            ROOT / "src/shopping_grpo/training/grpo/dynamic_sampling.py"
+        ),
+        "verl_dynamic_sampling_patch": (
+            ROOT / "patches/verl-0.8.0-shopping-dynamic-sampling.patch"
+        ),
         "model_config": Path(audit["model"]) / "config.json",
     }
     status = subprocess.check_output(
@@ -368,7 +384,7 @@ def write_contract(environment, audit):
         encoding="utf-8",
     )
     contract = {
-        "schema_version": "shopping-bpo-run-contract-v1",
+        "schema_version": "shopping-carl-bpo-run-contract-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "git": {
             "commit": subprocess.check_output(
@@ -381,11 +397,15 @@ def write_contract(environment, audit):
             "branch_count": 1,
             "sibling_count": 4,
             "return_budget": 4,
-            "branch_selection": "maximum_exact_entropy",
+            "branch_selection": "stage_target_then_exact_entropy",
+            "group_schedule": ["root", "local"],
+            "local_stage_schedule": (
+                ["product"] * 8 + ["option"] * 7 + ["search_recovery"] * 5
+            ),
             "branch_candidate_policy": "exclude-final-action-v1",
             "entropy_state": "action-boundary-first-token",
             "rollout_audit": "exact-tree-v1",
-            "upstream_lambda": 0.95,
+            "upstream_lambda": 0.0,
             "ppo_clip": 0.2,
             "gpu_memory_utilization": 0.45,
             "max_num_seqs": 8,
@@ -408,14 +428,14 @@ def write_contract(environment, audit):
             "scheduler_horizon": 500,
             "warmup_steps": 10,
             "minimum_lr_ratio": 0.1,
-            "effective_tree_budget": 400,
-            "effective_return_budget": 1600,
+            "effective_tree_budget": 1000,
+            "effective_return_budget": 4000,
             "trees_per_optimizer_step": 2,
             "returns_per_optimizer_step": 8,
-            "maximum_optimizer_steps": 200,
-            "budget_checkpoint_returns": [80, 200, 400, 600, 800, 1000, 1200, 1400, 1600],
-            "checkpoint_steps": [10, 25, 50, 75, 100, 125, 150, 175, 200],
-            "validation_steps": [0, 10, 50, 100, 150, 200],
+            "maximum_optimizer_steps": 500,
+            "budget_checkpoint_returns": [80, 400, 800, 1200, 1600, 2000, 2400, 2800, 3200, 3600, 4000],
+            "checkpoint_steps": [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
+            "validation_steps": [0, 10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
         },
         "inputs": {
             name: {"path": str(Path(path).resolve()), "sha256": _sha256(path)}

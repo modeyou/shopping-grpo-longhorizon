@@ -55,7 +55,7 @@ def test_compact_swanlab_summary_selects_the_decision_metrics():
     assert metrics["summary/purchase_success_rate"] == 0.5
     assert metrics["summary/mean_reward"] == 0.5
     assert metrics["summary/done_rate"] == 1.0
-    assert len(swanlab_key_metrics(metrics)) == 10
+    assert len(swanlab_key_metrics(metrics)) == 11
 
 
 def test_bpo_tree_metrics_capture_branch_diversity_and_return_spread():

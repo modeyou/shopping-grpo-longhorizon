@@ -22,13 +22,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--run-path",
-        default="mode/shopping-multiturn-agentic/4cmh0p3k",
+        default="mode/shopping-multiturn-agentic/carl-bpo-v1-step500-r4000-seed20260823",
         help="SwanLab run path: username/project/run_id",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("outputs/analysis/swanlab-bpo-step200"),
+        default=Path("outputs/analysis/swanlab-carl-bpo-step500"),
     )
     parser.add_argument("--chunk-size", type=int, default=40)
     parser.add_argument(

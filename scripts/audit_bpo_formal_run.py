@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Accept a completed BPO-N200/R1600 run only when its frozen contracts close."""
+"""Accept a completed CARL-BPO run only when its frozen contracts close."""
 
 from __future__ import annotations
 
@@ -34,17 +34,21 @@ def audit(output: Path, log: Path) -> dict:
             raise ValueError(f"required BPO artifact is missing: {path}")
 
     contract = _json(contract_path)
-    if contract.get("schema_version") != "shopping-bpo-run-contract-v1":
-        raise ValueError("unexpected BPO run contract schema")
+    if contract.get("schema_version") != "shopping-carl-bpo-run-contract-v1":
+        raise ValueError("unexpected CARL-BPO run contract schema")
     method = contract.get("frozen_method") or {}
     expected_method = {
-        "effective_tree_budget": 400,
-        "effective_return_budget": 1600,
+        "effective_tree_budget": 1000,
+        "effective_return_budget": 4000,
+        "group_schedule": ["root", "local"],
+        "local_stage_schedule": (
+            ["product"] * 8 + ["option"] * 7 + ["search_recovery"] * 5
+        ),
         "trees_per_optimizer_step": 2,
         "returns_per_optimizer_step": 8,
-        "maximum_optimizer_steps": 200,
-        "checkpoint_steps": [10, 25, 50, 75, 100, 125, 150, 175, 200],
-        "validation_steps": [0, 10, 50, 100, 150, 200],
+        "maximum_optimizer_steps": 500,
+        "checkpoint_steps": [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
+        "validation_steps": [0, 10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
         "scheduler": "cosine",
         "scheduler_horizon": 500,
         "warmup_steps": 10,
@@ -55,9 +59,9 @@ def audit(output: Path, log: Path) -> dict:
             raise ValueError(f"formal BPO contract mismatch: {name}")
     launch = contract.get("launch") or {}
     if launch.get("reward_profile") != "none":
-        raise ValueError("BPO-N200/R1600 must use native Reward v4")
+        raise ValueError("CARL-BPO must use Reward v4 with an explicit train return")
     if int(launch.get("seed", -1)) != 20260823:
-        raise ValueError("BPO-N200/R1600 seed mismatch")
+        raise ValueError("CARL-BPO seed mismatch")
     if launch.get("logger") != "swanlab":
         raise ValueError("formal BPO must use SwanLab")
 
@@ -100,12 +104,12 @@ def audit(output: Path, log: Path) -> dict:
     optimizer_events = [event for event in events if event.get("event") == "optimizer_step"]
     if not optimizer_events:
         raise ValueError("BPO run has no optimizer-step diagnostics")
-    if len(optimizer_events) != 200:
-        raise ValueError("BPO formal run must complete exactly 200 global steps")
+    if len(optimizer_events) != 500:
+        raise ValueError("CARL-BPO formal run must complete exactly 500 global steps")
     if [int(event.get("global_step", -1)) for event in optimizer_events] != list(
-        range(1, 201)
+        range(1, 501)
     ):
-        raise ValueError("BPO optimizer diagnostics must cover global steps 1..200")
+        raise ValueError("CARL-BPO optimizer diagnostics must cover global steps 1..500")
     if any(
         int((event.get("metrics") or {}).get("training/optimizer_updated", 0)) != 1
         for event in optimizer_events
@@ -114,9 +118,9 @@ def audit(output: Path, log: Path) -> dict:
 
     final_metrics = optimizer_events[-1]["metrics"]
     required_final = {
-        "bpo_budget/effective_trees_total": 400,
-        "bpo_budget/effective_returns_total": 1600,
-        "bpo_budget/effective_return_target": 1600,
+        "bpo_budget/effective_trees_total": 1000,
+        "bpo_budget/effective_returns_total": 4000,
+        "bpo_budget/effective_return_target": 4000,
     }
     for name, expected in required_final.items():
         if int(final_metrics.get(name, -1)) != expected:
@@ -134,22 +138,37 @@ def audit(output: Path, log: Path) -> dict:
         "summary/strict_success_rate",
         "summary/purchase_success_rate",
         "summary/mean_reward",
+        "reward/train_return_mean",
         "summary/sampling_invalid_rate",
         "summary/infrastructure_invalid_rate",
         "summary/reward_unverifiable_rate",
         "bpo_branch/relative_position_mean",
         "bpo_branch/entropy_mean",
+        "bpo_group/root_count",
+        "bpo_group/local_count",
+        "bpo_stage/product_count",
+        "bpo_stage/option_count",
+        "bpo_stage/search_recovery_count",
+        "bpo_stage/fallback_count",
+        "bpo_stage/unavailable_count",
         "bpo_diversity/unique_branch_actions_mean",
         "bpo_diversity/unique_tool_sequences_mean",
         "bpo_return/sibling_std_mean",
         "bpo_return/sibling_range_mean",
+        "group/completion_contrast",
+        "group/gold_contrast",
+        "group/failure_utility_contrast",
         "group/effective_ratio",
     }
 
     for event in optimizer_events:
         metrics = event.get("metrics") or {}
         if int(metrics.get("bpo_batch/trees", -1)) != 2:
-            raise ValueError("BPO formal run contains a non-M=2 optimizer batch")
+            raise ValueError("CARL-BPO formal run contains a non-2-group optimizer batch")
+        if int(metrics.get("bpo_batch/root_groups", -1)) != 1:
+            raise ValueError("CARL-BPO formal run requires one Root group per optimizer batch")
+        if int(metrics.get("bpo_batch/local_groups", -1)) != 1:
+            raise ValueError("CARL-BPO formal run requires one Local group per optimizer batch")
         if int(metrics.get("bpo_batch/sibling_returns", -1)) != 8:
             raise ValueError("BPO formal run contains a non-R8 optimizer batch")
         if int(metrics.get("bpo_batch/full_batch", -1)) != 1:
@@ -189,14 +208,14 @@ def audit(output: Path, log: Path) -> dict:
     checkpoints = sorted(
         path for path in output.glob("global_step_*") if path.is_dir()
     )
-    if len(checkpoints) < 9:
-        raise ValueError("formal BPO requires step 10 plus every-25-step checkpoints")
+    if len(checkpoints) < 11:
+        raise ValueError("CARL-BPO requires step 10 plus every-50-step checkpoints")
 
     return {
         "status": "accepted",
         "optimizer_steps": len(optimizer_events),
-        "effective_trees": 400,
-        "effective_returns": 1600,
+        "effective_trees": 1000,
+        "effective_returns": 4000,
         "generated_response_tokens": generated_tokens,
         "backbone_rollouts": backbone,
         "branch_rollouts": branches,
@@ -215,7 +234,7 @@ def main():
     except ValueError as exc:
         raise SystemExit(f"BPO FORMAL AUDIT FAILED: {exc}") from exc
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    print("BPO-N200-R1600 FORMAL RUN ACCEPTED")
+    print("CARL-BPO-N500-R4000 FORMAL RUN ACCEPTED")
 
 
 if __name__ == "__main__":
