@@ -1,5 +1,13 @@
 # BPO 正式方案与运行手册
 
+> **适用范围**：本文记录已经完成的 `full-bpo-v1`（200 steps / 400 trees /
+> 1600 sibling returns）实现与运行证据。当前 `feat/bpo2` 分支中的
+> `configs/bpo.yaml`、`scripts/bpo.sh` 和 `scripts/train_bpo.py` 已切换到
+> CARL-BPO（500 steps / Root+Local / 4000 accepted returns）。因此本文第5至9节的
+> 旧训练、导出和分支切换命令不得用于新运行；CARL-BPO 的唯一运行手册见
+> [`carl-bpo.md` 第16节](carl-bpo.md#16-当前实现与-linux-运行手册)。本文的快照、补丁、
+> 显存和故障分析仍作为共享基础设施说明。
+
 本文只描述本项目独立的 BPO 路线。BPO 使用自己的配置、运行入口和输出目录，
 不覆盖 GRPO checkpoint，也不修改 `configs/grpo.yaml`。
 

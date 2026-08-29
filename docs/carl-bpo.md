@@ -356,9 +356,9 @@ step 0 只有 validation；step 10 是早期健康门槛。候选 checkpoint 至
 | 同时提高 LR | 延期 | 无法区分信号修复与更新强度影响 |
 | learned critic / PRM / MCTS | 延期 | 增加模型、标注、显存和验证复杂度 |
 
-## 11. 实现边界
+## 11. 实现边界与落地状态
 
-若用户确认实施，预计需要审查或修改：
+训练实现已经落地在：
 
 ```text
 configs/bpo.yaml
@@ -369,13 +369,15 @@ scripts/audit_bpo_formal_run.py
 src/shopping_grpo/training/bpo/agent_loop.py
 src/shopping_grpo/training/bpo/branching.py
 src/shopping_grpo/training/bpo/advantage.py
+src/shopping_grpo/training/bpo/reward.py
 src/shopping_grpo/training/bpo/runtime.py
 src/shopping_grpo/training/grpo/dynamic_sampling.py
+patches/verl-0.8.0-shopping-dynamic-sampling.patch
 相关 tests
 ```
 
 实现不得改变 Environment v2.1、Reward v4、observation v2、tool schema v2、数据 manifest
-或训练/评测零重叠契约。本文不构成实施授权。
+或训练/评测零重叠契约。实现落地不构成启动训练、合并模型或运行 final200 的授权。
 
 ## 12. SwanLab 可观测性方案
 
@@ -406,15 +408,30 @@ SwanLab config 和本地 run contract 必须共同记录：
 - fused/remove-padding/Liger 及 reference-equivalence 结果；
 - Shopper model、endpoint identity 和公开超参数，但不记录 API key。
 
-正式启动前必须完成 SwanLab API 真鉴权。仅有环境变量不算通过；401/403、连接失败或无法创建
-最小 run 时应在模型加载前终止。运行结束由主线程显式、幂等调用 `finish()`，并核对云端最后
-step、validation、checkpoint 和本地日志一致。
+正式启动前必须完成 SwanLab API 真鉴权。仅有环境变量不算通过；登录接口返回失败或连接异常
+时应在模型加载前终止。实际 run 由 veRL logger 在训练进程中创建。运行结束由主线程显式、
+幂等调用 `finish()`，并核对云端最后 step、validation、checkpoint 和本地日志一致。
 
 ### 12.2 指标命名空间
 
-训练指标按以下层级组织，避免所有曲线混在 `reward` 或 `loss` 下。
+底层字段继续使用 `bpo_*`，因为 Root/Local 都复用 BPO 的 sibling、快照和 PPO 适配契约；
+CARL 专属预算和候选采样同时提供 `carl_*` 别名。当前实现的稳定命名如下：
 
-#### A. 预算与成本：`carl_budget/*`、`carl_cost/*`
+| 证据 | 当前稳定命名 |
+|---|---|
+| CARL预算 | `carl_budget/*`，并保留兼容审计所需的 `bpo_budget/*` |
+| 候选采样 | `carl_sampling/*`、`group/*`、`bpo_sampling/*` |
+| Root/Local与阶段 | `bpo_group/*`、`bpo_stage/*`、`bpo_branch/*` |
+| return | `reward/train_return_*`、`bpo_return/*`，native事实在 `summary/*` |
+| 实际生成成本 | `bpo_cost/*`、`rollout/*` |
+| mask、LOO和树级信用 | 本地 `bpo_actor_batch` 与 optimizer-step diagnostics |
+| PPO与优化器 | veRL原生 `actor/*`、`training/*` 加本地 optimizer audit |
+| 确定性验证 | `val-shopping/*` |
+
+不得为了名字整齐重复上传同一批高频标量。SwanLab 保存聚合曲线；逐树 return、LOO、mask、
+prefix hash、梯度张量计数和参数 delta 以 `training_diagnostics.jsonl` 与完整日志为权威证据。
+
+#### A. 预算与成本：`carl_budget/*`、`bpo_cost/*`、`rollout/*`
 
 - optimizer step；
 - accepted Root/Local groups 单步与累计值；
@@ -427,60 +444,67 @@ step、validation、checkpoint 和本地日志一致。
 SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` 只表示进入 optimizer 的
 4000 个 returns，不能隐藏被筛掉候选所消耗的 rollout、token 和外部 API 成本。
 
-#### B. 采样组成：`carl_sampling/*`
+#### B. 采样组成：`carl_sampling/*`、`bpo_sampling/*`、`group/*`
 
-- candidate/accepted Root 与 Local 数量；
+- candidate groups 总量与每步 accepted Root/Local 数量；
 - completion、gold、failure、constant 和 invalid candidate 数量；
 - goal-contrast accepted share；
-- failure fallback 数量与比例；
 - generation batches per step、max-batch hit 和 slow-batch warning；
 - sibling train-return range、unique branch actions、unique tool sequences；
-- Root/Local candidate acceptance rate，不能只报全局平均。
+- Root/Local 的累计 accepted 数量。
 
-#### C. Local 阶段：`carl_stage/*`
+当前补丁没有稳定导出“按 Root/Local 拆分的全部候选数”，因此不能从总 candidate groups 反推
+两类 acceptance rate；需要时应从本地 rollout diagnostics 离线统计，不能把 accepted 50/50
+误写成候选供给50/50。
+
+#### C. Local 阶段：`bpo_stage/*`、`bpo_branch/*`
 
 对 `product`、`option`、`search_recovery` 分别记录：
 
-- candidate、accepted 和 goal-contrast group 数；
-- rolling accepted share；
-- `stage_unavailable`、cross-stage fallback 和 drop 数；
+- accepted group 数与由历史曲线计算的 rolling accepted share；
+- `stage_unavailable` 和 cross-stage fallback 数；
 - entropy、分叉相对位置和 prefix step 分布。
 
 面板同时显示软目标 `40/35/25` 与实际滚动比例，不能只记录最终累计值。
 
-#### D. Return 与信用：`carl_return/*`、`carl_advantage/*`
+#### D. Return 与信用：`reward/*`、`bpo_return/*` 与本地 LOO 审计
 
 - Reward v4 native utility 与 CARL `train_return` 分开记录；
 - gold、valid alternative、partial、wrong、repeat、model failure 计数；
 - Root/Local train-return mean/min/max/range；
-- completion、gold、failure contrast 的绝对 LOO advantage mass及share；
+- completion、gold、failure contrast 的绝对 LOO advantage mass及share，由逐组 return 和
+  `contrast_type` 离线重算；
 - Root/Local 非零 advantage group 和 token 比例；
 - 每组 `loo_sum_abs_max`；
 - 正、负 advantage mass只作诊断，不用于重加权。
 
 不得把训练 return 命名为 Reward v4 total，避免训练目标与评测事实判定混淆。
 
-#### E. Mask 与 loss：`carl_mask/*`、`carl_loss/*`
+#### E. Mask 与 loss：本地 actor-batch 审计与 veRL `actor/*`
 
 - Root first-action trainable coverage；
 - Root/Local active policy tokens；
 - Local prefix nonzero policy tokens；
 - observation/padding nonzero policy tokens；
-- Root group loss、Local group loss、两者等权后的 total loss；
-- PPO ratio、clipfrac、approx KL 和 entropy；
+- 联合 batch 的标准 token-mean actor loss、PPO ratio、clipfrac 和 approx KL；
+- Root/Local 等权由两组 policy-weight sum、mask support 和单元测试审计，不伪造两个独立
+  fused minibatch loss；
 - fused/reference loss difference（只在审计步骤记录）。
 
 `approx KL` 必须标注为新旧policy的PPO batch诊断，不能写成对SFT-325的reference KL。
 若增加只读的policy-to-SFT drift指标，应使用独立命名 `carl_drift/sft_reference_kl`。
 
-#### F. 优化器：`carl_optimizer/*`
+#### F. 优化器：veRL `training/*`、`actor/*` 与本地 optimizer audit
 
 - actual learning rate及scheduler progress；
 - gradient norm；
-- nonzero-gradient parameter count；
-- LoRA parameter delta norm；
+- 首个合格更新的 nonzero-gradient parameter count 和 changed-parameter count；
 - clipfrac与gradient norm的滚动统计；
 - skipped update、NaN/Inf和overflow计数。
+
+参数级梯度与 delta 审计只在首次更新及首个正学习率更新执行，避免每步复制 FSDP 参数造成额外
+开销；普通 step 使用 veRL 聚合优化指标。当前审计记录 changed-parameter tensor count，不宣称
+提供每步 LoRA delta norm。
 
 500-step horizon下必须画出真实LR，而不是只在run config中记录peak `1e-6`。
 
@@ -488,8 +512,9 @@ SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` �
 
 在 step `0/10/50/.../500` 记录：
 
-- `gold_success_rate`；
-- `combined_completion_rate`；
+- `summary/strict_success_rate`，对应有效 `gold_purchase`；
+- `summary/purchase_success_rate` 与其等价别名 `summary/combined_completion_rate`，对应
+  `gold_purchase + valid_alternative_purchase`；
 - native terminal utility；
 - reward-valid、done、invalid、unverifiable和model failure；
 - partial、wrong、repeat、max-steps；
@@ -563,8 +588,8 @@ outputs/analysis/<run-tag>/swanlab-history.json
 outputs/analysis/<run-tag>/swanlab-analysis.md
 ```
 
-实现CARL-BPO时必须把history exporter的decision steps从旧
-`0/10/50/100/150/200`扩展到`0/10/50/.../500`，并让重要指标过滤器识别 `carl_*`。
+history exporter 已把 decision steps 从旧 `0/10/50/100/150/200` 扩展到
+`0/10/50/.../500`，重要指标过滤器同时识别 `bpo_*` 与 `carl_*`。
 
 完整性审计要求：
 
@@ -805,3 +830,183 @@ gain/loss 转移表。
 - POAD：action/token 粒度需要严格推导，不能用简单 action mean 替代；CARL-BPO 第一版
   保留标准 token PPO。
   <https://proceedings.neurips.cc/paper_files/paper/2024/hash/bc09efb501c801ed92e181e26a885c2d-Abstract-Conference.html>
+
+## 16. 当前实现与 Linux 运行手册
+
+本节是当前 `feat/bpo2` 的唯一可执行 CARL-BPO 手册。`bpo.md` 中的 200-step、R1600、
+`M=2` 和手写 Hydra smoke override 属于已完成的 `full-bpo-v1`，不得复制到新运行。
+
+### 16.1 继承的底层运行契约
+
+CARL-BPO 改变采样拓扑、训练 return、mask 和组间 loss 权重，但继续继承已经验证的基础设施：
+
+- `verl==0.8.0`，先安装 dynamic-sampling/tracking patch，再安装 entropy、XML parser 和
+  fused-PPO gradient patch；
+- 四张干净的24GB GPU，`CUDA_VISIBLE_DEVICES` 映射后每张至少20GiB空闲；
+- `fused=true + remove-padding=true + Liger=true`，vLLM `0.45/8`；
+- launcher 独占并创建本地 Ray runtime，拒绝非空 `RAY_ADDRESS`；
+- ShopSimulator Environment v2.1，且服务端必须包含 snapshot/clone/session-reset 修复；
+- Reward v4、observation v2、tool schema v2 和 formal-v2 manifest；
+- 输出目录必须不存在或为空，诊断和正式训练不得复用目录；
+- Shopper 与 SwanLab 在加载训练权重前进行真实鉴权；
+- step-0 validation 使用按输入哈希寻址的 cache，不能无条件复用旧结果。
+
+若机器上曾手动执行 `ray start`，先确认没有其他任务依赖该 Ray 集群，再使用同一 Python 环境的
+`ray stop --force`，并执行 `unset RAY_ADDRESS`。不要停止不属于本次训练的 Ray 或 GPU 任务。
+
+### 16.2 环境与补丁
+
+```bash
+cd /path/to/shopping-grpo-longhorizon
+
+git fetch origin
+git switch feat/bpo2
+git pull --ff-only origin feat/bpo2
+
+export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+unset RAY_ADDRESS
+
+export BPO_MODEL="$PWD/outputs/models/sft-checkpoint-sweep-dev200-v1/checkpoint-325"
+export SHOPPER_MODEL=deepseek-v4-flash-0731
+export SHOPPER_BASE_URL='https://your-endpoint/compatible-mode/v1'
+
+read -rsp 'SHOPPER_API_KEY: ' SHOPPER_API_KEY
+echo
+export SHOPPER_API_KEY
+
+read -rsp 'SWANLAB_API_KEY: ' SWANLAB_API_KEY
+echo
+export SWANLAB_API_KEY
+
+"$GRPO_PYTHON" scripts/apply_verl_dynamic_sampling_patch.py
+"$GRPO_PYTHON" scripts/apply_verl_bpo_patch.py
+"$GRPO_PYTHON" scripts/apply_verl_dynamic_sampling_patch.py --check
+"$GRPO_PYTHON" scripts/apply_verl_bpo_patch.py --check
+```
+
+补丁修改当前虚拟环境中的 veRL 源码并建立可验证备份，不属于 Git 工作区。升级 veRL、切换虚拟
+环境或恢复补丁后必须重新应用并通过 `--check`。补丁脚本拒绝未知源码哈希，不得绕过。
+
+### 16.3 不训练预检
+
+预检会访问 ShopSimulator、Shopper API 和 SwanLab，并用临时文件验证 step-0 cache 的写入与
+回放钩子；正式的内容寻址 cache 由实际 step-0 validation 生成。预检不执行 optimizer update，
+也不产生候选模型。每次使用新的空输出目录：
+
+```bash
+export CARL_PREFLIGHT_NAME="carl-bpo-v1-preflight-$(date +%Y%m%d-%H%M%S)"
+export CARL_PREFLIGHT_OUT="$PWD/outputs/bpo/$CARL_PREFLIGHT_NAME"
+
+bash scripts/bpo.sh \
+  --model "$BPO_MODEL" \
+  --output "$CARL_PREFLIGHT_OUT" \
+  --experiment-name "$CARL_PREFLIGHT_NAME" \
+  --logger swanlab \
+  --seed 20260823 \
+  --shopper-model "$SHOPPER_MODEL" \
+  --shopper-base-url "$SHOPPER_BASE_URL" \
+  --preflight-only
+```
+
+通过标志为最后出现 `BPO runtime preflight passed`，同时此前所有 manifest、patch、snapshot、
+fused gradient、scheduler、step-0 cache、GPU headroom 和 API 鉴权检查均成功。
+
+### 16.4 1-step 真实更新诊断
+
+使用启动器拥有的 `--diagnostic-steps 1`，不要再传旧文档中的四个 Hydra override。1-step
+本身创建独立的 SwanLab run，并上传该步的聚合训练指标与系统指标；逐树、mask、梯度和参数
+delta 仍保存在本地日志与 diagnostics。该模式关闭 validation/checkpoint，只验证一个完整
+`1 Root + 1 Local` optimizer update：
+
+```bash
+export CARL_DIAG_NAME="carl-bpo-v1-diagnostic1-$(date +%Y%m%d-%H%M%S)"
+export CARL_DIAG_OUT="$PWD/outputs/models/$CARL_DIAG_NAME"
+export CARL_DIAG_LOG="$PWD/outputs/bpo/logs/$CARL_DIAG_NAME.log"
+export CARL_DIAG_PID_FILE="${CARL_DIAG_LOG%.log}.pid"
+
+mkdir -p "$CARL_DIAG_OUT" "$(dirname "$CARL_DIAG_LOG")"
+
+nohup bash scripts/bpo.sh \
+  --model "$BPO_MODEL" \
+  --output "$CARL_DIAG_OUT" \
+  --experiment-name "$CARL_DIAG_NAME" \
+  --logger swanlab \
+  --seed 20260823 \
+  --shopper-model "$SHOPPER_MODEL" \
+  --shopper-base-url "$SHOPPER_BASE_URL" \
+  --diagnostic-steps 1 \
+  >"$CARL_DIAG_LOG" 2>&1 </dev/null &
+
+CARL_DIAG_PID=$!
+printf '%s\n' "$CARL_DIAG_PID" >"$CARL_DIAG_PID_FILE"
+tail -F "$CARL_DIAG_LOG"
+```
+
+开始正式训练前，日志和 `training_diagnostics.jsonl` 必须共同证明 V4 的8条 terminal returns、
+Root/Local mask、两组非零 LOO、有限 loss、非零 gradient 和首个正学习率 step 的参数 delta。
+`nohup` 进程退出码本身不证明更新成功。
+
+### 16.5 正式 500-step 训练
+
+正式运行必须使用新的空目录。不要覆盖诊断目录，不要传 `trainer.total_training_steps`、Reward、
+LR、Root/Local 比例或 checkpoint 频率 override：
+
+```bash
+export CARL_NAME="carl-bpo-v1-step500-r4000-seed20260823-$(date +%Y%m%d-%H%M%S)"
+export CARL_OUT="$PWD/outputs/models/$CARL_NAME"
+export CARL_LOG="$PWD/outputs/bpo/logs/$CARL_NAME.log"
+export CARL_PID_FILE="${CARL_LOG%.log}.pid"
+
+mkdir -p "$CARL_OUT" "$(dirname "$CARL_LOG")"
+
+nohup bash scripts/bpo.sh \
+  --model "$BPO_MODEL" \
+  --output "$CARL_OUT" \
+  --experiment-name "$CARL_NAME" \
+  --logger swanlab \
+  --seed 20260823 \
+  --shopper-model "$SHOPPER_MODEL" \
+  --shopper-base-url "$SHOPPER_BASE_URL" \
+  >"$CARL_LOG" 2>&1 </dev/null &
+
+CARL_PID=$!
+printf '%s\n' "$CARL_PID" >"$CARL_PID_FILE"
+echo "CARL_PID=$CARL_PID"
+tail -F "$CARL_LOG"
+```
+
+默认配置已经冻结500 optimizer steps、1000 accepted groups、4000 accepted returns、10-step
+warmup 和500-step cosine horizon。500是上限，不代表自动选择 `global_step_500`。
+
+### 16.6 完成后审计与 SwanLab 导出
+
+训练进程正常退出后，先审计完整运行契约；审计不会合并或导出模型：
+
+```bash
+"$GRPO_PYTHON" scripts/audit_bpo_formal_run.py \
+  --output "$CARL_OUT" \
+  --log "$CARL_LOG"
+```
+
+唯一完整通过标志是：
+
+```text
+CARL-BPO-N500-R4000 FORMAL RUN ACCEPTED
+```
+
+随后用 SwanLab 页面显示的真实 `username/project/run_id` 导出全部标量：
+
+```bash
+export CARL_SWAN_RUN='username/shopping-multiturn-agentic/run_id'
+export CARL_ANALYSIS_OUT="$PWD/outputs/analysis/$CARL_NAME"
+
+"$GRPO_PYTHON" scripts/export_swanlab_run_metrics.py \
+  --run-path "$CARL_SWAN_RUN" \
+  --output-dir "$CARL_ANALYSIS_OUT" \
+  --all-custom
+```
+
+审计通过后仍只按 V6 使用冻结 validation 选择一个 checkpoint。未经再次确认，不合并模型、
+不执行 dev500 配对评测，也不使用 final200。

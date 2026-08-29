@@ -36,11 +36,10 @@ clarification-specific metrics used for Base/SFT/GRPO comparison.
 the Reward v4 development baseline and subsequent SFT/GRPO paired results; it
 is intentionally separate from the original reference artifacts in `experiments/`.
 
-[CARL-BPO improvement plan](carl-bpo.md) defines the proposed
-completion-aligned Root/Local RL design, the components deliberately removed
-from the first version, its SwanLab observability contract, and the staged
-validation and acceptance gates. It is a design document and does not authorize
-training or model selection.
+[CARL-BPO implementation and validation plan](carl-bpo.md) defines the landed
+completion-aligned Root/Local RL design, its Linux runbook, SwanLab and local
+audit contracts, and the staged validation and acceptance gates. The landed
+implementation does not by itself authorize training or model selection.
 
 [Training, Reward and evaluation decisions](training-reward-evaluation-decisions.md)
 is the consolidated Chinese study note for the development/test split, five
