@@ -50,6 +50,39 @@ class VerlPatchScriptTest(unittest.TestCase):
             check=False,
         )
 
+    def test_patch_hunk_metadata_is_internally_consistent(self):
+        patcher.validate_unified_diff_hunks(patcher.PATCH_FILE)
+
+    def test_patch_hunk_validation_rejects_stale_counts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            malformed = Path(temp_dir) / "malformed.patch"
+            malformed.write_text(
+                "--- a/example.py\n"
+                "+++ b/example.py\n"
+                "@@ -1,0 +2,1 @@\n"
+                "+first\n"
+                "+second\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "hunk counts"):
+                patcher.validate_unified_diff_hunks(malformed)
+
+    def test_patch_hunk_validation_rejects_stale_offsets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            malformed = Path(temp_dir) / "malformed.patch"
+            malformed.write_text(
+                "--- a/example.py\n"
+                "+++ b/example.py\n"
+                "@@ -1,0 +2,1 @@\n"
+                "+first\n"
+                "@@ -2 +2 @@\n"
+                "-old\n"
+                "+new\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "hunk offset"):
+                patcher.validate_unified_diff_hunks(malformed)
+
     def test_apply_is_idempotent_and_restore_recovers_original(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "ray_trainer.py"

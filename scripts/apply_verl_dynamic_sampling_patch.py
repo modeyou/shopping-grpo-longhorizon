@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import py_compile
+import re
 import shutil
 import subprocess
 import sys
@@ -47,6 +48,10 @@ BPO_COMPATIBILITY_NEW = '''            dynamic_adv_estimator = (
                 )
 '''
 
+HUNK_HEADER_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
+)
+
 
 def load_tracking_patcher():
     """Load the sibling tracking lifecycle installer by path."""
@@ -69,6 +74,54 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def validate_unified_diff_hunks(path: Path) -> None:
+    """Reject stale hunk counts/offsets before GNU patch can misplace code."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    cumulative_delta = 0
+    index = 0
+    hunk_count = 0
+    while index < len(lines):
+        match = HUNK_HEADER_RE.match(lines[index])
+        if match is None:
+            index += 1
+            continue
+        hunk_count += 1
+        old_start = int(match.group(1))
+        old_count = int(match.group(2)) if match.group(2) is not None else 1
+        new_start = int(match.group(3))
+        new_count = int(match.group(4)) if match.group(4) is not None else 1
+        actual_old = 0
+        actual_new = 0
+        index += 1
+        while index < len(lines) and not lines[index].startswith("@@ "):
+            line = lines[index]
+            if line.startswith(("--- ", "+++ ")):
+                break
+            if line.startswith((" ", "-")):
+                actual_old += 1
+            if line.startswith((" ", "+")):
+                actual_new += 1
+            index += 1
+        if (old_count, new_count) != (actual_old, actual_new):
+            raise RuntimeError(
+                "malformed dynamic-sampling patch hunk counts: "
+                f"{match.group(0)!r} declares {old_count}/{new_count}, "
+                f"contains {actual_old}/{actual_new}"
+            )
+        expected_new_start = old_start + cumulative_delta
+        if old_count == 0:
+            expected_new_start += 1
+        if new_start != expected_new_start:
+            raise RuntimeError(
+                "malformed dynamic-sampling patch hunk offset: "
+                f"{match.group(0)!r} targets {new_start}, "
+                f"expected {expected_new_start}"
+            )
+        cumulative_delta += new_count - old_count
+    if hunk_count == 0:
+        raise RuntimeError(f"dynamic-sampling patch contains no hunks: {path}")
 
 
 def resolve_installed_ray_trainer() -> Path:
@@ -152,6 +205,7 @@ def expected_patched_sha256(target: Path) -> str:
         )
     if not PATCH_FILE.is_file():
         raise RuntimeError(f"patch file is missing: {PATCH_FILE}")
+    validate_unified_diff_hunks(PATCH_FILE)
     patch_program = shutil.which("patch")
     if patch_program is None:
         raise RuntimeError("required system 'patch' executable is unavailable")
