@@ -423,7 +423,9 @@ def write_contract(environment, audit):
             "dataloader_num_workers": 0,
             "tolerant_xml_parameter_parser": True,
             "fused_ppo_input_gradient_backport": "ctx-needs-input-grad-v1",
-            "optimizer_update_audit": "first-step-nonzero-gradient-and-delta-v1",
+            "optimizer_update_audit": (
+                "startup-hard-gate-first-gradient-and-positive-lr-delta-v1"
+            ),
             "scheduler": "cosine",
             "scheduler_horizon": 500,
             "warmup_steps": 10,

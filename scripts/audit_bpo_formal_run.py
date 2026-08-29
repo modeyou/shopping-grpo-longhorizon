@@ -53,6 +53,9 @@ def audit(output: Path, log: Path) -> dict:
         "scheduler_horizon": 500,
         "warmup_steps": 10,
         "minimum_lr_ratio": 0.1,
+        "optimizer_update_audit": (
+            "startup-hard-gate-first-gradient-and-positive-lr-delta-v1"
+        ),
     }
     for name, expected in expected_method.items():
         if method.get(name) != expected:

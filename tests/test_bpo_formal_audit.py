@@ -58,6 +58,9 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
             "scheduler_horizon": 500,
             "warmup_steps": 10,
             "minimum_lr_ratio": 0.1,
+            "optimizer_update_audit": (
+                "startup-hard-gate-first-gradient-and-positive-lr-delta-v1"
+            ),
         },
         "step0_validation": {
             "reuse_policy": "exact-contract-sha256-v1",
@@ -139,6 +142,19 @@ def test_formal_audit_accepts_closed_r4000_contract(tmp_path):
     result = audit(output, log)
     assert result["status"] == "accepted"
     assert result["effective_returns"] == 4000
+
+
+def test_formal_audit_rejects_nonblocking_optimizer_contract(tmp_path):
+    output, log = _write_run(tmp_path)
+    contract_path = output / "run_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["frozen_method"]["optimizer_update_audit"] = (
+        "first-step-nonzero-gradient-and-delta-v1"
+    )
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="optimizer_update_audit"):
+        audit(output, log)
 
 
 def test_formal_audit_rejects_budget_or_tree_cost_mismatch(tmp_path):

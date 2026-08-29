@@ -291,7 +291,7 @@ def _global_audit_counts(torch, values, device):
 
 
 def install_optimizer_update_audit():
-    """Require gradients immediately and a delta at the first positive LR."""
+    """Hard-gate startup gradients and the first positive-LR parameter delta."""
     from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
 
     current = FSDPEngine.optimizer_step
@@ -405,6 +405,8 @@ def install_optimizer_update_audit():
             warning_reasons.append("no_trainable_parameters")
         if global_nonfinite > 0:
             warning_reasons.append("nonfinite_gradients")
+        if not math.isfinite(float(reported_grad_norm)):
+            warning_reasons.append("nonfinite_reported_grad_norm")
         if global_nonzero_grad <= 0 or global_grad_squared_sum <= 0.0:
             warning_reasons.append("no_nonzero_gradients")
         if parameter_delta_required and global_changed <= 0:
@@ -417,7 +419,7 @@ def install_optimizer_update_audit():
                 "BPO optimizer audit warning: "
                 + json.dumps(
                     {
-                        "non_blocking": True,
+                        "blocking": True,
                         "reasons": warning_reasons,
                     },
                     sort_keys=True,
@@ -437,6 +439,11 @@ def install_optimizer_update_audit():
                 -1,
                 audit=audit,
                 phase="optimizer_step",
+            )
+        if warning_reasons:
+            raise RuntimeError(
+                "CARL-BPO startup optimizer gate failed: "
+                + ", ".join(warning_reasons)
             )
         gradient_accepted = (
             global_trainable > 0

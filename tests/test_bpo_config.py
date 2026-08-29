@@ -383,7 +383,7 @@ def test_optimizer_audit_defers_parameter_delta_gate_until_positive_lr(
     assert '"parameter_delta_required": true' in output
 
 
-def test_optimizer_audit_warns_without_blocking_zero_gradient(monkeypatch, capsys):
+def test_optimizer_audit_blocks_zero_gradient(monkeypatch, capsys):
     import torch
 
     class _FSDPEngine:
@@ -404,15 +404,16 @@ def test_optimizer_audit_warns_without_blocking_zero_gradient(monkeypatch, capsy
     engine.module.register_parameter("weight", parameter)
     engine.optimizer = torch.optim.SGD([parameter], lr=0.1)
 
-    assert engine.optimizer_step() == 0.0
+    with pytest.raises(RuntimeError, match="no_nonzero_gradients"):
+        engine.optimizer_step()
     output = capsys.readouterr().out
     assert "BPO optimizer audit warning" in output
     assert '"no_nonzero_gradients"' in output
-    assert '"non_blocking": true' in output
+    assert '"blocking": true' in output
     assert not hasattr(engine, "_shopping_bpo_optimizer_audited")
 
 
-def test_optimizer_audit_warns_without_blocking_missing_positive_lr_delta(
+def test_optimizer_audit_blocks_missing_positive_lr_delta(
     monkeypatch, capsys
 ):
     import torch
@@ -434,10 +435,40 @@ def test_optimizer_audit_warns_without_blocking_missing_positive_lr_delta(
     engine.module.register_parameter("weight", parameter)
     engine.optimizer = torch.optim.SGD([parameter], lr=0.1)
 
-    assert engine.optimizer_step() == 2.0
+    with pytest.raises(RuntimeError, match="no_parameter_delta_at_positive_lr"):
+        engine.optimizer_step()
     output = capsys.readouterr().out
     assert '"no_parameter_delta_at_positive_lr"' in output
-    assert '"non_blocking": true' in output
+    assert '"blocking": true' in output
+    assert not hasattr(engine, "_shopping_bpo_optimizer_audited")
+
+
+def test_optimizer_audit_blocks_nonfinite_reported_grad_norm(monkeypatch, capsys):
+    import torch
+
+    class _FSDPEngine:
+        def optimizer_step(self):
+            self.optimizer.step()
+            return float("nan")
+
+    transformer = types.ModuleType("verl.workers.engine.fsdp.transformer_impl")
+    transformer.FSDPEngine = _FSDPEngine
+    monkeypatch.setitem(sys.modules, transformer.__name__, transformer)
+    monkeypatch.setenv("SHOPPING_BPO_REQUIRE_PARAMETER_UPDATE", "1")
+
+    install_optimizer_update_audit()
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    parameter.grad = torch.tensor([2.0])
+    engine = _FSDPEngine()
+    engine.module = torch.nn.Module()
+    engine.module.register_parameter("weight", parameter)
+    engine.optimizer = torch.optim.SGD([parameter], lr=0.1)
+
+    with pytest.raises(RuntimeError, match="nonfinite_reported_grad_norm"):
+        engine.optimizer_step()
+    output = capsys.readouterr().out
+    assert '"nonfinite_reported_grad_norm"' in output
+    assert '"blocking": true' in output
     assert not hasattr(engine, "_shopping_bpo_optimizer_audited")
 
 

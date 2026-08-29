@@ -340,6 +340,9 @@ step 0、10、50、100、150、200、250、300、350、400、450、500
 
 step 0 只有 validation；step 10 是早期健康门槛。候选 checkpoint 至少保留 step 10 与之后
 每50步的版本，直到按预注册规则完成选择，不能因默认 checkpoint retention 提前删除早期峰值。
+step-0 validation 继续保留：它给出同一模型哈希、同一400-row validation parquet 和同一
+harness 下的 SFT-325 起点，使后续曲线能够判断净提升。结果按完整输入 contract SHA256 缓存；
+精确命中时只回放标量，不重新生成400条轨迹，任一模型、数据、配置或运行实现变化都会换 key。
 
 ## 10. 明确删除或延期的组件
 
@@ -565,7 +568,7 @@ Local prefix或observation出现非零policy token
 Root first-action trainable coverage < 100%
 LOO sum abs max > 1e-6
 skipped update、NaN/Inf
-首步无非零gradient或参数delta
+首步无非零gradient，或首个正学习率step无参数delta
 ```
 
 以下为窗口告警，不单凭一条曲线自动宣告训练失败：
@@ -688,10 +691,10 @@ gradient norm relative error  <= 1%
 
 不满足时优先使用 reference 路径定位，不得以“loss 有限”替代等价验证。
 
-### V4：1-step runtime/gradient 审计
+### V4：正式运行的启动硬门槛
 
-此阶段需要用户明确授权，但不是正式训练。只运行一个 optimizer step，不保存可用于评测的正式
-模型，不启动 dev500/final200。
+不再要求单独启动 1-step smoke。正式 SwanLab run 在 step-0 validation 后直接进入训练，并把
+最初更新作为硬门槛；无需重复初始化模型、Ray、ShopSimulator 或外部日志。
 
 必须观察到：
 
@@ -714,7 +717,10 @@ skipped updates       = 0
 - snapshot clone、Shopper state、prefix/token 审计全部通过；
 - 无 infrastructure-invalid 和 reward-unverifiable 被送入 optimizer。
 
-任一核心条件失败即阻断正式训练。
+结构、采样、mask、LOO 和有限性契约在第1个 optimizer step 验证，并继续作为每步不变量。
+非零梯度在第1步硬检查。由于10-step warmup的零索引首步学习率可以为0，parameter delta 在
+第1个正学习率 step 硬检查，通常是紧接的下一步；通过后停止昂贵的参数快照审计。任一核心
+条件失败都会抛出异常并终止正式 run，不允许只写 warning 后继续训练。
 
 ### V5：单次正式训练的在线门槛
 
@@ -913,40 +919,11 @@ bash scripts/bpo.sh \
 通过标志为最后出现 `BPO runtime preflight passed`，同时此前所有 manifest、patch、snapshot、
 fused gradient、scheduler、step-0 cache、GPU headroom 和 API 鉴权检查均成功。
 
-### 16.4 1-step 真实更新诊断
+### 16.4 可选的独立 1-step 诊断
 
-使用启动器拥有的 `--diagnostic-steps 1`，不要再传旧文档中的四个 Hydra override。1-step
-本身创建独立的 SwanLab run，并上传该步的聚合训练指标与系统指标；逐树、mask、梯度和参数
-delta 仍保存在本地日志与 diagnostics。该模式关闭 validation/checkpoint，只验证一个完整
-`1 Root + 1 Local` optimizer update：
-
-```bash
-export CARL_DIAG_NAME="carl-bpo-v1-diagnostic1-$(date +%Y%m%d-%H%M%S)"
-export CARL_DIAG_OUT="$PWD/outputs/models/$CARL_DIAG_NAME"
-export CARL_DIAG_LOG="$PWD/outputs/bpo/logs/$CARL_DIAG_NAME.log"
-export CARL_DIAG_PID_FILE="${CARL_DIAG_LOG%.log}.pid"
-
-mkdir -p "$CARL_DIAG_OUT" "$(dirname "$CARL_DIAG_LOG")"
-
-nohup bash scripts/bpo.sh \
-  --model "$BPO_MODEL" \
-  --output "$CARL_DIAG_OUT" \
-  --experiment-name "$CARL_DIAG_NAME" \
-  --logger swanlab \
-  --seed 20260823 \
-  --shopper-model "$SHOPPER_MODEL" \
-  --shopper-base-url "$SHOPPER_BASE_URL" \
-  --diagnostic-steps 1 \
-  >"$CARL_DIAG_LOG" 2>&1 </dev/null &
-
-CARL_DIAG_PID=$!
-printf '%s\n' "$CARL_DIAG_PID" >"$CARL_DIAG_PID_FILE"
-tail -F "$CARL_DIAG_LOG"
-```
-
-开始正式训练前，日志和 `training_diagnostics.jsonl` 必须共同证明 V4 的8条 terminal returns、
-Root/Local mask、两组非零 LOO、有限 loss、非零 gradient 和首个正学习率 step 的参数 delta。
-`nohup` 进程退出码本身不证明更新成功。
+`--diagnostic-steps 1` 入口继续保留给故障定位，但不再是正式训练的前置阶段。若人工调用，它会
+建立独立 SwanLab run、关闭 validation/checkpoint，并使用与正式运行相同的启动硬门槛；正常
+流程直接执行下一节。不要使用旧 `bpo.md` 的手写 Hydra override。
 
 ### 16.5 正式 500-step 训练
 
@@ -978,7 +955,9 @@ tail -F "$CARL_LOG"
 ```
 
 默认配置已经冻结500 optimizer steps、1000 accepted groups、4000 accepted returns、10-step
-warmup 和500-step cosine horizon。500是上限，不代表自动选择 `global_step_500`。
+warmup 和500-step cosine horizon。正式 run 会先执行或精确复用 step-0 validation，随后在同一
+SwanLab run 内对首步非零梯度和首个正学习率参数 delta 执行硬门槛。通过后继续训练；失败则
+立即退出。500是上限，不代表自动选择 `global_step_500`。
 
 ### 16.6 完成后审计与 SwanLab 导出
 
