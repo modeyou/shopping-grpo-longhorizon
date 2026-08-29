@@ -374,12 +374,16 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     if ray_trainer.compute_advantage.__module__ != expected_module:
         raise SystemExit("BPO advantage dispatcher hook was not installed")
 
+    sibling_scores = (1.0, 0.0, -1.0, 2.0)
     rewards = torch.tensor(
-        [[0.0, 0.0, score, 0.0] for score in (1.0, 0.0, -1.0, 2.0)],
+        [
+            [0.0, 0.0, score, 0.0]
+            for score in (*sibling_scores, *sibling_scores)
+        ],
         dtype=torch.float32,
     )
     response_mask = torch.tensor(
-        [[1.0, 0.0, 1.0, 1.0]] * 4,
+        [[1.0, 0.0, 1.0, 1.0]] * 8,
         dtype=torch.float32,
     )
     data = DataProto(
@@ -388,24 +392,34 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
                 "token_level_rewards": rewards,
                 "response_mask": response_mask,
                 "responses": torch.tensor(
-                    [[10, 11, 20 + row, 0] for row in range(4)],
+                    [[10, 11, 20 + row, 0] for row in range(8)],
                     dtype=torch.long,
                 ),
-                "prompts": torch.tensor([[1, 2]] * 4, dtype=torch.long),
+                "prompts": torch.tensor([[1, 2]] * 8, dtype=torch.long),
             },
-            batch_size=[4],
+            batch_size=[8],
         ),
         non_tensor_batch={
-            "bpo_group_id": np.asarray(["preflight"] * 4, dtype=object),
-            "bpo_sibling_index": np.asarray([0, 1, 2, 3]),
-            "bpo_branch_action": np.asarray([1] * 4),
-            "bpo_action_token_starts": np.asarray([[0, 2]] * 4, dtype=object),
-            "bpo_branch_entropy": np.asarray([2.0] * 4),
-            "bpo_return_budget": np.asarray([4] * 4),
-            "bpo_env_idx": np.asarray([0, 0, 1, 2]),
-            "bpo_branch_prefix_sha256": np.asarray(["same"] * 4, dtype=object),
-            "bpo_backbone_action_count": np.asarray([3] * 4),
-            "bpo_branch_relative_position": np.asarray([0.5] * 4),
+            "bpo_group_id": np.asarray(
+                ["preflight-root"] * 4 + ["preflight-local"] * 4,
+                dtype=object,
+            ),
+            "bpo_group_type": np.asarray(["root"] * 4 + ["local"] * 4),
+            "bpo_sibling_index": np.asarray([0, 1, 2, 3] * 2),
+            "bpo_branch_action": np.asarray([0] * 4 + [1] * 4),
+            "bpo_action_token_starts": np.asarray(
+                [[0]] * 4 + [[0, 2]] * 4,
+                dtype=object,
+            ),
+            "bpo_branch_entropy": np.asarray([0.0] * 4 + [2.0] * 4),
+            "bpo_return_budget": np.asarray([4] * 8),
+            "bpo_env_idx": np.asarray([0] * 4 + [0, 0, 1, 2]),
+            "bpo_branch_prefix_sha256": np.asarray(
+                ["root"] * 4 + ["local"] * 4,
+                dtype=object,
+            ),
+            "bpo_backbone_action_count": np.asarray([1] * 4 + [3] * 4),
+            "bpo_branch_relative_position": np.asarray([0.0] * 4 + [0.5] * 4),
         },
     )
     try:
@@ -423,7 +437,7 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     returns = result.batch.get("returns")
     if advantages is None or returns is None:
         raise SystemExit("BPO veRL dispatcher did not produce advantages and returns")
-    if tuple(advantages.shape) != (4, 4) or tuple(returns.shape) != (4, 4):
+    if tuple(advantages.shape) != (8, 4) or tuple(returns.shape) != (8, 4):
         raise SystemExit("BPO veRL dispatcher produced invalid tensor shapes")
     if not torch.isfinite(advantages).all() or not torch.isfinite(returns).all():
         raise SystemExit("BPO veRL dispatcher produced NaN or Inf")
@@ -441,6 +455,7 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
                 "use_critic": use_critic,
                 "use_reference_policy": use_reference_policy,
                 "sibling_count": 4,
+                "group_types": ["root", "local"],
                 "sparse_cuda_mapping": sparse_cuda_mapping,
             },
             sort_keys=True,
