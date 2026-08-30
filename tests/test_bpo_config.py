@@ -192,8 +192,8 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["trainer"]["n_gpus_per_node"] == 4
     assert config["trainer"]["project_name"] == "shopping-multiturn-agentic"
     assert config["trainer"]["total_training_steps"] == 500
-    assert config["trainer"]["save_freq"] == 50
-    assert config["trainer"]["max_actor_ckpt_to_keep"] == 12
+    assert config["trainer"]["save_freq"] == 25
+    assert config["trainer"]["max_actor_ckpt_to_keep"] == 20
     assert config["trainer"]["test_freq"] == 50
     assert config["shopping_bpo"]["effective_return_budget"] == 4000
     optim = config["actor_rollout_ref"]["actor"]["optim"]
@@ -208,8 +208,8 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["shopping_dynamic_sampling"]["minimum_accepted_prompts"] == 2
     assert config["shopping_dynamic_sampling"]["require_full_batch"] is True
     assert config["shopping_dynamic_sampling"]["quality_search_gen_batches"] == 10
-    assert config["shopping_dynamic_sampling"]["max_num_gen_batches"] == 30
-    assert config["shopping_dynamic_sampling"]["checkpoint_steps"] == [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+    assert config["shopping_dynamic_sampling"]["max_num_gen_batches"] == 120
+    assert config["shopping_dynamic_sampling"]["checkpoint_steps"] == list(range(25, 501, 25))
     assert config["shopping_dynamic_sampling"]["validation_steps"] == [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
 
 

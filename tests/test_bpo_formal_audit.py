@@ -61,7 +61,7 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
             "trees_per_optimizer_step": 2,
             "returns_per_optimizer_step": 8,
             "maximum_optimizer_steps": 500,
-            "checkpoint_steps": [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
+            "checkpoint_steps": list(range(25, 501, 25)),
             "validation_steps": [0, 10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
             "scheduler": "cosine",
             "scheduler_horizon": 500,
@@ -150,7 +150,7 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
     with (output / "training_diagnostics.jsonl").open("a", encoding="utf-8") as handle:
         for event in events[1:]:
             handle.write(json.dumps(event) + chr(10))
-    for step in [10, *range(50, 501, 50)]:
+    for step in range(25, 501, 25):
         (output / f"global_step_{step}").mkdir()
     log = tmp_path / "run.log"
     log.write_text(
@@ -199,4 +199,11 @@ def test_formal_audit_rejects_a_missing_step0_cache(tmp_path):
     cache = contract["step0_validation"]["cache_path"]
     Path(cache).unlink()
     with pytest.raises(ValueError, match="step-0 artifact is missing"):
+        audit(output, log)
+
+
+def test_formal_audit_rejects_a_missing_25_step_checkpoint(tmp_path):
+    output, log = _write_run(tmp_path)
+    (output / "global_step_275").rmdir()
+    with pytest.raises(ValueError, match="missing every-25-step checkpoints: 275"):
         audit(output, log)

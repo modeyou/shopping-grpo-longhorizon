@@ -216,6 +216,12 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn('"bpo_batch/trees"', fit_source)
             self.assertIn('"bpo_batch/sibling_returns"', fit_source)
             self.assertIn("strict BPO sampling could not collect", fit_source)
+            self.assertIn("emergency_checkpoint_path", fit_source)
+            self.assertIn(
+                "self._save_checkpoint()\n"
+                "                                    failure_payload",
+                fit_source,
+            )
             self.assertIn("ready_reward_tensor, _ = extract_reward(batch)", fit_source)
             self.assertIn("ready_reward_tensor.sum(dim=-1)", fit_source)
             self.assertIn("SHOPPING_GRPO_DYNAMIC_SAMPLING_PARTIAL", fit_source)

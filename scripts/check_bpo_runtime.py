@@ -64,12 +64,13 @@ def validate_bpo_config(config):
         raise SystemExit("formal BPO requires strict full-tree batches")
     if int(dynamic.quality_search_gen_batches) != 10:
         raise SystemExit("formal BPO requires a 10-generation-batch quality window")
-    if int(dynamic.max_num_gen_batches) != 30:
-        raise SystemExit("formal BPO requires a 30-generation-batch hard limit")
-    expected_steps = [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
-    if list(dynamic.checkpoint_steps) != expected_steps:
+    if int(dynamic.max_num_gen_batches) != 120:
+        raise SystemExit("formal BPO requires a 120-generation-batch hard limit")
+    expected_checkpoint_steps = list(range(25, 501, 25))
+    if list(dynamic.checkpoint_steps) != expected_checkpoint_steps:
         raise SystemExit("CARL-BPO checkpoint steps are invalid")
-    if list(dynamic.validation_steps) != expected_steps:
+    expected_validation_steps = [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+    if list(dynamic.validation_steps) != expected_validation_steps:
         raise SystemExit("CARL-BPO validation steps are invalid")
     if int(config.data.dataloader_num_workers) != 0:
         raise SystemExit("formal BPO requires single-process parquet loading")
@@ -111,11 +112,11 @@ def validate_bpo_config(config):
     else:
         if int(config.trainer.total_training_steps) != 500:
             raise SystemExit("CARL-BPO requires at most 500 global steps")
-        if int(config.trainer.save_freq) != 50 or int(config.trainer.test_freq) != 50:
+        if int(config.trainer.save_freq) != 25 or int(config.trainer.test_freq) != 50:
             raise SystemExit(
-                "CARL-BPO requires checkpoints and validation every 50 steps"
+                "CARL-BPO requires checkpoints every 25 steps and validation every 50 steps"
             )
-    if int(config.trainer.max_actor_ckpt_to_keep) != 12:
+    if int(config.trainer.max_actor_ckpt_to_keep) != 20:
         raise SystemExit("CARL-BPO must retain all registered checkpoints")
     if int(config.data.seed) != 20260823:
         raise SystemExit("formal BPO requires data seed 20260823")

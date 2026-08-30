@@ -232,8 +232,9 @@ entropy 只回答“同一语义阶段内选择哪个边界”，不单独决定
 | constant | 1295 |
 
 在已观察候选流中，目标 contrast 只有 272 棵，无法在不额外扩大采样的情况下让400个槽位中的
-failure group 低于20%。正确策略是：在固定 generation budget 内优先目标 contrast，到达
-`max_num_gen_batches` 后允许最佳 failure group 作为 fallback，不能跳过完整 optimizer batch。
+failure group 低于20%。正确策略是：在固定 generation budget 内优先目标 contrast；Root 与
+当前指定语义阶段的 Local 都必须存在有效 contrast 才能更新。达到硬上限后不得用 constant、
+invalid 或错误阶段 Local 填槽，也不能训练不完整 optimizer batch。
 
 必须记录：
 
@@ -333,14 +334,16 @@ task-condition 和 Local 语义阶段，不把 `M` 改为2，也不提高 peak L
 checkpoint 当成相同更新强度。scheduler horizon、warmup 和 minimum LR 必须写入 run contract，
 运行中不得追改。
 
-checkpoint 和确定性 validation 固定在：
+checkpoint 固定每25个 optimizer steps 保存，确定性 validation 保持较低频率：
 
 ```text
-step 0、10、50、100、150、200、250、300、350、400、450、500
+checkpoint: 25、50、75、……、475、500
+validation: step 0、10、50、100、150、200、250、300、350、400、450、500
 ```
 
-step 0 只有 validation；step 10 是早期健康门槛。候选 checkpoint 至少保留 step 10 与之后
-每50步的版本，直到按预注册规则完成选择，不能因默认 checkpoint retention 提前删除早期峰值。
+step 0 只有 validation；step 10 是早期健康门槛。20个定期 checkpoint 全部保留，避免普通故障
+丢失超过24个已提交更新；若120批仍不能形成完整 Root/Local pair，终止前还要额外保存最后一个
+已提交 optimizer step。validation 仍按预注册规则选择模型，不因保存频率提高而增加反复挑选。
 step-0 validation 继续保留：它给出同一模型哈希、同一400-row validation parquet 和同一
 harness 下的 SFT-325 起点，使后续曲线能够判断净提升。结果按完整输入 contract SHA256 缓存；
 精确命中时只回放标量，不重新生成400条轨迹，任一模型、数据、配置或运行实现变化都会换 key。
@@ -1083,8 +1086,9 @@ Gold contrast 极其稀少；Gold group 的 siblings 仍然都是有效完成轨
 
 1. Root 和 Local 都获得 goal contrast（Gold 或 Completion）后立即结束采样；
 2. 到第 10 批仍未形成 goal pair，则每个 pool 选择当前最佳有效候选；
-3. 若任一 pool 连有效 Failure contrast 都没有，继续采样到第 30 批；
-4. 30 批仍无法形成完整 Root/Local pair 时硬停止，不训练 pending group。
+3. 若任一 pool 连有效 Failure contrast 都没有，保留另一 pool 已找到的候选并继续采样；
+4. 第120批仍无法形成完整 Root/Local pair 时才硬停止，不训练 pending group，并先保存最后一个
+   已提交 optimizer step。
 
 真实 rollout、环境 snapshot 和 token batch 绝不能跨 optimizer step 携带。actor 更新后旧候选已经
 变成陈旧的 off-policy 数据。允许跨步骤保留的只有累计计数、阶段欠账和成本统计。
@@ -1117,7 +1121,7 @@ Root 已负责购买与提问的完整策略，不能用这些动作伪造 Local
 欠账，不携带旧 rollout。
 
 Local 获取期间分别维护 target-stage pool 和 cross-stage diagnostic pool。只有 target-stage pool
-可以填充当前 Local slot；跨阶段候选用于供给诊断，不能静默代替目标阶段。30 批仍没有目标阶段
+可以填充当前 Local slot；跨阶段候选用于供给诊断，不能静默代替目标阶段。120 批仍没有目标阶段
 有效候选时写入完整诊断并硬停止，而不是继续扩大 product 占比。
 
 在实现硬配额前，必须先用 v1 的 `training_diagnostics.jsonl` 做离线重放。若新的结构化分类仍然
@@ -1156,7 +1160,7 @@ returns 和 LOO advantage mass。SwanLab 的候选总数与 accepted 构成必�
 2. 跨批候选池会替换多少个早到的 Failure group；
 3. v2 选择器的 accepted goal-contrast share；
 4. 新结构化阶段定义下的 product/option/search_strategy 供给；
-5. 第 10/30 批的完整 pair 成功率、平均候选批次和最坏成本；
+5. 第10批质量窗口与第120批硬上限的完整 pair 成功率、平均候选批次和最坏成本；
 6. 是否需要 stage-aware task routing。
 
 离线重放的实现准入门槛为：
@@ -1167,7 +1171,7 @@ predicted Failure fallback share <= 40%
 三个 Local 阶段都有真实候选
 rolling-100 Local accepted share 与 40/35/25 各自偏差 <= 10pp
 平均 candidate batches <= 10
-至少 99% 的步骤能在 30 批内形成完整 Root/Local pair
+正式运行不得在120批以前因单个目标阶段供给不足丢弃已提交 optimizer 更新
 Gold contrast 一旦出现，预测接受率 = 100%
 ```
 
@@ -1225,7 +1229,8 @@ contrast；另有 33 个同层候选会因 return range 或行为多样性更优
 | 30 batches | 99.47% | 99.993% |
 
 在 10-batch 质量窗口内，Root 至少出现一个 goal contrast 的估计概率为 95.26%，Local 为
-82.65%；goal pair 的截断期望采样成本约 6.17 batches。它支持保留第 17.3 节的 10/30 两段预算。
+82.65%；goal pair 的截断期望采样成本约 6.17 batches。它支持保留第17.3节的10-batch质量窗口，
+但不足以证明30批可以作为硬上限。
 
 这些概率不是精确反事实重放。v1 一旦接受首个完整 pair 就停止生成，日志没有后续本可产生的
 候选；同时只保存最终选中边界的 entropy 和 suffix returns，没有保存同一 backbone 所有边界的
@@ -1233,9 +1238,9 @@ contrast；另有 33 个同层候选会因 return range 或行为多样性更优
 
 - 64.62% 和 70.58% 是精确审计结果；
 - 三阶段“边界存在率”是精确的结构化 action 审计，但不等于该边界一定产生非恒定 return；
-- 10/30 批概率是有明确 IID 假设的供给估计，不能写成正式运行保证。
+- 10/30批概率是有明确 IID 假设的供给估计，不能写成正式运行保证或硬停止依据。
 
-审计结论为“允许进入代码实现”，但不宣布新训练已获准。v2 实现保留 30-batch 硬停止、完整
+审计结论为“允许进入代码实现”，但不宣布新训练已获准。v2.1 实现采用120-batch硬停止、完整
 候选诊断和第 17.7 节测试；仍需通过服务器 preflight，并用首次正式运行的真实 target-stage
 suffix returns 验证剩余缺口。
 
@@ -1254,7 +1259,7 @@ suffix returns 验证剩余缺口。
 9. 候选不能跨 optimizer step 复用；
 10. Root/Local mask、LOO、等权 loss 与当前 reference 完全一致；
 11. SwanLab accepted 指标与本地逐候选审计聚合完全一致；
-12. 10/30 批停止规则和 pending group 可恢复合同成立。
+12. 10批质量窗口、120批硬停止和终止前紧急 checkpoint 合同成立。
 
 修复后的正式运行必须重新从 SFT `checkpoint-325` 开始，不能从 v1 RL checkpoint resume；否则
 无法区分 v2 数据选择器的效果与 v1 已发生的更新。当前 v1 run 只作为对照和候选供给证据。
@@ -1268,9 +1273,28 @@ suffix returns 验证剩余缺口。
   reservoir 替换和 10-batch 停止判定；
 - `bpo/agent_loop.py`：按实际结构化 tool call 分类 `product`、`option`、`search_strategy`；
 - `bpo/runtime.py`：只接收 driver 分配的 Local target，禁止 worker 自行轮换；
-- veRL dynamic-sampling patch V5：每步候选池、30-batch 缺槽硬停止、optimizer selection
+- veRL dynamic-sampling patch V6：每步候选池、120-batch缺槽硬停止、终止前紧急 checkpoint、optimizer selection
   诊断、resume 后有效 return 预算恢复；
 - `audit_bpo_formal_run.py`：要求 500 条 authoritative selection 记录，并验收最终
   `200/175/125` Local 覆盖；
 - SwanLab 继续只投影到 `validation / sampling / credit / optimization / runtime` 五个板块，
   v2 reservoir、goal/failure 接受量和阶段覆盖统一归入 `sampling`。
+
+### 17.9 v2 step-48 供给失败与 v2.1 修订
+
+首个 v2 正式运行完成47次 optimizer 更新后，在未提交的第48步达到30个 generation batches。
+该步共生成30个 Root 和30个 Local：Root 有14个有效候选；29个目标为 `option` 的 Local 全部
+为 constant return，唯一有 contrast 的 Local 实际属于 `search_strategy`，因阶段不匹配被正确拒绝。
+因此这不是环境并发、snapshot clone、invalid rollout 或 optimizer 故障，而是硬目标 Local 的
+低概率供给尾部事件。旧实现将离线 IID 估计误当成30批运行保证，且最近定期 checkpoint 只有
+step 10，导致已提交的 step 11–47 无法恢复。
+
+v2.1 不改变 Reward、return、LOO、mask、PPO loss、Root/Local 结构或40/35/25阶段目标，只修订
+采样可靠性与持久化合同：
+
+1. 第10批仍是质量窗口；若尚未凑齐 pair，继续使用同一步、同一策略版本和同一候选池采样；
+2. 已找到的 Root 或目标阶段 Local 保留到该 optimizer step 凑齐，不跨 optimizer step 复用；
+3. 第120批才是硬上限，仍不允许错误阶段、constant、invalid 或不完整 batch fallback；
+4. 每25个已提交 optimizer steps 保存 checkpoint，并保留全部20个定期 checkpoint；
+5. 第120批终止前额外保存最后一个已提交 optimizer step，pending pair 永不训练；
+6. 新正式运行从 SFT `checkpoint-325` 的 step 0 开始，形成连续的新 SwanLab 曲线。

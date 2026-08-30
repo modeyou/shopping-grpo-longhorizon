@@ -50,7 +50,7 @@ def audit(output: Path, log: Path) -> dict:
         "trees_per_optimizer_step": 2,
         "returns_per_optimizer_step": 8,
         "maximum_optimizer_steps": 500,
-        "checkpoint_steps": [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
+        "checkpoint_steps": list(range(25, 501, 25)),
         "validation_steps": [0, 10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500],
         "scheduler": "cosine",
         "scheduler_horizon": 500,
@@ -242,8 +242,15 @@ def audit(output: Path, log: Path) -> dict:
     checkpoints = sorted(
         path for path in output.glob("global_step_*") if path.is_dir()
     )
-    if len(checkpoints) < 11:
-        raise ValueError("CARL-BPO requires step 10 plus every-50-step checkpoints")
+    checkpoint_steps = {
+        int(path.name.removeprefix("global_step_")) for path in checkpoints
+    }
+    missing_checkpoint_steps = set(range(25, 501, 25)).difference(checkpoint_steps)
+    if missing_checkpoint_steps:
+        raise ValueError(
+            "CARL-BPO is missing every-25-step checkpoints: "
+            + ", ".join(str(step) for step in sorted(missing_checkpoint_steps))
+        )
 
     return {
         "status": "accepted",

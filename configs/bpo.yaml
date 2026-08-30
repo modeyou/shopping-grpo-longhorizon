@@ -154,8 +154,10 @@ shopping_dynamic_sampling:
   require_full_batch: true
   # Keep improving both Root/Local reservoirs through batch 10 unless both are goal contrasts.
   quality_search_gen_batches: 10
-  max_num_gen_batches: 30
-  checkpoint_steps: [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+  # Keep the exact Root/Local target and retain each valid reservoir entry until
+  # the pair is complete. Batch 120 is the emergency hard stop, not a fallback.
+  max_num_gen_batches: 120
+  checkpoint_steps: [25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325, 350, 375, 400, 425, 450, 475, 500]
   validation_steps: [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
   max_consecutive_skipped_updates: 10
   reward_tolerance: 1.0e-8
@@ -172,8 +174,8 @@ trainer:
   total_epochs: 50
   # CARL upper bound: 500 updates x 2 groups x 4 sibling returns = R4000.
   total_training_steps: 500
-  save_freq: 50
-  max_actor_ckpt_to_keep: 12
+  save_freq: 25
+  max_actor_ckpt_to_keep: 20
   test_freq: 50
   val_before_train: true
   logger: [console]
