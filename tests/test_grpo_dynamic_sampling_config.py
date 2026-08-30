@@ -14,9 +14,15 @@ from scripts.check_grpo_runtime import (
     validate_dynamic_sampling,
     validate_training_memory_budget,
 )
+from scripts.apply_verl_dynamic_sampling_patch import (
+    PATCH_MARKER as INSTALLER_PATCH_MARKER,
+)
 
 
 class DynamicSamplingConfigTest(unittest.TestCase):
+    def test_preflight_and_installer_require_the_same_patch_marker(self):
+        self.assertEqual(PATCH_MARKER, INSTALLER_PATCH_MARKER)
+
     def test_training_memory_budget_enforces_real_micro_batch_one(self):
         config = compose_runtime_config([])
         validate_training_memory_budget(config)
