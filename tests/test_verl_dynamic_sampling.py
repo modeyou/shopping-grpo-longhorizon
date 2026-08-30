@@ -8,16 +8,135 @@ from pathlib import Path
 from shopping_grpo.training.grpo.dynamic_sampling import (
     aggregate_shopping_metrics,
     append_training_diagnostic,
+    build_carl_stage_assignments,
     build_rollout_diagnostics,
+    carl_candidate_pools_ready,
+    carl_candidate_priority,
+    carl_local_stage_counts,
     effective_group_update_target,
     extract_aligned_bpo_fields,
     extract_shopping_group_signals,
+    select_carl_local_stage_target,
     select_reward_varying_groups,
     summarize_bpo_group_diagnostics,
+    update_carl_candidate_pool,
 )
 
 
 class RewardGroupSelectionTest(unittest.TestCase):
+    def test_carl_local_stage_ledger_closes_exact_weighted_coverage(self):
+        self.assertEqual(
+            carl_local_stage_counts(20),
+            {"product": 8, "option": 7, "search_strategy": 5},
+        )
+        self.assertEqual(
+            carl_local_stage_counts(500),
+            {"product": 200, "option": 175, "search_strategy": 125},
+        )
+        stage, counts = select_carl_local_stage_target(0)
+        self.assertEqual(stage, "product")
+        self.assertEqual(counts, {"product": 0, "option": 0, "search_strategy": 0})
+        self.assertEqual(
+            build_carl_stage_assignments(("root", "local"), "option"),
+            ("root", "option"),
+        )
+
+    def test_carl_reservoir_priority_is_goal_first_then_signal_strength(self):
+        completion = {
+            "uid": "completion",
+            "contrast_type": "completion_contrast",
+            "train_returns": (0.0, 1.0, 0.0, 0.0),
+        }
+        gold = {
+            "uid": "gold",
+            "contrast_type": "gold_contrast",
+            "train_returns": (0.0, 1.25, 0.0, 0.0),
+        }
+        failure = {
+            "uid": "failure",
+            "contrast_type": "failure_utility_contrast",
+            "train_returns": (-0.8, -0.2, -0.5, -0.5),
+        }
+        self.assertLess(carl_candidate_priority(gold, 3), carl_candidate_priority(completion, 1))
+        self.assertLess(carl_candidate_priority(completion, 3), carl_candidate_priority(failure, 1))
+
+        pool, first = update_carl_candidate_pool(
+            {},
+            group_type="root",
+            candidate={"uid": "failure", "group": failure, "payload": "old"},
+            generation_batch=1,
+        )
+        pool, second = update_carl_candidate_pool(
+            pool,
+            group_type="root",
+            candidate={"uid": "completion", "group": completion, "payload": "new"},
+            generation_batch=2,
+        )
+        pool, third = update_carl_candidate_pool(
+            pool,
+            group_type="root",
+            candidate={"uid": "gold", "group": gold, "payload": "best"},
+            generation_batch=3,
+        )
+        self.assertTrue(first["pool_selected"])
+        self.assertEqual(second["replaced_uid"], "failure")
+        self.assertEqual(third["replaced_uid"], "completion")
+        self.assertEqual(pool["root"]["uid"], "gold")
+
+        local_pool, _ = update_carl_candidate_pool(
+            pool,
+            group_type="local",
+            candidate={"uid": "local", "group": completion},
+            generation_batch=3,
+        )
+        self.assertEqual(
+            carl_candidate_pools_ready(
+                local_pool,
+                generation_batch=3,
+                quality_search_gen_batches=10,
+            ),
+            (True, True),
+        )
+
+    def test_carl_failure_pair_waits_for_quality_window(self):
+        failure = {
+            "uid": "failure",
+            "contrast_type": "failure_utility_contrast",
+            "train_returns": (-0.8, -0.2, -0.5, -0.5),
+        }
+        pool = {
+            "root": {"group": failure},
+            "local": {"group": failure},
+        }
+        self.assertEqual(
+            carl_candidate_pools_ready(
+                pool,
+                generation_batch=9,
+                quality_search_gen_batches=10,
+            ),
+            (False, False),
+        )
+        self.assertEqual(
+            carl_candidate_pools_ready(
+                pool,
+                generation_batch=10,
+                quality_search_gen_batches=10,
+            ),
+            (True, False),
+        )
+
+    def test_local_stage_fallback_is_not_trainable(self):
+        indices, stats = select_reward_varying_groups(
+            ["local"] * 4,
+            [0.0, 1.0, 0.0, 0.0],
+            purchase_success=[False, True, False, False],
+            group_types=["local"] * 4,
+            local_stage_fallback=[True] * 4,
+        )
+        self.assertEqual(indices, [])
+        self.assertEqual(stats["local_stage_mismatch_group_count"], 1)
+        self.assertEqual(stats["groups"][0]["drop_reason"], "local_stage_mismatch")
+
     def test_effective_return_budget_caps_the_last_update_without_overshoot(self):
         self.assertEqual(
             effective_group_update_target(

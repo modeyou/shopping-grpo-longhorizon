@@ -149,6 +149,9 @@ class VerlPatchScriptTest(unittest.TestCase):
             role_assignment = fit_source.index(
                 'batch.non_tensor_batch["bpo_group_type"] = np.asarray('
             )
+            stage_assignment = fit_source.index(
+                'batch.non_tensor_batch["bpo_stage_target"] = np.asarray('
+            )
             role_repeat = fit_source.index(
                 "gen_batch.repeat(repeat_times=rollout_n, interleave=True)"
             )
@@ -165,6 +168,7 @@ class VerlPatchScriptTest(unittest.TestCase):
             update = fit_source.index("actor_output = self._update_actor(batch)", advantage)
 
             self.assertLess(role_assignment, role_repeat)
+            self.assertLess(stage_assignment, role_repeat)
             self.assertLess(role_repeat, generation)
             self.assertLess(generation, reward_filter)
             self.assertLess(reward_filter, skipped)
@@ -190,6 +194,10 @@ class VerlPatchScriptTest(unittest.TestCase):
             )
             self.assertIn("extract_shopping_group_signals", fit_source)
             self.assertIn("build_carl_group_assignments", fit_source)
+            self.assertIn("build_carl_stage_assignments", fit_source)
+            self.assertIn("select_carl_local_stage_target", fit_source)
+            self.assertIn("update_carl_candidate_pool", fit_source)
+            self.assertIn("carl_candidate_pools_ready", fit_source)
             self.assertIn(
                 "CARL-BPO generated batch must contain exactly one Root", fit_source
             )
@@ -203,7 +211,7 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn("dynamic_validation_steps", fit_source)
             self.assertIn("current_step in dynamic_checkpoint_steps", fit_source)
             self.assertIn("current_step in dynamic_validation_steps", fit_source)
-            self.assertIn("SHOPPING_GRPO_DYNAMIC_SAMPLING_SLOW_BATCH", fit_source)
+            self.assertIn("quality_search_gen_batches", fit_source)
             self.assertIn('"bpo_sampling/seconds_to_full_batch"', fit_source)
             self.assertIn('"bpo_batch/trees"', fit_source)
             self.assertIn('"bpo_batch/sibling_returns"', fit_source)
@@ -230,8 +238,16 @@ class VerlPatchScriptTest(unittest.TestCase):
                 fit_source,
             )
             self.assertIn(
-                "dynamic_accepted_batches = []",
+                "dynamic_candidate_pools = {}",
                 fit_source[skipped:ready],
+            )
+            self.assertIn('"optimizer_selection"', fit_source)
+            self.assertIn('"carl_sampling/reservoir_replacements"', fit_source)
+            self.assertIn('"carl_sampling/selected_goal_groups"', fit_source)
+            self.assertIn('local_stage_fallback=local_stage_fallback', fit_source)
+            self.assertIn(
+                "dynamic_trained_groups_total = self.global_steps * dynamic_target_prompts",
+                fit_source,
             )
             self.assertIn("dynamic_consecutive_skips", fit_source)
             self.assertIn("dynamic_adv_estimator = (", fit_source)

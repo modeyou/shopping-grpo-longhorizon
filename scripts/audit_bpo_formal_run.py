@@ -41,9 +41,12 @@ def audit(output: Path, log: Path) -> dict:
         "effective_tree_budget": 1000,
         "effective_return_budget": 4000,
         "group_schedule": ["root", "local"],
-        "local_stage_schedule": (
-            ["product"] * 8 + ["option"] * 7 + ["search_recovery"] * 5
-        ),
+        "local_stage_weights": {
+            "product": 8,
+            "option": 7,
+            "search_strategy": 5,
+        },
+        "candidate_selector": "goal-priority-reservoir-v2",
         "trees_per_optimizer_step": 2,
         "returns_per_optimizer_step": 8,
         "maximum_optimizer_steps": 500,
@@ -61,6 +64,8 @@ def audit(output: Path, log: Path) -> dict:
         if method.get(name) != expected:
             raise ValueError(f"formal BPO contract mismatch: {name}")
     launch = contract.get("launch") or {}
+    if launch.get("algorithm") != "carl-bpo-v2":
+        raise ValueError("CARL-BPO algorithm mismatch")
     if launch.get("reward_profile") != "none":
         raise ValueError("CARL-BPO must use Reward v4 with an explicit train return")
     if int(launch.get("seed", -1)) != 20260823:
@@ -105,10 +110,15 @@ def audit(output: Path, log: Path) -> dict:
         if line.strip()
     ]
     optimizer_events = [event for event in events if event.get("event") == "optimizer_step"]
+    selection_events = [
+        event for event in events if event.get("event") == "optimizer_selection"
+    ]
     if not optimizer_events:
         raise ValueError("BPO run has no optimizer-step diagnostics")
     if len(optimizer_events) != 500:
         raise ValueError("CARL-BPO formal run must complete exactly 500 global steps")
+    if len(selection_events) != 500:
+        raise ValueError("CARL-BPO formal run must record 500 optimizer selections")
     if [int(event.get("global_step", -1)) for event in optimizer_events] != list(
         range(1, 501)
     ):
@@ -151,7 +161,7 @@ def audit(output: Path, log: Path) -> dict:
         "bpo_group/local_count",
         "bpo_stage/product_count",
         "bpo_stage/option_count",
-        "bpo_stage/search_recovery_count",
+        "bpo_stage/search_strategy_count",
         "bpo_stage/fallback_count",
         "bpo_stage/unavailable_count",
         "bpo_diversity/unique_branch_actions_mean",
@@ -162,6 +172,10 @@ def audit(output: Path, log: Path) -> dict:
         "group/gold_contrast",
         "group/failure_utility_contrast",
         "group/effective_ratio",
+        "carl_sampling/selected_goal_groups",
+        "carl_sampling/selected_failure_groups",
+        "carl_sampling/reservoir_replacements",
+        "carl_sampling/local_stage_mismatch_groups",
     }
 
     for event in optimizer_events:
@@ -198,6 +212,23 @@ def audit(output: Path, log: Path) -> dict:
             or not 0 <= first_tree <= full_batch
         ):
             raise ValueError("BPO full-batch acquisition metrics are invalid")
+
+    selected_stage_counts = {"product": 0, "option": 0, "search_strategy": 0}
+    for event in selection_events:
+        selected = event.get("selected_groups") or {}
+        if set(selected) != {"root", "local"}:
+            raise ValueError("CARL-BPO selection must contain one Root and one Local")
+        local_stage = str((selected["local"] or {}).get("local_stage"))
+        target = str(event.get("local_stage_target"))
+        if local_stage != target or local_stage not in selected_stage_counts:
+            raise ValueError("CARL-BPO selected Local group violates its stage target")
+        selected_stage_counts[local_stage] += 1
+    if selected_stage_counts != {
+        "product": 200,
+        "option": 175,
+        "search_strategy": 125,
+    }:
+        raise ValueError("CARL-BPO final Local stage coverage is not 40/35/25")
 
     log_text = log.read_text(encoding="utf-8", errors="replace")
     for marker in (

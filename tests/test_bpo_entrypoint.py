@@ -49,7 +49,7 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
     assert Path(environment["SHOPPING_ENV_MANIFEST"]).resolve() == (
         train_bpo.BPO_RUNTIME_MANIFEST.resolve()
     )
-    assert audit["algorithm"] == "carl-bpo-v1"
+    assert audit["algorithm"] == "carl-bpo-v2"
     assert audit["reward_profile"] == "none"
     assert audit["execution_mode"] == "formal"
 

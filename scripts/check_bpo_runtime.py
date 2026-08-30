@@ -27,7 +27,7 @@ def validate_bpo_config(config):
         "sibling_count": 4,
         "branch_count": 1,
         "return_budget": 4,
-        "algorithm": "carl-bpo-v1",
+        "algorithm": "carl-bpo-v2",
         "selection": "maximum_exact_entropy",
         "entropy_probe": "exact-full-vocabulary",
         "entropy_state": "action-boundary-first-token",
@@ -38,11 +38,12 @@ def validate_bpo_config(config):
             raise SystemExit(f"formal BPO requires shopping_bpo.{key}={value!r}")
     if list(bpo.group_schedule) != ["root", "local"]:
         raise SystemExit("CARL-BPO requires group_schedule=[root, local]")
-    expected_stage_schedule = [
-        "product",
-    ] * 8 + ["option"] * 7 + ["search_recovery"] * 5
-    if list(bpo.local_stage_schedule) != expected_stage_schedule:
-        raise SystemExit("CARL-BPO stage schedule is invalid")
+    if dict(bpo.local_stage_weights) != {
+        "product": 8,
+        "option": 7,
+        "search_strategy": 5,
+    }:
+        raise SystemExit("CARL-BPO local stage weights are invalid")
     if int(rollout.n) != 4:
         raise SystemExit("formal BPO requires rollout.n=4")
     if int(rollout.agent.num_workers) != int(config.data.train_batch_size):
@@ -61,8 +62,8 @@ def validate_bpo_config(config):
         )
     if not bool(dynamic.require_full_batch):
         raise SystemExit("formal BPO requires strict full-tree batches")
-    if int(dynamic.soft_warning_gen_batches) != 10:
-        raise SystemExit("formal BPO requires a 10-generation-batch warning")
+    if int(dynamic.quality_search_gen_batches) != 10:
+        raise SystemExit("formal BPO requires a 10-generation-batch quality window")
     if int(dynamic.max_num_gen_batches) != 30:
         raise SystemExit("formal BPO requires a 30-generation-batch hard limit")
     expected_steps = [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
@@ -405,6 +406,7 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
                 dtype=object,
             ),
             "bpo_group_type": np.asarray(["root"] * 4 + ["local"] * 4),
+            "bpo_stage_target": np.asarray(["root"] * 4 + ["product"] * 4),
             "bpo_sibling_index": np.asarray([0, 1, 2, 3] * 2),
             "bpo_branch_action": np.asarray([0] * 4 + [1] * 4),
             "bpo_action_token_starts": np.asarray(
@@ -781,7 +783,7 @@ def main():
         "BPO runtime preflight passed: "
         + json.dumps(
             {
-                "algorithm": "carl-bpo-v1",
+                "algorithm": "carl-bpo-v2",
                 "agent_loop": ShoppingBPOAgentLoop.__name__,
                 "branch_count": 1,
                 "sibling_count": 4,
@@ -803,8 +805,8 @@ def main():
                 "dynamic_require_full_batch": bool(
                     config.shopping_dynamic_sampling.require_full_batch
                 ),
-                "dynamic_soft_warning_generation_batches": int(
-                    config.shopping_dynamic_sampling.soft_warning_gen_batches
+                "dynamic_quality_search_generation_batches": int(
+                    config.shopping_dynamic_sampling.quality_search_gen_batches
                 ),
                 "dynamic_max_generation_batches": int(
                     config.shopping_dynamic_sampling.max_num_gen_batches

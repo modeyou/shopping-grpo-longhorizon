@@ -23,7 +23,7 @@ EXPECTED_VERSIONS = {
     "swanlab": "0.9.1",
 }
 EXPECTED_TRANSFORMERS_REVISION = "7ea2320c76117e6742364808a666ef6f2fb40a67"
-PATCH_MARKER = "SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V4"
+PATCH_MARKER = "SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V5"
 MAX_SAFE_RESPONSE_LENGTH = 20480
 MAX_SAFE_SEQUENCE_LENGTH = 24576
 COMMON_RUNTIME_FILES = {
@@ -252,6 +252,12 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
         raise SystemExit("shopping_dynamic_sampling.metric must be seq_reward")
     if int(dynamic_config.get("max_num_gen_batches", 0)) <= 0:
         raise SystemExit("shopping_dynamic_sampling.max_num_gen_batches must be positive")
+    quality_batches = int(dynamic_config.get("quality_search_gen_batches", 0))
+    if not 0 < quality_batches < int(dynamic_config.max_num_gen_batches):
+        raise SystemExit(
+            "shopping_dynamic_sampling.quality_search_gen_batches must be positive "
+            "and below max_num_gen_batches"
+        )
     if int(dynamic_config.get("max_consecutive_skipped_updates", 0)) <= 0:
         raise SystemExit(
             "shopping_dynamic_sampling.max_consecutive_skipped_updates must be positive"
@@ -271,6 +277,7 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
                 "enable": True,
                 "metric": str(dynamic_config.metric),
                 "max_num_gen_batches": int(dynamic_config.max_num_gen_batches),
+                "quality_search_gen_batches": quality_batches,
                 "max_consecutive_skipped_updates": int(
                     dynamic_config.max_consecutive_skipped_updates
                 ),

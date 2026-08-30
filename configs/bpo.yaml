@@ -124,7 +124,7 @@ algorithm:
 
 shopping_bpo:
   enable: true
-  algorithm: carl-bpo-v1
+  algorithm: carl-bpo-v2
   sibling_count: 4
   branch_count: 1
   return_budget: 4
@@ -134,8 +134,11 @@ shopping_bpo:
   entropy_state: action-boundary-first-token
   rollout_audit: exact-tree-v1
   group_schedule: [root, local]
-  # Deterministic 20-step cycle approximating the 40/35/25 semantic targets.
-  local_stage_schedule: [product, product, product, product, product, product, product, product, option, option, option, option, option, option, option, search_recovery, search_recovery, search_recovery, search_recovery, search_recovery]
+  # Driver-owned weighted-fair coverage; at 500 Local groups this is 200/175/125.
+  local_stage_weights:
+    product: 8
+    option: 7
+    search_strategy: 5
   train_return_version: completion-aligned-v1
   gold_train_return: 1.25
   valid_alternative_train_return: 1.0
@@ -149,7 +152,8 @@ shopping_dynamic_sampling:
   # One global step is one Root plus one Local K=4 group.
   minimum_accepted_prompts: 2
   require_full_batch: true
-  soft_warning_gen_batches: 10
+  # Keep improving both Root/Local reservoirs through batch 10 unless both are goal contrasts.
+  quality_search_gen_batches: 10
   max_num_gen_batches: 30
   checkpoint_steps: [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
   validation_steps: [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
@@ -174,7 +178,7 @@ trainer:
   val_before_train: true
   logger: [console]
   project_name: shopping-multiturn-agentic
-  experiment_name: carl-bpo-v1-step500-r4000-seed20260823
+  experiment_name: carl-bpo-v2-step500-r4000-seed20260823
   default_local_dir: ${oc.env:BPO_OUTPUT_DIR}
   n_gpus_per_node: 4
   nnodes: 1

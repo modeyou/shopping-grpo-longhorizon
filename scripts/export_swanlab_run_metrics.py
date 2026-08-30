@@ -22,7 +22,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--run-path",
-        default="mode/shopping-multiturn-agentic/carl-bpo-v1-step500-r4000-seed20260823",
+        default="mode/shopping-multiturn-agentic/carl-bpo-v2-step500-r4000-seed20260823",
         help="SwanLab run path: username/project/run_id",
     )
     parser.add_argument(

@@ -159,7 +159,7 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["algorithm"]["adv_estimator"] == "bpo"
     assert config["shopping_bpo"] == {
         "enable": True,
-        "algorithm": "carl-bpo-v1",
+        "algorithm": "carl-bpo-v2",
         "sibling_count": 4,
         "branch_count": 1,
         "return_budget": 4,
@@ -169,11 +169,11 @@ def test_formal_bpo_config_is_independent_and_frozen():
         "entropy_state": "action-boundary-first-token",
         "rollout_audit": "exact-tree-v1",
         "group_schedule": ["root", "local"],
-        "local_stage_schedule": [
-            "product", "product", "product", "product", "product", "product", "product", "product",
-            "option", "option", "option", "option", "option", "option", "option",
-            "search_recovery", "search_recovery", "search_recovery", "search_recovery", "search_recovery",
-        ],
+        "local_stage_weights": {
+            "product": 8,
+            "option": 7,
+            "search_strategy": 5,
+        },
         "train_return_version": "completion-aligned-v1",
         "gold_train_return": 1.25,
         "valid_alternative_train_return": 1.0,
@@ -207,7 +207,7 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert config["data"]["dataloader_num_workers"] == 0
     assert config["shopping_dynamic_sampling"]["minimum_accepted_prompts"] == 2
     assert config["shopping_dynamic_sampling"]["require_full_batch"] is True
-    assert config["shopping_dynamic_sampling"]["soft_warning_gen_batches"] == 10
+    assert config["shopping_dynamic_sampling"]["quality_search_gen_batches"] == 10
     assert config["shopping_dynamic_sampling"]["max_num_gen_batches"] == 30
     assert config["shopping_dynamic_sampling"]["checkpoint_steps"] == [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
     assert config["shopping_dynamic_sampling"]["validation_steps"] == [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]

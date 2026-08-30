@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--shopper-base-url", default=os.environ.get("SHOPPER_BASE_URL"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--experiment-name", default="carl-bpo-v1-step500-r4000-seed20260823"
+        "--experiment-name", default="carl-bpo-v2-step500-r4000-seed20260823"
     )
     parser.add_argument("--logger", choices=("console", "swanlab"), default="swanlab")
     parser.add_argument("--seed", type=int, default=20260823)
@@ -153,7 +153,7 @@ def _step0_validation_contract(args, *, model, val_data, manifest):
             git_commit=_git_commit(),
             inputs=runtime_inputs,
             settings={
-                "algorithm": "carl-bpo-v1",
+                "algorithm": "carl-bpo-v2",
                 "environment_url": str(args.env_url),
                 "reward_profile": "none",
                 "reward_version": "shopsimulator-reward-v4",
@@ -318,7 +318,7 @@ def build(args):
         *_overrides(args),
     ]
     audit = {
-        "algorithm": "carl-bpo-v1",
+        "algorithm": "carl-bpo-v2",
         "command": command,
         "model": str(model),
         "train_data": str(train_data),
@@ -399,9 +399,12 @@ def write_contract(environment, audit):
             "return_budget": 4,
             "branch_selection": "stage_target_then_exact_entropy",
             "group_schedule": ["root", "local"],
-            "local_stage_schedule": (
-                ["product"] * 8 + ["option"] * 7 + ["search_recovery"] * 5
-            ),
+            "local_stage_weights": {
+                "product": 8,
+                "option": 7,
+                "search_strategy": 5,
+            },
+            "candidate_selector": "goal-priority-reservoir-v2",
             "branch_candidate_policy": "exclude-final-action-v1",
             "entropy_state": "action-boundary-first-token",
             "rollout_audit": "exact-tree-v1",
@@ -418,7 +421,7 @@ def write_contract(environment, audit):
             "dynamic_target_prompts": 2,
             "dynamic_minimum_accepted_prompts": 2,
             "dynamic_require_full_batch": True,
-            "dynamic_soft_warning_generation_batches": 10,
+            "dynamic_quality_search_generation_batches": 10,
             "dynamic_max_generation_batches": 30,
             "dataloader_num_workers": 0,
             "tolerant_xml_parameter_parser": True,

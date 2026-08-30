@@ -1,24 +1,24 @@
 --- a/verl/trainer/ppo/ray_trainer.py
 +++ b/verl/trainer/ppo/ray_trainer.py
-@@ -20,0 +21,2 @@
-+# SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V4
+@@ -20,0 +21,2 @@ This trainer supports model-agonistic model initialization with huggingface
++# SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V5
 +
-@@ -609,0 +612 @@
+@@ -609,0 +612 @@ class RayPPOTrainer:
 +        sample_shopping = []
-@@ -665,0 +669,3 @@
+@@ -665,0 +669,3 @@ class RayPPOTrainer:
 +            if "shopping" in test_batch.non_tensor_batch:
 +                sample_shopping.extend(test_batch.non_tensor_batch["shopping"].tolist())
 +
-@@ -700,0 +707,5 @@
+@@ -700,0 +707,5 @@ class RayPPOTrainer:
 +            validation_extra_infos = dict(reward_extra_infos_dict)
 +            if sample_shopping:
 +                if len(sample_shopping) != len(sample_scores):
 +                    raise ValueError("validation shopping diagnostics are not trajectory-aligned")
 +                validation_extra_infos["shopping"] = sample_shopping
-@@ -706 +717 @@
+@@ -706 +717 @@ class RayPPOTrainer:
 -                reward_extra_infos_dict=reward_extra_infos_dict,
 +                reward_extra_infos_dict=validation_extra_infos,
-@@ -722 +733,7 @@
+@@ -722 +733,7 @@ class RayPPOTrainer:
 -        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
 +        validation_metrics = self._val_metrics_update(
 +            data_sources, sample_uids, reward_extra_infos_dict, sample_turns
@@ -27,21 +27,24 @@
 +            from shopping_grpo.training.grpo.dynamic_sampling import aggregate_shopping_metrics
 +            validation_metrics.update({f"val-shopping/{key}": value for key, value in aggregate_shopping_metrics(sample_shopping).items()})
 +        return validation_metrics
-@@ -1380,0 +1398,13 @@
-+        )
-+
+@@ -1382,0 +1400,179 @@ class RayPPOTrainer:
 +        import time
 +        from shopping_grpo.training.grpo.dynamic_sampling import (
++            CARL_GOAL_CONTRASTS,
 +            aggregate_shopping_metrics,
 +            append_training_diagnostic,
 +            build_carl_group_assignments,
++            build_carl_stage_assignments,
 +            build_rollout_diagnostics,
++            carl_candidate_pools_ready,
 +            extract_aligned_bpo_fields,
 +            effective_group_update_target,
 +            extract_shopping_group_signals,
++            select_carl_local_stage_target,
 +            select_reward_varying_groups,
 +            summarize_bpo_group_diagnostics,
-@@ -1381,0 +1412,156 @@
++            update_carl_candidate_pool,
++        )
 +
 +        diagnostics_path = os.environ.get("SHOPPING_GRPO_DIAGNOSTICS_PATH")
 +
@@ -52,8 +55,8 @@
 +        if dynamic_sampling_enabled:
 +            dynamic_sampling_metric = dynamic_sampling_config.get("metric", "seq_reward")
 +            dynamic_max_gen_batches = int(dynamic_sampling_config.get("max_num_gen_batches", 0))
-+            dynamic_soft_warning_gen_batches = int(
-+                dynamic_sampling_config.get("soft_warning_gen_batches", 0)
++            dynamic_quality_search_gen_batches = int(
++                dynamic_sampling_config.get("quality_search_gen_batches", 0)
 +            )
 +            dynamic_require_full_batch = bool(
 +                dynamic_sampling_config.get("require_full_batch", False)
@@ -75,9 +78,9 @@
 +                )
 +            if dynamic_max_gen_batches <= 0:
 +                raise ValueError("shopping_dynamic_sampling.max_num_gen_batches must be positive")
-+            if not 0 < dynamic_soft_warning_gen_batches < dynamic_max_gen_batches:
++            if not 0 < dynamic_quality_search_gen_batches < dynamic_max_gen_batches:
 +                raise ValueError(
-+                    "shopping_dynamic_sampling.soft_warning_gen_batches must be "
++                    "shopping_dynamic_sampling.quality_search_gen_batches must be "
 +                    "positive and below max_num_gen_batches"
 +                )
 +            if dynamic_max_consecutive_skips <= 0:
@@ -124,6 +127,8 @@
 +                raise ValueError(
 +                    "CARL-BPO requires one Root and one Local group per optimizer step"
 +                )
++            dynamic_local_stage_weights = dict(bpo_config.get("local_stage_weights", {}))
++            select_carl_local_stage_target(0, dynamic_local_stage_weights)
 +            dynamic_effective_return_budget = int(
 +                bpo_config.get("effective_return_budget", 0)
 +            )
@@ -141,7 +146,8 @@
 +                int(step) * dynamic_target_prompts * dynamic_rollout_n
 +                for step in dynamic_checkpoint_steps
 +            }
-+            dynamic_accepted_batches = []
++            dynamic_candidate_pools = {}
++            dynamic_reservoir_replacements = 0
 +            dynamic_accepted_prompts = 0
 +            dynamic_accepted_group_type_counts = {"root": 0, "local": 0}
 +            dynamic_num_gen_batches = 0
@@ -152,6 +158,7 @@
 +            dynamic_all_purchase_success_groups = 0
 +            dynamic_no_purchase_success_groups = 0
 +            dynamic_sampling_invalid_groups = 0
++            dynamic_local_stage_mismatch_groups = 0
 +            dynamic_completion_contrast_groups = 0
 +            dynamic_gold_contrast_groups = 0
 +            dynamic_failure_utility_contrast_groups = 0
@@ -183,7 +190,8 @@
 +                        "enable": True,
 +                        "metric": dynamic_sampling_metric,
 +                        "max_num_gen_batches": dynamic_max_gen_batches,
-+                        "soft_warning_gen_batches": dynamic_soft_warning_gen_batches,
++                        "quality_search_gen_batches": dynamic_quality_search_gen_batches,
++                        "local_stage_weights": dynamic_local_stage_weights,
 +                        "require_full_batch": dynamic_require_full_batch,
 +                        "checkpoint_steps": sorted(dynamic_checkpoint_steps),
 +                        "validation_steps": sorted(dynamic_validation_steps),
@@ -198,19 +206,33 @@
 +                    sort_keys=True,
 +                )
 +            )
-@@ -1409,2 +1595,4 @@
++
+@@ -1386,0 +1583,12 @@ class RayPPOTrainer:
++        if dynamic_sampling_enabled:
++            dynamic_trained_groups_total = self.global_steps * dynamic_target_prompts
++            dynamic_effective_returns_total = (
++                dynamic_trained_groups_total * dynamic_rollout_n
++            )
++            if (
++                dynamic_effective_return_budget
++                and dynamic_effective_returns_total > dynamic_effective_return_budget
++            ):
++                raise RuntimeError(
++                    "resumed CARL-BPO checkpoint exceeds the frozen effective-return budget"
++                )
+@@ -1409,2 +1617,4 @@ class RayPPOTrainer:
 -        # we start from step 1
 -        self.global_steps += 1
 +        # The unpatched trainer uses a one-based in-flight step. Dynamic sampling
 +        # keeps the committed counter unchanged until an optimizer update occurs.
 +        if not dynamic_sampling_enabled:
 +            self.global_steps += 1
-@@ -1414,0 +1603 @@
+@@ -1414,0 +1625 @@ class RayPPOTrainer:
 +        first_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
-@@ -1416 +1605 @@
+@@ -1416 +1627 @@ class RayPPOTrainer:
 -            self.global_steps in self.config.global_profiler.steps
 +            first_step in self.config.global_profiler.steps
-@@ -1423,0 +1613,17 @@
+@@ -1423,0 +1635,17 @@ class RayPPOTrainer:
 +                current_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
 +                optimizer_updated = False
 +                dynamic_budget_checkpoint_due = False
@@ -228,27 +250,36 @@
 +                    )
 +                except ValueError as exc:
 +                    raise RuntimeError(str(exc)) from exc
-@@ -1441,0 +1648,7 @@
+@@ -1441,0 +1670,18 @@ class RayPPOTrainer:
 +                if dynamic_sampling_enabled:
++                    group_assignments = build_carl_group_assignments(
++                        len(batch.batch), dynamic_group_schedule
++                    )
++                    local_stage_target, local_stage_counts = (
++                        select_carl_local_stage_target(
++                            self.global_steps, dynamic_local_stage_weights
++                        )
++                    )
 +                    batch.non_tensor_batch["bpo_group_type"] = np.asarray(
-+                        build_carl_group_assignments(
-+                            len(batch.batch), dynamic_group_schedule
++                        group_assignments, dtype=object
++                    )
++                    batch.non_tensor_batch["bpo_stage_target"] = np.asarray(
++                        build_carl_stage_assignments(
++                            group_assignments, local_stage_target
 +                        ),
 +                        dtype=object,
 +                    )
-@@ -1446 +1659 @@
+@@ -1446 +1692 @@ class RayPPOTrainer:
 -                gen_batch.meta_info["global_steps"] = self.global_steps
 +                gen_batch.meta_info["global_steps"] = current_step
-@@ -1464 +1677 @@
+@@ -1464 +1710 @@ class RayPPOTrainer:
 -                is_last_step = self.global_steps >= self.total_training_steps
 +                is_last_step = current_step >= self.total_training_steps
-@@ -1471 +1684,2 @@
+@@ -1471 +1717,2 @@ class RayPPOTrainer:
 -                        self.checkpoint_manager.sleep_replicas()
 +                        if not dynamic_sampling_enabled:
 +                            self.checkpoint_manager.sleep_replicas()
-@@ -1524,0 +1739,488 @@
-+                        reward_tensor, reward_extra_infos_dict = extract_reward(batch)
-+
+@@ -1526,0 +1774,770 @@ class RayPPOTrainer:
 +                    if dynamic_sampling_enabled:
 +                        seq_rewards = reward_tensor.sum(dim=-1).detach().cpu().tolist()
 +                        batch_uids = batch.non_tensor_batch["uid"].tolist()
@@ -269,11 +300,20 @@
 +                            if callable(getattr(raw_group_types, "tolist", None))
 +                            else list(raw_group_types)
 +                        )
++                        aligned_bpo_fields = extract_aligned_bpo_fields(
++                            batch.non_tensor_batch,
++                            expected_length=len(batch_uids),
++                        )
++                        local_stage_fallback = aligned_bpo_fields.get(
++                            "bpo_local_stage_fallback",
++                            [False] * len(batch_uids),
++                        )
 +                        _, group_stats = select_reward_varying_groups(
 +                            batch_uids,
 +                            seq_rewards,
 +                            terminal_utilities=terminal_utilities, purchase_success=purchase_success,
 +                            group_types=group_types,
++                            local_stage_fallback=local_stage_fallback,
 +                            sampling_invalid=sampling_invalid, sampling_invalid_reasons=sampling_invalid_reasons,
 +                            tolerance=dynamic_reward_tolerance,
 +                        )
@@ -314,6 +354,9 @@
 +                        dynamic_sampling_invalid_groups += group_stats[
 +                            "sampling_invalid_group_count"
 +                        ]
++                        dynamic_local_stage_mismatch_groups += group_stats[
++                            "local_stage_mismatch_group_count"
++                        ]
 +                        dynamic_completion_contrast_groups += group_stats[
 +                            "completion_contrast_group_count"
 +                        ]
@@ -335,52 +378,65 @@
 +                        )
 +                        dynamic_generated_response_tokens += generated_response_tokens
 +                        dynamic_generated_response_tokens_total += generated_response_tokens
-+                        remaining_prompts = dynamic_current_target_prompts - dynamic_accepted_prompts
-+                        if dynamic_effective_tree_budget:
-+                            remaining_prompts = min(
-+                                remaining_prompts,
-+                                dynamic_effective_tree_budget
-+                                - dynamic_trained_groups_total
-+                                - dynamic_accepted_prompts,
-+                            )
-+                        if remaining_prompts <= 0:
-+                            raise RuntimeError(
-+                                "BPO effective-return budget was exhausted before optimizer update"
-+                            )
 +                        groups_by_uid = {
 +                            group["uid"]: group for group in group_stats["groups"]
 +                        }
-+                        pending_types = {
-+                            group_type: max(
-+                                0,
-+                                1 - dynamic_accepted_group_type_counts[group_type],
-+                            )
-+                            for group_type in dynamic_group_schedule
-+                        }
-+                        accepted_uids = []
-+                        for uid in group_stats["kept_uids"]:
-+                            group_type = groups_by_uid[uid]["group_type"]
-+                            if pending_types.get(group_type, 0) <= 0:
-+                                continue
-+                            accepted_uids.append(uid)
-+                            pending_types[group_type] -= 1
-+                            if len(accepted_uids) >= remaining_prompts:
-+                                break
-+                        accepted_uid_set = set(accepted_uids)
-+                        accepted_indices = [
-+                            index for index, uid in enumerate(batch_uids) if uid in accepted_uid_set
-+                        ]
 +                        rollout_diagnostics = build_rollout_diagnostics(
 +                            batch_uids,
 +                            batch.non_tensor_batch["shopping"].tolist(),
-+                            aligned_fields=extract_aligned_bpo_fields(
-+                                batch.non_tensor_batch,
-+                                expected_length=len(batch_uids),
-+                            ),
++                            aligned_fields=aligned_bpo_fields,
 +                        )
 +                        bpo_group_diagnostics = summarize_bpo_group_diagnostics(
 +                            rollout_diagnostics
 +                        )
++                        reservoir_events = {}
++                        for uid in group_stats["kept_uids"]:
++                            group = groups_by_uid[uid]
++                            group_type = group["group_type"]
++                            ranked_group = {
++                                **group,
++                                **bpo_group_diagnostics.get(uid, {}),
++                            }
++                            previous = dynamic_candidate_pools.get(group_type)
++                            selected_indices = [
++                                index
++                                for index, candidate_uid in enumerate(batch_uids)
++                                if candidate_uid == uid
++                            ]
++                            selected_batch = batch.select_idxs(selected_indices)
++                            selected_batch.meta_info.pop("global_token_num", None)
++                            selected_batch.meta_info.pop("images_seqlens", None)
++                            dynamic_candidate_pools, reservoir_events[uid] = (
++                                update_carl_candidate_pool(
++                                    dynamic_candidate_pools,
++                                    group_type=group_type,
++                                    candidate={
++                                        "uid": uid,
++                                        "batch": selected_batch,
++                                        "group": ranked_group,
++                                    },
++                                    generation_batch=dynamic_num_gen_batches,
++                                )
++                            )
++                            dynamic_reservoir_replacements += int(
++                                previous is not None
++                                and reservoir_events[uid]["pool_selected"]
++                            )
++                        dynamic_accepted_prompts = len(dynamic_candidate_pools)
++                        dynamic_accepted_group_type_counts = {
++                            group_type: int(group_type in dynamic_candidate_pools)
++                            for group_type in dynamic_group_schedule
++                        }
++                        accepted_uid_set = {
++                            value["uid"] for value in dynamic_candidate_pools.values()
++                        }
++                        if (
++                            dynamic_accepted_prompts
++                            and dynamic_seconds_to_first_tree is None
++                        ):
++                            dynamic_seconds_to_first_tree = (
++                                time.monotonic() - dynamic_acquisition_started
++                            )
 +                        dynamic_bpo_backbone_rollouts += sum(
 +                            int(value.get("bpo_cost_backbone_rollouts", 0))
 +                            for value in bpo_group_diagnostics.values()
@@ -427,13 +483,21 @@
 +                                    "drop_reason": group["drop_reason"],
 +                                    "contrast_type": group["contrast_type"],
 +                                    "kept": group["kept"],
-+                                    "accepted": group["uid"] in accepted_uid_set,
++                                    "pool_selected": group["uid"] in accepted_uid_set,
++                                    "reservoir_event": reservoir_events.get(
++                                        group["uid"],
++                                        {
++                                            "pool_selected": False,
++                                            "replaced_uid": None,
++                                            "candidate_priority": None,
++                                        },
++                                    ),
 +                                    **bpo_group_diagnostics.get(group["uid"], {}),
 +                                }
 +                                for group in group_stats["groups"]
 +                            ],
 +                            "accepted_prompts_after_batch": (
-+                                dynamic_accepted_prompts + len(accepted_uids)
++                                dynamic_accepted_prompts
 +                            ),
 +                            "target_prompts": dynamic_current_target_prompts,
 +                            "minimum_accepted_prompts": dynamic_current_minimum_accepted_prompts,
@@ -449,28 +513,20 @@
 +                            **generation_diagnostic,
 +                            rollouts=rollout_diagnostics,
 +                        )
-+                        if accepted_indices:
-+                            if (
-+                                dynamic_accepted_prompts == 0
-+                                and dynamic_seconds_to_first_tree is None
-+                            ):
-+                                dynamic_seconds_to_first_tree = (
-+                                    time.monotonic() - dynamic_acquisition_started
-+                                )
-+                            accepted_batch = batch.select_idxs(accepted_indices)
-+                            accepted_batch.meta_info.pop("global_token_num", None)
-+                            accepted_batch.meta_info.pop("images_seqlens", None)
-+                            dynamic_accepted_batches.append(accepted_batch)
-+                            dynamic_accepted_prompts += len(accepted_uids)
-+                            for uid in accepted_uids:
-+                                dynamic_accepted_group_type_counts[
-+                                    groups_by_uid[uid]["group_type"]
-+                                ] += 1
-+
-+                        if dynamic_accepted_prompts < dynamic_current_target_prompts:
++                        selected_contrasts = {
++                            group_type: value["group"]["contrast_type"]
++                            for group_type, value in dynamic_candidate_pools.items()
++                        }
++                        sampling_ready, goal_pair_ready = carl_candidate_pools_ready(
++                            dynamic_candidate_pools,
++                            generation_batch=dynamic_num_gen_batches,
++                            quality_search_gen_batches=dynamic_quality_search_gen_batches,
++                        )
++                        quality_window_complete = sampling_ready and not goal_pair_ready
++                        if not sampling_ready:
 +                            if (
 +                                dynamic_num_gen_batches
-+                                == dynamic_soft_warning_gen_batches
++                                == dynamic_quality_search_gen_batches
 +                            ):
 +                                warning_payload = {
 +                                    "accepted_prompts": dynamic_accepted_prompts,
@@ -647,7 +703,8 @@
 +                                    current_step,
 +                                    metrics=skipped_metrics,
 +                                )
-+                                dynamic_accepted_batches = []
++                                dynamic_candidate_pools = {}
++                                dynamic_reservoir_replacements = 0
 +                                dynamic_accepted_prompts = 0
 +                                dynamic_accepted_group_type_counts = {"root": 0, "local": 0}
 +                                dynamic_num_gen_batches = 0
@@ -658,6 +715,7 @@
 +                                dynamic_all_purchase_success_groups = 0
 +                                dynamic_no_purchase_success_groups = 0
 +                                dynamic_sampling_invalid_groups = 0
++                                dynamic_local_stage_mismatch_groups = 0
 +                                dynamic_completion_contrast_groups = 0
 +                                dynamic_gold_contrast_groups = 0
 +                                dynamic_failure_utility_contrast_groups = 0
@@ -707,7 +765,38 @@
 +                        dynamic_seconds_to_full_batch = (
 +                            time.monotonic() - dynamic_acquisition_started
 +                        )
-+                        batch = DataProto.concat(dynamic_accepted_batches)
++                        selected_groups = {
++                            group_type: {
++                                "uid": dynamic_candidate_pools[group_type]["uid"],
++                                "generation_batch": dynamic_candidate_pools[group_type][
++                                    "generation_batch"
++                                ],
++                                "contrast_type": dynamic_candidate_pools[group_type][
++                                    "group"
++                                ]["contrast_type"],
++                                "local_stage": dynamic_candidate_pools[group_type][
++                                    "group"
++                                ].get("bpo_local_stage", "root"),
++                            }
++                            for group_type in dynamic_group_schedule
++                        }
++                        append_training_diagnostic(
++                            diagnostics_path,
++                            "optimizer_selection",
++                            current_step,
++                            generation_batches=dynamic_num_gen_batches,
++                            goal_pair_ready=goal_pair_ready,
++                            quality_window_complete=quality_window_complete,
++                            local_stage_target=local_stage_target,
++                            selected_groups=selected_groups,
++                            reservoir_replacements=dynamic_reservoir_replacements,
++                        )
++                        batch = DataProto.concat(
++                            [
++                                dynamic_candidate_pools[group_type]["batch"]
++                                for group_type in dynamic_group_schedule
++                            ]
++                        )
 +                        if self.config.trainer.balance_batch:
 +                            self._balance_batch(batch, metrics=metrics)
 +                        batch.meta_info["global_token_num"] = torch.sum(
@@ -735,7 +824,7 @@
 +                                or dynamic_effective_returns_total
 +                                >= dynamic_effective_return_budget
 +                            )
-@@ -1525,0 +2228,146 @@
++                        reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 +                        metrics.update(
 +                            {
 +                                "group/generated": dynamic_generated_groups,
@@ -804,6 +893,37 @@
 +                                "bpo_sampling/candidate_trees": dynamic_generated_groups,
 +                                "carl_sampling/candidate_batches": dynamic_num_gen_batches,
 +                                "carl_sampling/candidate_groups": dynamic_generated_groups,
++                                "carl_sampling/quality_search_batches": dynamic_quality_search_gen_batches,
++                                "carl_sampling/goal_pair_ready": int(goal_pair_ready),
++                                "carl_sampling/reservoir_replacements": dynamic_reservoir_replacements,
++                                "carl_sampling/local_stage_mismatch_groups": dynamic_local_stage_mismatch_groups,
++                                "carl_sampling/selected_goal_groups": sum(
++                                    contrast in CARL_GOAL_CONTRASTS
++                                    for contrast in selected_contrasts.values()
++                                ),
++                                "carl_sampling/selected_failure_groups": sum(
++                                    contrast == "failure_utility_contrast"
++                                    for contrast in selected_contrasts.values()
++                                ),
++                                "carl_sampling/selected_gold_groups": sum(
++                                    contrast == "gold_contrast"
++                                    for contrast in selected_contrasts.values()
++                                ),
++                                "carl_stage/target_product": int(local_stage_target == "product"),
++                                "carl_stage/target_option": int(local_stage_target == "option"),
++                                "carl_stage/target_search_strategy": int(local_stage_target == "search_strategy"),
++                                "carl_stage/completed_product": local_stage_counts["product"],
++                                "carl_stage/completed_option": local_stage_counts["option"],
++                                "carl_stage/completed_search_strategy": local_stage_counts["search_strategy"],
++                                "carl_stage/selected_product": int(
++                                    selected_groups["local"]["local_stage"] == "product"
++                                ),
++                                "carl_stage/selected_option": int(
++                                    selected_groups["local"]["local_stage"] == "option"
++                                ),
++                                "carl_stage/selected_search_strategy": int(
++                                    selected_groups["local"]["local_stage"] == "search_strategy"
++                                ),
 +                                "bpo_sampling/seconds_to_first_tree": (
 +                                    dynamic_seconds_to_first_tree
 +                                    if dynamic_seconds_to_first_tree is not None
@@ -860,7 +980,8 @@
 +                        )
 +                        self.checkpoint_manager.sleep_replicas()
 +                        dynamic_consecutive_skips = 0
-+                        dynamic_accepted_batches = []
++                        dynamic_candidate_pools = {}
++                        dynamic_reservoir_replacements = 0
 +                        dynamic_accepted_prompts = 0
 +                        dynamic_accepted_group_type_counts = {"root": 0, "local": 0}
 +                        dynamic_num_gen_batches = 0
@@ -871,6 +992,7 @@
 +                        dynamic_all_purchase_success_groups = 0
 +                        dynamic_no_purchase_success_groups = 0
 +                        dynamic_sampling_invalid_groups = 0
++                        dynamic_local_stage_mismatch_groups = 0
 +                        dynamic_completion_contrast_groups = 0
 +                        dynamic_gold_contrast_groups = 0
 +                        dynamic_failure_utility_contrast_groups = 0
@@ -882,7 +1004,7 @@
 +                        dynamic_bpo_shopper_api_calls = 0
 +                        dynamic_acquisition_started = time.monotonic()
 +                        dynamic_seconds_to_first_tree = None
-@@ -1526,0 +2375,45 @@
++
 +                    if "shopping" not in batch.non_tensor_batch:
 +                        raise RuntimeError(
 +                            "Shopping GRPO requires AgentLoop shopping diagnostics"
@@ -928,38 +1050,38 @@
 +                            }
 +                        )
 +
-@@ -1643 +2536 @@
+@@ -1643 +2660 @@ class RayPPOTrainer:
 -                    if self.config.trainer.critic_warmup > self.global_steps:
 +                    if self.config.trainer.critic_warmup > current_step:
-@@ -1645 +2538 @@
+@@ -1645 +2662 @@ class RayPPOTrainer:
 -                        self.checkpoint_manager.update_weights(self.global_steps)
 +                        self.checkpoint_manager.update_weights(current_step)
-@@ -1649,0 +2543,3 @@
+@@ -1649,0 +2667,3 @@ class RayPPOTrainer:
 +                        optimizer_updated = True
 +                        if dynamic_sampling_enabled:
 +                            self.global_steps = current_step
-@@ -1665 +2561,3 @@
+@@ -1665 +2685,3 @@ class RayPPOTrainer:
 -                            or self.global_steps % self.config.trainer.save_freq == 0
 +                            or current_step % self.config.trainer.save_freq == 0
 +                            or current_step in dynamic_checkpoint_steps
 +                            or dynamic_budget_checkpoint_due
-@@ -1675 +2573 @@
+@@ -1675 +2697 @@ class RayPPOTrainer:
 -                            self.checkpoint_manager.update_weights(self.global_steps)
 +                            self.checkpoint_manager.update_weights(current_step)
-@@ -1687 +2585,3 @@
+@@ -1687 +2709,3 @@ class RayPPOTrainer:
 -                    is_last_step or self.global_steps % self.config.trainer.test_freq == 0
 +                    is_last_step
 +                    or current_step % self.config.trainer.test_freq == 0
 +                    or current_step in dynamic_validation_steps
-@@ -1697 +2597 @@
+@@ -1697 +2721 @@ class RayPPOTrainer:
 -                        self.global_steps + 1 in self.config.global_profiler.steps
 +                        current_step + 1 in self.config.global_profiler.steps
-@@ -1715 +2615 @@
+@@ -1715 +2739 @@ class RayPPOTrainer:
 -                        "training/global_step": self.global_steps,
 +                        "training/global_step": current_step,
-@@ -1716,0 +2617 @@
+@@ -1716,0 +2741 @@ class RayPPOTrainer:
 +                        "training/optimizer_updated": int(optimizer_updated),
-@@ -1718,0 +2620,12 @@
+@@ -1718,0 +2744,12 @@ class RayPPOTrainer:
 +                if dynamic_sampling_enabled:
 +                    metrics.update(
 +                        {
@@ -972,7 +1094,7 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750 +2663,17 @@
+@@ -1750 +2787,17 @@ class RayPPOTrainer:
 -                logger.log(data=metrics, step=self.global_steps)
 +                append_training_diagnostic(
 +                    diagnostics_path,
@@ -991,7 +1113,7 @@
 +                logger.log(data=metrics, step=current_step)
 +                if is_last_step:
 +                    logger.finish()
-@@ -1753 +2682,6 @@
+@@ -1753 +2806,6 @@ class RayPPOTrainer:
 -                self.global_steps += 1
 +                if dynamic_sampling_enabled and not optimizer_updated:
 +                    raise RuntimeError(

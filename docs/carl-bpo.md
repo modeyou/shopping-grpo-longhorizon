@@ -2,7 +2,7 @@
 
 > **名称**：CARL-BPO（Completion-Aligned Root–Local Branching Policy Optimization）
 > **中文名**：完成率对齐的 Root–Local 分支策略优化
-> **状态**：训练实现已落地；尚未启动训练或用于模型选择
+> **状态**：CARL-BPO v1 作为历史对照；v2 已完成代码实现，等待服务器 preflight 与再次确认后运行
 > **起点模型**：SFT `checkpoint-325`
 
 本文把正式 `full-bpo-v1` 的失败分析落成一套做减法后的 RL 改进方案。CARL-BPO
@@ -21,7 +21,8 @@ Root episode LOO + Local suffix-only sibling LOO
 标准 PPO token loss，Root/Local group 等权
 ```
 
-本文定义方案、实现约束和验证门槛。实现已按本文更新；仍不会自动启动训练、合并模型，
+本文定义方案、实现约束和验证门槛。第 1–16 节记录 CARL-BPO v1 的设计与当前实现；
+第 17 节记录正式运行暴露的问题及已经确认的 v2 替换方案。本文不会自动启动训练、合并模型，
 也不会使用 `final200`。
 
 ## 1. 问题与目标
@@ -989,3 +990,287 @@ export CARL_ANALYSIS_OUT="$PWD/outputs/analysis/$CARL_NAME"
 
 审计通过后仍只按 V6 使用冻结 validation 选择一个 checkpoint。未经再次确认，不合并模型、
 不执行 dev500 配对评测，也不使用 final200。
+
+## 17. CARL-BPO v2：目标优先候选池与可验证 Local 覆盖
+
+本节是对当前 v1 正式运行暴露问题的确认修订。v2 不是在 v1 上增加兼容分支；实现时应删除
+被替换的“首个有效 group 立即接受”、observation 字符串阶段分类和静默跨阶段 fallback 路径，
+只保留本节定义的新合同。
+
+### 17.1 当前运行证据与问题归属
+
+当前正式运行身份为：
+
+```text
+SwanLab run: mode/shopping-multiturn-agentic/n6xjq1pd
+run name: carl-bpo-v1-step500-r4000-seed20260823-20260830-001314
+```
+
+2026-08-30 11:44 的只读 SwanLab 快照显示运行处于 `RUNNING`，已完成 254/500 个 optimizer
+steps、508 个 accepted groups 和 2032 个 accepted returns；所有步骤均为完整的 1 Root + 1 Local，
+没有 skipped update、NaN/Inf 或数值失控。冻结在线 validation400 为：
+
+| step | gold purchase | gold + valid alternative | mean utility |
+|---:|---:|---:|---:|
+| 0 | 0.6850 | 0.6925 | 0.646669 |
+| 150 | 0.7050 | 0.7125 | 0.671511 |
+| 200 | 0.7050 | 0.7125 | 0.673669 |
+| 250 | 0.7025 | 0.7075 | 0.673013 |
+
+step 250 相比起点仍分别高 1.75pp 和 1.50pp；相比当前最佳点只低 0.25pp 和 0.50pp，
+尚未触发第 12.5 节的停止条件。v1 运行可以继续作为诊断/消融证据，但不得被描述为已经完整
+验证本节的 v2 选择器。
+
+已经确认的问题分为三类：
+
+| 问题 | 当前证据 | 归属 |
+|---|---|---|
+| contrast 优先级只在单个 generation batch 内排序 | 每批只有 1 Root + 1 Local；代码遇到每类首个非恒定 group 就立即接受，不会被后续更高优先级候选替换 | v1 代码未完整实现第 6 节意图 |
+| Local 实际覆盖严重偏离 40/35/25 | step 254 的目标累计为 104/90/60，实际为 product 216、option 38、search_recovery 0；124/254 个 Local 发生 fallback | v1 设计允许软 fallback，同时分类实现过窄 |
+| accepted contrast 构成不可从 SwanLab 复核 | 2200 个候选中有 completion 476、gold 5、failure 260，但页面没有 508 个 accepted groups 的 contrast 构成 | 可观测性未完整落地 |
+
+Gold contrast 的候选供给只有 5/2200。它不是 Reward 或 optimizer 故障，而是尚未解决的目标信号
+稀缺问题。v2 必须保证 Gold contrast 一旦出现就不会被较早到达的普通 completion 或 failure
+候选浪费。
+
+### 17.2 v2 保持不变的合同
+
+v2 只修复“哪些 comparison groups 进入 optimizer”和“Local 决策阶段如何获得真实覆盖”。以下
+部分冻结不变，避免把数据合同修复与优化器调参混在一起：
+
+- Reward v4 继续作为事实判定器；
+- completion-aligned train return 保持 gold `1.25`、valid alternative `1.0` 及当前失败映射；
+- 每步 1 Root + 1 Local，每组 `M=1, K=4`；
+- Root episode LOO；
+- Local suffix-only LOO，`upstream_lambda=0`；
+- Root/Local 等权的标准 token-mean PPO loss；
+- 当前 LoRA、LR、10-step warmup、500-step cosine horizon 和 `clip_grad=1`；
+- fused/remove-padding/Liger 及已有 reference-equivalence 合同；
+- 500 optimizer steps 仍只是预算上限，不预先指定最终 checkpoint。
+
+### 17.3 每步分槽候选池
+
+每个 optimizer step 在 actor 更新前建立两个只属于当前步骤的候选池：
+
+```text
+Root pool
+Local pool
+```
+
+每个 generation batch 仍生成一个 Root group 和一个 Local group。通过 snapshot、prefix、Reward、
+return 和完整性审计的 group 先进入对应 pool，不再立即进入 optimizer。每个 pool 独立维护当前
+最佳候选，后续更高优先级候选必须能够替换旧候选。
+
+正式优先级为：
+
+```text
+Gold contrast
+> Completion contrast
+> Failure utility contrast
+> constant / invalid / unverifiable / audit failure（丢弃）
+```
+
+Gold 优先于普通 Completion 的原因是 strict gold 与 combined completion 同为主要验收指标，而
+Gold contrast 极其稀少；Gold group 的 siblings 仍然都是有效完成轨迹，不是用 strict 指标替换
+任务完成率。同一 contrast 层内依次比较：
+
+1. `train_return` range；
+2. unique branch actions；
+3. unique tool sequences；
+4. 更早生成的候选作为确定性 tie-break。
+
+候选获取使用两段预算：
+
+1. Root 和 Local 都获得 goal contrast（Gold 或 Completion）后立即结束采样；
+2. 到第 10 批仍未形成 goal pair，则每个 pool 选择当前最佳有效候选；
+3. 若任一 pool 连有效 Failure contrast 都没有，继续采样到第 30 批；
+4. 30 批仍无法形成完整 Root/Local pair 时硬停止，不训练 pending group。
+
+真实 rollout、环境 snapshot 和 token batch 绝不能跨 optimizer step 携带。actor 更新后旧候选已经
+变成陈旧的 off-policy 数据。允许跨步骤保留的只有累计计数、阶段欠账和成本统计。
+
+### 17.4 Local 阶段合同
+
+v2 删除 `search_recovery` 名称，统一使用三个结构化阶段：
+
+| 阶段 | 长期目标 | 结构化决策 |
+|---|---:|---|
+| `product` | 40% | 打开、切换、比较商品 |
+| `option` | 35% | 颜色、尺寸、容量、套装等 option 选择 |
+| `search_strategy` | 25% | 初始/改写查询、重新搜索、返回结果页、翻页和错误恢复 |
+
+阶段必须根据该边界生成出的结构化 backbone action/tool 与明确的环境状态分类，不得再依赖
+observation 是否包含 `error`、`失败`、`无效` 等自由文本。至少满足：
+
+```text
+search_products / back_to_search / prev_page -> search_strategy
+select_option 及等价 option action           -> option
+open_product / view_features / view_description
+及等价商品查看、比较、切换 action              -> product
+```
+
+`buy_now`、`ask_shopper` 和无法识别的动作不计入三个 Local target pool；它们保留为诊断候选。
+Root 已负责购买与提问的完整策略，不能用这些动作伪造 Local 的 product/search/option 覆盖。
+
+目标阶段不再用固定 20-step 数组机械轮换。driver 在每一步根据累计目标和实际 accepted 数量选择
+欠账最大的阶段；确定性 tie-break 使用 `product -> option -> search_strategy`。该调度携带的是统计
+欠账，不携带旧 rollout。
+
+Local 获取期间分别维护 target-stage pool 和 cross-stage diagnostic pool。只有 target-stage pool
+可以填充当前 Local slot；跨阶段候选用于供给诊断，不能静默代替目标阶段。30 批仍没有目标阶段
+有效候选时写入完整诊断并硬停止，而不是继续扩大 product 占比。
+
+在实现硬配额前，必须先用 v1 的 `training_diagnostics.jsonl` 做离线重放。若新的结构化分类仍然
+无法为某阶段提供足够候选，应增加基于任务能力标签的 stage-aware task routing；不得重新引入
+静默 fallback。任务路由只决定为某一 Local target 选择哪类训练任务，不改变 Reward 或 return。
+
+### 17.5 SwanLab 与本地审计
+
+SwanLab 在现有五个顶级板块内增加以下低基数聚合指标：
+
+```text
+sampling/accepted_root_contrast/*
+sampling/accepted_local_contrast/*
+sampling/accepted_goal_contrast_share
+sampling/accepted_failure_fallback_share
+sampling/local_target/*
+sampling/local_actual/*
+sampling/local_stage_debt/*
+sampling/local_cross_stage_rejected
+sampling/local_acquisition_failure
+sampling/reservoir_replacements
+sampling/batches_to_goal_pair
+```
+
+`training_diagnostics.jsonl` 对每个候选保存 generation batch、Root/Local、target stage、actual
+stage、contrast type、priority tuple、accepted/replaced/rejected、reason、最终 rank、四个 train
+returns 和 LOO advantage mass。SwanLab 的候选总数与 accepted 构成必须分开命名，不能再用前者
+推断后者。
+
+### 17.6 实现前只读审计
+
+实现代码前先完成 v1 当前运行日志的只读审计。审计不修改模型、不启动训练，只把每一步的候选
+流按 v2 规则离线重放，回答：
+
+1. v1 实际 accepted Root/Local 中 Completion、Gold、Failure 各有多少；
+2. 跨批候选池会替换多少个早到的 Failure group；
+3. v2 选择器的 accepted goal-contrast share；
+4. 新结构化阶段定义下的 product/option/search_strategy 供给；
+5. 第 10/30 批的完整 pair 成功率、平均候选批次和最坏成本；
+6. 是否需要 stage-aware task routing。
+
+离线重放的实现准入门槛为：
+
+```text
+predicted accepted goal-contrast share >= 60%
+predicted Failure fallback share <= 40%
+三个 Local 阶段都有真实候选
+rolling-100 Local accepted share 与 40/35/25 各自偏差 <= 10pp
+平均 candidate batches <= 10
+至少 99% 的步骤能在 30 批内形成完整 Root/Local pair
+Gold contrast 一旦出现，预测接受率 = 100%
+```
+
+若日志证据不足以重放新的结构化动作分类，必须明确列出缺失字段，并使用原始 rollout diagnostics
+补齐；不能用 SwanLab 聚合曲线猜测。
+
+#### 17.6.1 step-260 快照审计结果
+
+服务器快照 `carl-bpo-v1-diagnostics-20260830-120034.tar.gz` 已通过清单 SHA-256 校验。
+`training_diagnostics.jsonl` 包含 260 个完整 optimizer steps、1145 个 generation batches，JSONL
+没有损坏行；另有 step 261 的未完成采样事件，以下统计只使用已经存在 `optimizer_step` 的 1–260。
+
+v1 实际 accepted contrast 构成为：
+
+| group | Gold | Completion | Failure | goal share |
+|---|---:|---:|---:|---:|
+| Root | 1 | 184 | 75 | 71.15% |
+| Local | 1 | 150 | 109 | 58.08% |
+| 合计 | 2 | 334 | 184 | 64.62% |
+
+因此 v1 总体已经达到 `goal share >= 60%`，但 Local 仍有 41.92% 的 accepted groups 只比较
+Failure utility。1145 个已生成候选批次中共有 5 个 Gold contrast，v1 只接受 2 个。
+
+在不增加任何 rollout、只利用“一个 slot 已接受而另一个 slot 尚未接受”期间已经生成的同类型
+候选时，按 v2 pool priority 离线选择得到：
+
+| group | Gold | Completion | Failure | goal share |
+|---|---:|---:|---:|---:|
+| Root | 4 | 201 | 55 | 78.85% |
+| Local | 1 | 161 | 98 | 62.31% |
+| 合计 | 5 | 362 | 153 | 70.58% |
+
+即无需新增生成成本就能把 31 个 Failure slots 替换为 goal contrast，并接受全部 5 个 Gold
+contrast；另有 33 个同层候选会因 return range 或行为多样性更优而替换。该结果精确来自日志中
+已经真实生成的候选，不依赖分布假设。
+
+按结构化 backbone action 检查每条 Local backbone 的非终局决策边界，1145 条候选轨迹的阶段
+可用性为：
+
+| 阶段 | 至少存在一个该阶段边界 | 占全部 Local backbones |
+|---|---:|---:|
+| product | 1138 | 99.39% |
+| option | 1116 | 97.47% |
+| search_strategy | 1145 | 100.00% |
+
+这说明 v1 的 `search_recovery=0` 主要不是 backbone 没有搜索/恢复边界，而是旧分类和选择逻辑
+没有把结构化动作正确分槽。当前证据不支持立即增加 stage-aware task routing；v2 第一版先实现
+结构化分类、每阶段 entropy retention 和硬 target pool，只有运行门槛证明供给不足时才增加路由。
+
+用 1145 个真实批次的 Root/Local 联合候选频率作 IID 供给估计：
+
+| 预算 | 形成 goal pair 的估计概率 | 形成任意有效 pair 的估计概率 |
+|---:|---:|---:|
+| 10 batches | 78.72% | 95.06% |
+| 30 batches | 99.47% | 99.993% |
+
+在 10-batch 质量窗口内，Root 至少出现一个 goal contrast 的估计概率为 95.26%，Local 为
+82.65%；goal pair 的截断期望采样成本约 6.17 batches。它支持保留第 17.3 节的 10/30 两段预算。
+
+这些概率不是精确反事实重放。v1 一旦接受首个完整 pair 就停止生成，日志没有后续本可产生的
+候选；同时只保存最终选中边界的 entropy 和 suffix returns，没有保存同一 backbone 所有边界的
+反事实 suffix returns。因此：
+
+- 64.62% 和 70.58% 是精确审计结果；
+- 三阶段“边界存在率”是精确的结构化 action 审计，但不等于该边界一定产生非恒定 return；
+- 10/30 批概率是有明确 IID 假设的供给估计，不能写成正式运行保证。
+
+审计结论为“允许进入代码实现”，但不宣布新训练已获准。v2 实现保留 30-batch 硬停止、完整
+候选诊断和第 17.7 节测试；仍需通过服务器 preflight，并用首次正式运行的真实 target-stage
+suffix returns 验证剩余缺口。
+
+### 17.7 代码验证与新正式运行
+
+实现必须添加以下确定性测试：
+
+1. 第一批 Failure、第二批 Completion，最终接受 Completion；
+2. 第一批 Completion、第二批 Gold，最终接受 Gold；
+3. Root 和 Local pool 不能互相替代；
+4. 更高优先级候选能够替换旧候选；
+5. constant、invalid、unverifiable 永远不能进入 optimizer；
+6. 三类结构化 action 的阶段分类符合第 17.4 节；
+7. 非目标 Local 不能填充目标 slot；
+8. 阶段欠账调度在 20、100、500 个 accepted Local 后达到 40/35/25；
+9. 候选不能跨 optimizer step 复用；
+10. Root/Local mask、LOO、等权 loss 与当前 reference 完全一致；
+11. SwanLab accepted 指标与本地逐候选审计聚合完全一致；
+12. 10/30 批停止规则和 pending group 可恢复合同成立。
+
+修复后的正式运行必须重新从 SFT `checkpoint-325` 开始，不能从 v1 RL checkpoint resume；否则
+无法区分 v2 数据选择器的效果与 v1 已发生的更新。当前 v1 run 只作为对照和候选供给证据。
+未经再次确认，不启动新训练、不合并模型、不执行 dev500 配对评测，也不使用 `final200`。
+
+### 17.8 v2 实现落点
+
+当前代码实现与本节方案的对应关系如下：
+
+- `dynamic_sampling.py`：40/35/25 加权公平账本、Gold/Completion/Failure 排序、Root/Local
+  reservoir 替换和 10-batch 停止判定；
+- `bpo/agent_loop.py`：按实际结构化 tool call 分类 `product`、`option`、`search_strategy`；
+- `bpo/runtime.py`：只接收 driver 分配的 Local target，禁止 worker 自行轮换；
+- veRL dynamic-sampling patch V5：每步候选池、30-batch 缺槽硬停止、optimizer selection
+  诊断、resume 后有效 return 预算恢复；
+- `audit_bpo_formal_run.py`：要求 500 条 authoritative selection 记录，并验收最终
+  `200/175/125` Local 覆盖；
+- SwanLab 继续只投影到 `validation / sampling / credit / optimization / runtime` 五个板块，
+  v2 reservoir、goal/failure 接受量和阶段覆盖统一归入 `sampling`。

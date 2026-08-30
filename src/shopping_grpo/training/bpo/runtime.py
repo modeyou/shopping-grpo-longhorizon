@@ -554,31 +554,21 @@ async def _generate_bpo_sequences(worker, batch):
         False,
     )
 
-    raw_step = batch.meta_info.get("global_steps", batch.meta_info.get("global_step", 0))
-    if isinstance(raw_step, (list, tuple)):
-        raw_step = raw_step[0] if raw_step else 0
-    step = int(getattr(raw_step, "item", lambda: raw_step)())
     group_schedule = tuple(
         str(value)
         for value in worker.config.shopping_bpo.get(
             "group_schedule", ["root", "local"]
         )
     )
-    stage_schedule = tuple(
-        str(value)
-        for value in worker.config.shopping_bpo.get(
-            "local_stage_schedule",
-            [
-                "product",
-            ] * 8
-            + ["option"] * 7
-            + ["search_recovery"] * 5,
-        )
-    )
     raw_group_types = batch.non_tensor_batch.get("bpo_group_type")
     if raw_group_types is None:
         raise RuntimeError(
             "CARL-BPO requires driver-assigned bpo_group_type before worker sharding"
+        )
+    raw_stage_targets = batch.non_tensor_batch.get("bpo_stage_target")
+    if raw_stage_targets is None:
+        raise RuntimeError(
+            "CARL-BPO requires driver-assigned bpo_stage_target before worker sharding"
         )
 
     async def run_group(start):
@@ -601,9 +591,12 @@ async def _generate_bpo_sequences(worker, batch):
             )
         kwargs["bpo_group_type"] = group_type
         if group_type == "local":
-            kwargs["bpo_stage_target"] = stage_schedule[
-                max(step - 1, 0) % len(stage_schedule)
-            ]
+            stage_targets = {str(raw_stage_targets[row]) for row in rows}
+            if len(stage_targets) != 1:
+                raise RuntimeError(
+                    "CARL-BPO Local sibling rows disagree on driver-assigned stage target"
+                )
+            kwargs["bpo_stage_target"] = next(iter(stage_targets))
         registry = module._agent_loop_registry
         if agent_name not in registry:
             raise ValueError(f"BPO agent loop is not registered: {agent_name}")

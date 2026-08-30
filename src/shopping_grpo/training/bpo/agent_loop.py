@@ -28,6 +28,7 @@ from shopping_grpo.training.grpo.adapter.runtime import (
 from shopping_grpo.training.grpo.adapter.session import ShopSimulatorSession
 from shopping_grpo.training.grpo.dynamic_sampling import (
     BPO_DIAGNOSTIC_FIELDS,
+    CARL_LOCAL_STAGE_WEIGHTS,
     aggregate_bpo_tree_metrics,
     build_rollout_diagnostics,
     summarize_bpo_group_diagnostics,
@@ -128,30 +129,25 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         return self._attach_training_return(output)
 
     @staticmethod
-    def _stage_for_prefix(state):
-        """Classify a local boundary from the actions already in the prefix."""
-        steps = state.get("steps") or []
-        last_tool = str(steps[-1].get("tool", "")) if steps else ""
-        lowered = last_tool.lower()
-        observation = str(state.get("latest_observation", "")).lower()
-        if any(
-            marker in observation
-            for marker in ("被本地动作守卫拒绝", "error", "失败", "无效")
-        ):
-            return "search_recovery"
-        if any(
-            marker in observation
-            for marker in ("颜色", "尺码", "尺寸", "容量", "套装", "select_option")
-        ):
+    def _stage_for_tool_calls(tool_calls):
+        """Classify the generated backbone action at the snapshotted boundary."""
+        calls = list(tool_calls or [])
+        if len(calls) != 1:
+            return "excluded"
+        name = str(getattr(calls[0], "name", "")).lower()
+        if name in {"search_products", "back_to_search", "prev_page", "next_page"}:
+            return "search_strategy"
+        if name == "select_option":
             return "option"
-        if lowered in {"search_products", "back_to_search", "prev_page"}:
+        if name in {
+            "open_product",
+            "view_description",
+            "view_features",
+            "view_reviews",
+            "view_attributes",
+        }:
             return "product"
-        if any(
-            word in lowered
-            for word in ("option", "variant", "select", "configure", "size", "color")
-        ):
-            return "option"
-        return "product"
+        return "excluded"
 
     @staticmethod
     def _retain_local_candidates(candidates):
@@ -449,7 +445,9 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
             return await self._run_root(sampling_params, **kwargs)
         if group_type != "local":
             raise ValueError(f"unknown CARL-BPO group type: {group_type!r}")
-        stage_target = str(kwargs.pop("bpo_stage_target", "auto"))
+        stage_target = str(kwargs.pop("bpo_stage_target"))
+        if stage_target not in CARL_LOCAL_STAGE_WEIGHTS:
+            raise ValueError(f"unknown CARL-BPO Local stage target: {stage_target!r}")
         spec = multiturn_spec_from_kwargs(kwargs, enabled=True)
         task_id = spec["task_id"]
         session = ShopSimulatorSession(
@@ -514,7 +512,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                             token_offset=0,
                             entropy=entropy,
                             snapshot_id=snapshot_id,
-                            stage=self._stage_for_prefix(prefix_state),
+                            stage=self._stage_for_tool_calls(data.tool_calls),
                             payload={
                                 "agent_data": prefix_data,
                                 "runtime_state": prefix_state,
@@ -555,12 +553,9 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                     for value in retained_candidates
                     if int(value.action_index) < len(action_starts) - 1
                 ]
-                if stage_target != "auto":
-                    targeted = [
-                        value for value in eligible if value.stage == stage_target
-                    ]
-                    if targeted:
-                        eligible = targeted
+                targeted = [value for value in eligible if value.stage == stage_target]
+                if targeted:
+                    eligible = targeted
                 candidate = select_nonterminal_branch_candidate(
                     retain_branch_candidates(eligible, limit=max(1, len(eligible))),
                     action_count=len(action_starts),
@@ -570,7 +565,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
             candidate.payload["backbone_action_count"] = len(action_starts)
             candidate.payload["stage_target"] = stage_target
             candidate.payload["stage_fallback"] = bool(
-                stage_target != "auto" and candidate.stage != stage_target
+                candidate.stage != stage_target
             )
             for rejected in retained_candidates:
                 if rejected is candidate:

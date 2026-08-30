@@ -62,6 +62,158 @@ def build_carl_group_assignments(group_count: int, group_schedule) -> tuple[str,
     return schedule
 
 
+CARL_LOCAL_STAGE_WEIGHTS = {
+    "product": 8,
+    "option": 7,
+    "search_strategy": 5,
+}
+
+CARL_GOAL_CONTRASTS = frozenset({"gold_contrast", "completion_contrast"})
+
+
+def _validated_stage_weights(stage_weights=None) -> tuple[tuple[str, int], ...]:
+    raw = CARL_LOCAL_STAGE_WEIGHTS if stage_weights is None else stage_weights
+    if not isinstance(raw, Mapping):
+        raise ValueError("CARL-BPO local stage weights must be a mapping")
+    expected = tuple(CARL_LOCAL_STAGE_WEIGHTS)
+    if {str(name) for name in raw} != set(expected) or len(raw) != len(expected):
+        raise ValueError(
+            "CARL-BPO local stages must be product, option, search_strategy"
+        )
+    values = tuple((name, int(raw[name])) for name in expected)
+    if any(weight <= 0 for _, weight in values):
+        raise ValueError("CARL-BPO local stage weights must be positive")
+    return values
+
+
+def carl_local_stage_counts(completed_local_groups: int, stage_weights=None) -> dict[str, int]:
+    """Reconstruct the deterministic weighted-fair Local stage ledger."""
+    completed = int(completed_local_groups)
+    if completed < 0:
+        raise ValueError("completed Local groups must be non-negative")
+    weights = _validated_stage_weights(stage_weights)
+    total_weight = sum(weight for _, weight in weights)
+    counts = {name: 0 for name, _ in weights}
+    for accepted in range(completed):
+        target_total = accepted + 1
+        stage = max(
+            weights,
+            key=lambda item: (
+                target_total * item[1] / total_weight - counts[item[0]],
+                -tuple(name for name, _ in weights).index(item[0]),
+            ),
+        )[0]
+        counts[stage] += 1
+    return counts
+
+
+def select_carl_local_stage_target(
+    completed_local_groups: int, stage_weights=None
+) -> tuple[str, dict[str, int]]:
+    """Choose the most under-covered stage for the next accepted Local group."""
+    weights = _validated_stage_weights(stage_weights)
+    counts = carl_local_stage_counts(completed_local_groups, dict(weights))
+    total_weight = sum(weight for _, weight in weights)
+    target_total = int(completed_local_groups) + 1
+    stage = max(
+        weights,
+        key=lambda item: (
+            target_total * item[1] / total_weight - counts[item[0]],
+            -tuple(name for name, _ in weights).index(item[0]),
+        ),
+    )[0]
+    return stage, counts
+
+
+def build_carl_stage_assignments(
+    group_types: Sequence[str], local_stage_target: str
+) -> tuple[str, ...]:
+    """Attach one driver-selected Local target before sibling repetition."""
+    roles = tuple(str(value) for value in group_types)
+    if roles != ("root", "local"):
+        raise ValueError("CARL-BPO stage assignment requires Root then Local")
+    target = str(local_stage_target)
+    if target not in CARL_LOCAL_STAGE_WEIGHTS:
+        raise ValueError(f"unknown CARL-BPO Local stage target: {target!r}")
+    return "root", target
+
+
+def carl_candidate_priority(group: Mapping[str, object], generation_batch: int) -> tuple:
+    """Return the deterministic v2 reservoir ordering for one valid group."""
+    contrast = str(group.get("contrast_type", "constant"))
+    rank = {
+        "gold_contrast": 0,
+        "completion_contrast": 1,
+        "failure_utility_contrast": 2,
+    }.get(contrast, 99)
+    returns = tuple(float(value) for value in group.get("train_returns", ()))
+    if rank == 99 or len(returns) < 2 or any(not math.isfinite(value) for value in returns):
+        raise ValueError("CARL-BPO reservoir candidate must be a valid contrast group")
+    return (
+        rank,
+        -(max(returns) - min(returns)),
+        -int(group.get("bpo_unique_branch_action_count", 0)),
+        -int(group.get("bpo_unique_tool_sequence_count", 0)),
+        int(generation_batch),
+        str(group.get("uid", "")),
+    )
+
+
+def update_carl_candidate_pool(
+    pool: Mapping[str, Mapping[str, object]],
+    *,
+    group_type: str,
+    candidate: Mapping[str, object],
+    generation_batch: int,
+) -> tuple[dict[str, Mapping[str, object]], dict[str, object]]:
+    """Apply one Root/Local candidate to the per-update deterministic reservoir."""
+    role = str(group_type)
+    if role not in {"root", "local"}:
+        raise ValueError(f"unknown CARL-BPO reservoir group type: {role!r}")
+    group = candidate.get("group")
+    if not isinstance(group, Mapping):
+        raise ValueError("CARL-BPO reservoir candidate is missing group diagnostics")
+    priority = carl_candidate_priority(group, generation_batch)
+    current = pool.get(role)
+    if current is not None and priority >= current["priority"]:
+        return dict(pool), {
+            "pool_selected": False,
+            "replaced_uid": None,
+            "candidate_priority": priority,
+        }
+    updated = dict(pool)
+    replaced_uid = current.get("uid") if current is not None else None
+    updated[role] = {
+        **dict(candidate),
+        "priority": priority,
+        "generation_batch": int(generation_batch),
+    }
+    return updated, {
+        "pool_selected": True,
+        "replaced_uid": replaced_uid,
+        "candidate_priority": priority,
+    }
+
+
+def carl_candidate_pools_ready(
+    pool: Mapping[str, Mapping[str, object]],
+    *,
+    generation_batch: int,
+    quality_search_gen_batches: int,
+) -> tuple[bool, bool]:
+    """Return ``(ready, goal_pair)`` for the v2 two-stage stopping rule."""
+    if int(generation_batch) <= 0 or int(quality_search_gen_batches) <= 0:
+        raise ValueError("CARL-BPO generation and quality-search batches must be positive")
+    if set(pool) != {"root", "local"}:
+        return False, False
+    contrasts = [
+        str(pool[role]["group"]["contrast_type"])
+        for role in ("root", "local")
+    ]
+    goal_pair = all(contrast in CARL_GOAL_CONTRASTS for contrast in contrasts)
+    return goal_pair or int(generation_batch) >= int(quality_search_gen_batches), goal_pair
+
+
 def build_rollout_diagnostics(
     uids: Sequence[Hashable],
     shopping_infos: Sequence[object],
@@ -590,7 +742,7 @@ _SWANLAB_DASHBOARD_ALIASES = {
     "group/failure_utility_contrast": "sampling/failure_utility_contrast_groups",
     "bpo_stage/product_count": "sampling/local_product_groups",
     "bpo_stage/option_count": "sampling/local_option_groups",
-    "bpo_stage/search_recovery_count": "sampling/local_search_recovery_groups",
+    "bpo_stage/search_strategy_count": "sampling/local_search_strategy_groups",
     "bpo_stage/fallback_count": "sampling/local_fallback_groups",
     "bpo_stage/unavailable_count": "sampling/local_stage_unavailable_groups",
     "bpo_diversity/unique_branch_actions_mean": "sampling/unique_branch_actions_mean",
@@ -598,6 +750,22 @@ _SWANLAB_DASHBOARD_ALIASES = {
     "carl_budget/accepted_groups_total": "sampling/accepted_groups_total",
     "carl_budget/accepted_returns_total": "sampling/accepted_returns_total",
     "carl_budget/target_returns": "sampling/target_returns",
+    "carl_sampling/quality_search_batches": "sampling/quality_search_batches",
+    "carl_sampling/goal_pair_ready": "sampling/goal_pair_ready",
+    "carl_sampling/reservoir_replacements": "sampling/reservoir_replacements",
+    "carl_sampling/selected_goal_groups": "sampling/selected_goal_groups",
+    "carl_sampling/selected_failure_groups": "sampling/selected_failure_groups",
+    "carl_sampling/selected_gold_groups": "sampling/selected_gold_groups",
+    "carl_sampling/local_stage_mismatch_groups": "sampling/local_stage_mismatch_groups",
+    "carl_stage/target_product": "sampling/stage_target_product",
+    "carl_stage/target_option": "sampling/stage_target_option",
+    "carl_stage/target_search_strategy": "sampling/stage_target_search_strategy",
+    "carl_stage/completed_product": "sampling/stage_completed_product",
+    "carl_stage/completed_option": "sampling/stage_completed_option",
+    "carl_stage/completed_search_strategy": "sampling/stage_completed_search_strategy",
+    "carl_stage/selected_product": "sampling/stage_selected_product",
+    "carl_stage/selected_option": "sampling/stage_selected_option",
+    "carl_stage/selected_search_strategy": "sampling/stage_selected_search_strategy",
     # Return signal and branching-credit coverage.
     "reward/train_return_mean": "credit/train_return_mean",
     "reward/train_return_min": "credit/train_return_min",
@@ -732,9 +900,9 @@ def aggregate_bpo_tree_metrics(
         "bpo_stage/option_count": float(
             sum(summary.get("bpo_local_stage") == "option" for summary in summaries)
         ),
-        "bpo_stage/search_recovery_count": float(
+        "bpo_stage/search_strategy_count": float(
             sum(
-                summary.get("bpo_local_stage") == "search_recovery"
+                summary.get("bpo_local_stage") == "search_strategy"
                 for summary in summaries
             )
         ),
@@ -832,6 +1000,7 @@ def select_reward_varying_groups(
     terminal_utilities: Sequence[float] | None = None,
     purchase_success: Sequence[bool] | None = None,
     group_types: Sequence[str] | None = None,
+    local_stage_fallback: Sequence[bool] | None = None,
     sampling_invalid: Sequence[bool] | None = None,
     sampling_invalid_reasons: Sequence[Sequence[str]] | None = None,
     tolerance: float = 1.0e-8,
@@ -851,6 +1020,7 @@ def select_reward_varying_groups(
         "terminal_utilities": terminal_utilities,
         "purchase_success": purchase_success,
         "group_types": group_types,
+        "local_stage_fallback": local_stage_fallback,
         "sampling_invalid": sampling_invalid,
         "sampling_invalid_reasons": sampling_invalid_reasons,
     }
@@ -882,6 +1052,11 @@ def select_reward_varying_groups(
         if group_types is not None
         else ["unknown"] * len(uids)
     )
+    stage_fallback_values = (
+        [bool(value) for value in local_stage_fallback]
+        if local_stage_fallback is not None
+        else [False] * len(uids)
+    )
     grouped: dict[Hashable, dict[str, Any]] = {}
     for index, (
         uid,
@@ -889,6 +1064,7 @@ def select_reward_varying_groups(
         raw_utility,
         raw_success,
         raw_group_type,
+        raw_stage_fallback,
         raw_invalid,
         raw_reasons,
     ) in enumerate(
@@ -898,6 +1074,7 @@ def select_reward_varying_groups(
             native_values,
             success_values,
             group_type_values,
+            stage_fallback_values,
             invalid_values,
             reason_values,
             strict=True,
@@ -927,6 +1104,7 @@ def select_reward_varying_groups(
                 "terminal_utilities": [],
                 "purchase_success": [],
                 "group_types": [],
+                "local_stage_fallback": [],
                 "sampling_invalid": [],
                 "sampling_invalid_reasons": [],
             },
@@ -937,6 +1115,7 @@ def select_reward_varying_groups(
         group["terminal_utilities"].append(utility)
         group["purchase_success"].append(bool(raw_success))
         group["group_types"].append(str(raw_group_type))
+        group["local_stage_fallback"].append(bool(raw_stage_fallback))
         group["sampling_invalid"].append(bool(raw_invalid))
         group["sampling_invalid_reasons"].extend(str(reason) for reason in raw_reasons)
 
@@ -954,6 +1133,9 @@ def select_reward_varying_groups(
         utility_max = max(train_returns)
         utility_varying = utility_max - utility_min > tolerance
         has_sampling_invalid = any(group["sampling_invalid"])
+        has_local_stage_mismatch = (
+            group_type == "local" and any(group["local_stage_fallback"])
+        )
         reasons = tuple(sorted(set(group["sampling_invalid_reasons"])))
         all_success = all(group["purchase_success"])
         any_success = any(group["purchase_success"])
@@ -965,7 +1147,9 @@ def select_reward_varying_groups(
             contrast_type = "failure_utility_contrast"
         else:
             contrast_type = "constant"
-        if has_sampling_invalid:
+        if has_local_stage_mismatch:
+            drop_reason = "local_stage_mismatch"
+        elif has_sampling_invalid:
             drop_reason = "sampling_invalid"
         elif not utility_varying:
             drop_reason = "constant_reward"
@@ -989,6 +1173,7 @@ def select_reward_varying_groups(
                 "utility_max": utility_max,
                 "reward_varying": utility_varying,
                 "sampling_invalid": has_sampling_invalid,
+                "local_stage_mismatch": has_local_stage_mismatch,
                 "sampling_invalid_reasons": reasons,
                 "drop_reason": drop_reason,
                 "contrast_type": contrast_type,
@@ -997,8 +1182,8 @@ def select_reward_varying_groups(
         )
 
     priority = {
-        "completion_contrast": 0,
-        "gold_contrast": 1,
+        "gold_contrast": 0,
+        "completion_contrast": 1,
         "failure_utility_contrast": 2,
         "constant": 3,
     }
@@ -1042,6 +1227,9 @@ def select_reward_varying_groups(
         ),
         "sampling_invalid_group_count": sum(
             group["sampling_invalid"] for group in groups
+        ),
+        "local_stage_mismatch_group_count": sum(
+            group["local_stage_mismatch"] for group in groups
         ),
         "sampling_invalid_reason_counts": {
             reason: sum(

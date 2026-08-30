@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from scripts.audit_bpo_formal_run import audit
+from shopping_grpo.training.grpo.dynamic_sampling import select_carl_local_stage_target
 from shopping_grpo.training.bpo.step0_validation import (
     build_validation_contract,
     freeze_validation_cache,
@@ -41,14 +42,22 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
     )
     contract = {
         "schema_version": "shopping-carl-bpo-run-contract-v1",
-        "launch": {"reward_profile": "none", "seed": 20260823, "logger": "swanlab"},
+        "launch": {
+            "algorithm": "carl-bpo-v2",
+            "reward_profile": "none",
+            "seed": 20260823,
+            "logger": "swanlab",
+        },
         "frozen_method": {
             "effective_tree_budget": 1000,
             "effective_return_budget": 4000,
             "group_schedule": ["root", "local"],
-            "local_stage_schedule": (
-                ["product"] * 8 + ["option"] * 7 + ["search_recovery"] * 5
-            ),
+            "local_stage_weights": {
+                "product": 8,
+                "option": 7,
+                "search_strategy": 5,
+            },
+            "candidate_selector": "goal-priority-reservoir-v2",
             "trees_per_optimizer_step": 2,
             "returns_per_optimizer_step": 8,
             "maximum_optimizer_steps": 500,
@@ -99,7 +108,7 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
         "bpo_group/local_count": 1.0,
         "bpo_stage/product_count": 1.0,
         "bpo_stage/option_count": 1.0,
-        "bpo_stage/search_recovery_count": 0.0,
+        "bpo_stage/search_strategy_count": 0.0,
         "bpo_stage/fallback_count": 0.0,
         "bpo_stage/unavailable_count": 0.0,
         "bpo_branch/relative_position_mean": 0.5,
@@ -112,11 +121,28 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
         "group/gold_contrast": 0.0,
         "group/failure_utility_contrast": 1.0,
         "group/effective_ratio": 1.0,
+        "carl_sampling/selected_goal_groups": 1.0,
+        "carl_sampling/selected_failure_groups": 1.0,
+        "carl_sampling/reservoir_replacements": 0.0,
+        "carl_sampling/local_stage_mismatch_groups": 0.0,
     }
-    events = [
-        {"event": "optimizer_step", "global_step": step, "metrics": metrics}
-        for step in range(1, 501)
-    ]
+    events = []
+    for step in range(1, 501):
+        stage, _ = select_carl_local_stage_target(step - 1)
+        events.extend(
+            [
+                {
+                    "event": "optimizer_selection",
+                    "global_step": step,
+                    "local_stage_target": stage,
+                    "selected_groups": {
+                        "root": {"local_stage": "root"},
+                        "local": {"local_stage": stage},
+                    },
+                },
+                {"event": "optimizer_step", "global_step": step, "metrics": metrics},
+            ]
+        )
     event = events[0]
     (output / "training_diagnostics.jsonl").write_text(
         json.dumps(event) + "\n", encoding="utf-8"

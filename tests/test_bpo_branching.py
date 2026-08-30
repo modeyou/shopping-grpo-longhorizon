@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from shopping_grpo.training.bpo.branching import (
     select_nonterminal_branch_candidate,
     validate_tree_outputs,
 )
+from shopping_grpo.training.bpo.agent_loop import ShoppingBPOAgentLoop
 from shopping_grpo.training.bpo.runtime import sibling_group_starts
 from shopping_grpo.training.grpo.dynamic_sampling import build_carl_group_assignments
 
@@ -67,6 +69,22 @@ def test_carl_group_roles_are_frozen_before_worker_sharding():
         build_carl_group_assignments(1, ["root", "local"])
     with pytest.raises(ValueError, match="group schedule"):
         build_carl_group_assignments(2, ["root", "root"])
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "stage"),
+    [
+        ("search_products", "search_strategy"),
+        ("next_page", "search_strategy"),
+        ("select_option", "option"),
+        ("open_product", "product"),
+        ("buy_now", "excluded"),
+    ],
+)
+def test_local_stage_uses_the_boundary_action_contract(tool_name, stage):
+    assert ShoppingBPOAgentLoop._stage_for_tool_calls(
+        [SimpleNamespace(name=tool_name)]
+    ) == stage
 
 
 def test_tree_outputs_share_exact_prefix_and_isolated_clone_leases():
