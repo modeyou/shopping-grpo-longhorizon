@@ -211,6 +211,53 @@ def validate_bpo_tree_contracts():
     )
 
 
+def validate_swanlab_dashboard_contract():
+    """Keep cloud metrics bounded before any expensive runtime startup."""
+    from shopping_grpo.training.grpo.dynamic_sampling import (
+        SWANLAB_DASHBOARD_METRICS,
+        SWANLAB_DASHBOARD_SECTIONS,
+        swanlab_dashboard_metrics,
+    )
+
+    if len(SWANLAB_DASHBOARD_METRICS) != 45:
+        raise SystemExit("CARL-BPO SwanLab dashboard must contain exactly 45 metrics")
+    sections = {
+        name.split("/", 1)[0] for name in SWANLAB_DASHBOARD_METRICS
+    }
+    if sections != set(SWANLAB_DASHBOARD_SECTIONS):
+        raise SystemExit("CARL-BPO SwanLab dashboard sections are inconsistent")
+    projected = swanlab_dashboard_metrics(
+        {
+            "val-shopping/summary/strict_success_rate": 0.5,
+            "bpo_batch/root_groups": 1,
+            "bpo_action/active_token_ratio": 0.25,
+            "actor/pg_loss": 0.01,
+            "timing_s/step": 60.0,
+            "val-core/unbounded": 1.0,
+            "timing_s/agent_loop.generate_sequences.max": 99.0,
+            "reward/shaped_mean": 999.0,
+        }
+    )
+    if set(projected) != {
+        "validation/gold_purchase_success",
+        "sampling/accepted_root_groups",
+        "credit/active_action_token_ratio",
+        "optimization/pg_loss",
+        "runtime/step_seconds",
+    }:
+        raise SystemExit("CARL-BPO SwanLab dashboard projection leaked raw metrics")
+    print(
+        "BPO SwanLab dashboard contract preflight passed: "
+        + json.dumps(
+            {
+                "custom_metric_limit": len(SWANLAB_DASHBOARD_METRICS),
+                "sections": sorted(sections),
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def validate_entropy_patch(verl_source):
     from scripts.apply_verl_bpo_patch import expected_patched_sha256
 
@@ -879,6 +926,7 @@ def main():
     config = common.compose_runtime_config(__import__("sys").argv[1:])
     validate_bpo_config(config)
     validate_bpo_tree_contracts()
+    validate_swanlab_dashboard_contract()
     common.validate_environment_contract()
     validate_swanlab(config)
     validate_shopper_api()

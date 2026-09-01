@@ -748,120 +748,63 @@ SWANLAB_DASHBOARD_SECTIONS = frozenset(
 )
 
 _SWANLAB_DASHBOARD_ALIASES = {
-    # Frozen validation: primary acceptance and validity.
+    # Validation: acceptance and validity only. Detailed veRL val-core series
+    # remain in the console/local artifacts instead of becoming cloud charts.
     "val-shopping/summary/strict_success_rate": "validation/gold_purchase_success",
     "val-shopping/summary/purchase_success_rate": "validation/completion_success",
-    "val-shopping/summary/mean_reward": "validation/reward_mean",
     "val-shopping/summary/terminal_utility_mean": "validation/terminal_utility_mean",
     "val-shopping/summary/done_rate": "validation/done_rate",
-    "val-shopping/summary/average_steps": "validation/average_steps",
     "val-shopping/summary/sampling_invalid_rate": "validation/sampling_invalid_rate",
     "val-shopping/summary/infrastructure_invalid_rate": "validation/infrastructure_invalid_rate",
     "val-shopping/summary/reward_unverifiable_rate": "validation/reward_unverifiable_rate",
     "val-shopping/summary/shopper_question_rate": "validation/shopper_question_rate",
-    "val-step0/cache_hit": "validation/step0_cache_hit",
-    "val-step0/contract_verified": "validation/step0_contract_verified",
-    # Sampling contract and accepted-budget progress.
-    "bpo_batch/trees": "sampling/accepted_groups",
-    "bpo_batch/sibling_returns": "sampling/accepted_returns",
+    # Sampling: accepted pair, acquisition difficulty and selected composition.
     "bpo_batch/root_groups": "sampling/accepted_root_groups",
     "bpo_batch/local_groups": "sampling/accepted_local_groups",
-    "bpo_batch/full_batch": "sampling/full_root_local_batch",
     "bpo_sampling/candidate_batches": "sampling/candidate_batches",
-    "bpo_sampling/candidate_trees": "sampling/candidate_groups",
-    "bpo_sampling/accepted_trees_pending": "sampling/accepted_groups_pending",
-    "bpo_sampling/seconds_to_first_tree": "sampling/seconds_to_first_accept",
     "bpo_sampling/seconds_to_full_batch": "sampling/seconds_to_full_batch",
-    "bpo_sampling/slow_full_batch_warning": "sampling/slow_batch_warning",
-    "bpo_sampling/full_batch_timeout": "sampling/full_batch_timeout",
-    "group/generated": "sampling/generated_groups",
-    "group/trained": "sampling/trained_groups",
     "group/effective_ratio": "sampling/effective_group_ratio",
     "group/all_equal_ratio": "sampling/constant_return_ratio",
-    "group/all_zero_utility_ratio": "sampling/all_zero_utility_ratio",
-    "group/no_purchase_success_ratio": "sampling/no_completion_ratio",
-    "group/all_purchase_success_ratio": "sampling/all_completion_ratio",
-    "group/sampling_invalid": "sampling/invalid_groups",
-    "group/completion_contrast": "sampling/completion_contrast_groups",
-    "group/gold_contrast": "sampling/gold_contrast_groups",
-    "group/failure_utility_contrast": "sampling/failure_utility_contrast_groups",
-    "bpo_stage/product_count": "sampling/local_product_groups",
-    "bpo_stage/option_count": "sampling/local_option_groups",
-    "bpo_stage/search_strategy_count": "sampling/local_search_strategy_groups",
-    "bpo_stage/fallback_count": "sampling/local_fallback_groups",
-    "bpo_stage/unavailable_count": "sampling/local_stage_unavailable_groups",
-    "bpo_diversity/unique_branch_actions_mean": "sampling/unique_branch_actions_mean",
-    "bpo_diversity/unique_semantic_actions_mean": "sampling/unique_semantic_actions_mean",
-    "bpo_diversity/action_metadata_valid_rate": "sampling/action_metadata_valid_rate",
-    "bpo_diversity/unique_tool_sequences_mean": "sampling/unique_tool_sequences_mean",
-    "carl_budget/accepted_groups_total": "sampling/accepted_groups_total",
     "carl_budget/accepted_returns_total": "sampling/accepted_returns_total",
-    "carl_budget/target_returns": "sampling/target_returns",
-    "carl_sampling/quality_search_batches": "sampling/quality_search_batches",
-    "carl_sampling/goal_pair_ready": "sampling/goal_pair_ready",
-    "carl_sampling/reservoir_replacements": "sampling/reservoir_replacements",
     "carl_sampling/selected_goal_groups": "sampling/selected_goal_groups",
     "carl_sampling/selected_failure_groups": "sampling/selected_failure_groups",
     "carl_sampling/selected_gold_groups": "sampling/selected_gold_groups",
     "carl_sampling/local_stage_mismatch_groups": "sampling/local_stage_mismatch_groups",
-    "carl_stage/target_product": "sampling/stage_target_product",
-    "carl_stage/target_option": "sampling/stage_target_option",
-    "carl_stage/target_search_strategy": "sampling/stage_target_search_strategy",
-    "carl_stage/completed_product": "sampling/stage_completed_product",
-    "carl_stage/completed_option": "sampling/stage_completed_option",
-    "carl_stage/completed_search_strategy": "sampling/stage_completed_search_strategy",
     "carl_stage/selected_product": "sampling/stage_selected_product",
     "carl_stage/selected_option": "sampling/stage_selected_option",
     "carl_stage/selected_search_strategy": "sampling/stage_selected_search_strategy",
-    "carl_stage/generated_product": "sampling/stage_generated_product",
-    "carl_stage/generated_option": "sampling/stage_generated_option",
-    "carl_stage/generated_search_strategy": "sampling/stage_generated_search_strategy",
-    "carl_stage/effective_product": "sampling/stage_effective_product",
-    "carl_stage/effective_option": "sampling/stage_effective_option",
-    "carl_stage/effective_search_strategy": "sampling/stage_effective_search_strategy",
-    # Return signal and branching-credit coverage.
+    # Credit: outcome signal, semantic contrast and exact action support.
     "reward/train_return_mean": "credit/train_return_mean",
-    "reward/train_return_min": "credit/train_return_min",
-    "reward/train_return_max": "credit/train_return_max",
     "reward/native_terminal_utility_mean": "credit/native_terminal_utility_mean",
-    "reward/strict_mean": "credit/train_rollout_gold_rate",
     "reward/purchase_success_rate": "credit/train_rollout_completion_rate",
-    "reward/partial_purchase_rate": "credit/train_rollout_partial_rate",
     "reward/model_failure_rate": "credit/train_rollout_model_failure_rate",
-    "reward/valid_rate": "credit/train_rollout_reward_valid_rate",
-    "trajectory/repeat_loop_rate": "credit/train_rollout_repeat_loop_rate",
-    "trajectory/max_steps_rate": "credit/train_rollout_max_steps_rate",
-    "trajectory/overlong_rate": "credit/train_rollout_overlong_rate",
-    "bpo_return/sibling_std_mean": "credit/sibling_return_std_mean",
     "bpo_return/sibling_range_mean": "credit/sibling_return_range_mean",
-    "bpo_return/sibling_unique_count_mean": "credit/sibling_unique_returns_mean",
     "bpo_branch/entropy_mean": "credit/branch_entropy_mean",
     "bpo_branch/relative_position_mean": "credit/branch_relative_position_mean",
-    "bpo_branch/backbone_actions_mean": "credit/backbone_actions_mean",
-    "bpo_branch/prefix_steps_mean": "credit/prefix_steps_mean",
-    "bpo_branch/prefix_shopper_calls_mean": "credit/prefix_shopper_calls_mean",
-    "bpo_branch/prefix_environment_transitions_mean": "credit/prefix_environment_transitions_mean",
-    "carl_semantic/candidate_unique_actions_mean": "credit/candidate_semantic_actions_mean",
-    "carl_semantic/effective_unique_actions_mean": "credit/effective_semantic_actions_mean",
     "carl_semantic/selected_unique_actions": "credit/selected_semantic_actions",
-    "carl_semantic/within_key_return_range_mean": "credit/within_semantic_return_range_mean",
-    "carl_semantic/within_key_return_range_max": "credit/within_semantic_return_range_max",
-    "bpo_action/active_tokens": "credit/active_action_tokens",
-    "bpo_action/original_actor_tokens": "credit/original_actor_tokens",
     "bpo_action/active_token_ratio": "credit/active_action_token_ratio",
-    "bpo_action/root_actions": "credit/root_actions",
-    "bpo_action/local_actions": "credit/local_actions",
     "bpo_action/root_advantage_abs_mass": "credit/root_action_advantage_abs_mass",
     "bpo_action/local_advantage_abs_mass": "credit/local_action_advantage_abs_mass",
-    "bpo_action/root_policy_weight_mass": "credit/root_action_policy_weight_mass",
-    "bpo_action/local_policy_weight_mass": "credit/local_action_policy_weight_mass",
-    # Optimizer state.
-    "training/global_step": "optimization/global_step",
-    "training/optimizer_updated": "optimization/optimizer_updated",
-    "shopping_dynamic_sampling/skipped_update": "optimization/skipped_update",
+    # Optimization: one compact health view.
     "shopping_dynamic_sampling/skipped_updates_total": "optimization/skipped_updates_total",
-    "shopping_dynamic_sampling/consecutive_skips": "optimization/consecutive_skips",
+    "actor/pg_loss": "optimization/pg_loss",
+    "actor/grad_norm": "optimization/grad_norm",
+    "actor/lr": "optimization/lr",
+    "actor/ppo_kl": "optimization/ppo_kl",
+    "actor/pg_clipfrac": "optimization/pg_clipfrac",
+    # Runtime: end-to-end latency, throughput, sequence pressure and external
+    # cost. Fine-grained veRL timing/perf series stay in local diagnostics.
+    "timing_s/step": "runtime/step_seconds",
+    "timing_s/gen": "runtime/generation_seconds",
+    "timing_s/update_actor": "runtime/update_actor_seconds",
+    "response_length/mean": "runtime/response_tokens_mean",
+    "bpo_cost/environment_transitions_total": "runtime/environment_transitions_total",
+    "bpo_cost/shopper_api_calls_total": "runtime/shopper_api_calls_total",
 }
+
+SWANLAB_DASHBOARD_METRICS = frozenset(_SWANLAB_DASHBOARD_ALIASES.values())
+if len(SWANLAB_DASHBOARD_METRICS) != len(_SWANLAB_DASHBOARD_ALIASES):
+    raise RuntimeError("SwanLab dashboard aliases must be one-to-one")
 
 
 def swanlab_dashboard_metrics(metrics: Mapping[str, object]) -> dict[str, object]:
@@ -874,36 +817,6 @@ def swanlab_dashboard_metrics(metrics: Mapping[str, object]) -> dict[str, object
     for raw_name, value in metrics.items():
         name = str(raw_name)
         alias = _SWANLAB_DASHBOARD_ALIASES.get(name)
-        if alias is None and name.startswith("val-core/"):
-            alias = "validation/condition." + name.removeprefix("val-core/").replace(
-                "/", "."
-            )
-        if alias is None and name.startswith("actor/"):
-            metric = name.removeprefix("actor/")
-            if any(
-                fragment in metric.lower()
-                for fragment in (
-                    "loss",
-                    "grad_norm",
-                    "learning_rate",
-                    "lr",
-                    "kl",
-                    "clip",
-                    "entropy",
-                )
-            ):
-                alias = "optimization/" + metric.replace("/", ".")
-        if alias is None and name.startswith(("timing_s/", "perf/", "response_length/")):
-            alias = "runtime/" + name.replace("/", ".")
-        if alias is None and name.startswith("bpo_cost/"):
-            alias = "runtime/" + name.removeprefix("bpo_cost/")
-        if alias is None and name in {
-            "rollout/generated_response_tokens",
-            "rollout/generated_response_tokens_total",
-            "rollout/generated_total",
-            "rollout/generated_total_cumulative",
-        }:
-            alias = "runtime/" + name.removeprefix("rollout/")
         if alias is not None:
             dashboard[alias] = value
     unknown_sections = {

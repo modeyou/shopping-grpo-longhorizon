@@ -73,7 +73,7 @@ def test_tracking_projects_only_swanlab_into_five_dashboard_sections():
         "bpo_batch/root_groups": 1,
         "bpo_return/sibling_range_mean": 0.5,
         "actor/grad_norm": 1.2,
-        "bpo_cost/shopper_api_calls": 18,
+        "bpo_cost/shopper_api_calls_total": 18,
         "reward/shaped_mean": 0.7,
     }
 
@@ -87,7 +87,7 @@ def test_tracking_projects_only_swanlab_into_five_dashboard_sections():
         "sampling/accepted_root_groups": 1,
         "credit/sibling_return_range_mean": 0.5,
         "optimization/grad_norm": 1.2,
-        "runtime/shopper_api_calls": 18,
+        "runtime/shopper_api_calls_total": 18,
     }
 
 

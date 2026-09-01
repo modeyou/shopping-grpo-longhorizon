@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from scripts.check_bpo_runtime import validate_swanlab_dashboard_contract
 from shopping_grpo.training.grpo.dynamic_sampling import (
+    SWANLAB_DASHBOARD_METRICS,
     SWANLAB_DASHBOARD_SECTIONS,
     aggregate_bpo_tree_metrics,
     aggregate_shopping_metrics,
@@ -65,37 +67,52 @@ def test_swanlab_dashboard_has_exactly_five_readable_top_level_sections():
         {
             "val-shopping/summary/purchase_success_rate": 0.7,
             "bpo_batch/local_groups": 1,
-            "carl_stage/effective_option": 3,
+            "carl_stage/selected_option": 1,
             "reward/train_return_mean": 0.8,
             "carl_semantic/selected_unique_actions": 2,
-            "bpo_action/active_tokens": 128,
+            "bpo_action/active_token_ratio": 0.25,
             "bpo_action/root_advantage_abs_mass": 0.4,
             "bpo_action/local_advantage_abs_mass": 0.4,
-            "bpo_action/root_policy_weight_mass": 0.5,
-            "bpo_action/local_policy_weight_mass": 0.5,
             "actor/pg_loss": 0.02,
             "timing_s/gen": 12.0,
             "reward/shaped_mean": 999.0,
+            "val-core/unbounded": 1.0,
+            "timing_s/agent_loop.generate_sequences.max": 99.0,
+            "perf/total_num_tokens": 9999.0,
+            "response_length/max": 20480.0,
+            "bpo_cost/shopper_api_calls": 12.0,
+            "bpo_action/original_actor_tokens": 1024.0,
+            "actor/entropy_loss": 0.01,
         }
     )
 
     assert dashboard == {
         "validation/completion_success": 0.7,
         "sampling/accepted_local_groups": 1,
-        "sampling/stage_effective_option": 3,
+        "sampling/stage_selected_option": 1,
         "credit/train_return_mean": 0.8,
         "credit/selected_semantic_actions": 2,
-        "credit/active_action_tokens": 128,
+        "credit/active_action_token_ratio": 0.25,
         "credit/root_action_advantage_abs_mass": 0.4,
         "credit/local_action_advantage_abs_mass": 0.4,
-        "credit/root_action_policy_weight_mass": 0.5,
-        "credit/local_action_policy_weight_mass": 0.5,
         "optimization/pg_loss": 0.02,
-        "runtime/timing_s.gen": 12.0,
+        "runtime/generation_seconds": 12.0,
     }
     assert {name.split("/", 1)[0] for name in dashboard} == (
         SWANLAB_DASHBOARD_SECTIONS
     )
+    assert len(SWANLAB_DASHBOARD_METRICS) == 45
+    assert {name.split("/", 1)[0] for name in SWANLAB_DASHBOARD_METRICS} == (
+        SWANLAB_DASHBOARD_SECTIONS
+    )
+
+
+def test_swanlab_dashboard_preflight_freezes_metric_budget(capsys):
+    validate_swanlab_dashboard_contract()
+
+    output = capsys.readouterr().out
+    assert '"custom_metric_limit": 45' in output
+    assert '"sections": ["credit", "optimization", "runtime", "sampling", "validation"]' in output
 
 
 def test_bpo_tree_metrics_capture_branch_diversity_and_return_spread():
