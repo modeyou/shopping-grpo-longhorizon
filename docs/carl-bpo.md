@@ -478,7 +478,8 @@ SwanLab 必须同时显示 accepted budget 与实际 generated cost。`R4000` �
 - Reward v4 native utility 与 CARL `train_return` 分开记录；
 - gold、valid alternative、partial、wrong、repeat、model failure 计数；
 - Root/Local train-return mean/min/max/range；
-- completion、gold、failure contrast 的绝对 LOO advantage mass及share，由逐组 return 和
+- completion、gold、failure contrast 的绝对 LOO advantage mass及share；每步将目标
+  contrast 的share上传为 `credit/goal_advantage_mass_share`，正式审计再由逐组return和
   `contrast_type` 离线重算；
 - Root/Local 非零 advantage group 和 token 比例；
 - 每组 `loo_sum_abs_max`；
@@ -564,17 +565,18 @@ SwanLab的step轴统一使用completed optimizer step；candidate generation bat
 
 ### 12.5 SwanLab告警与决策门槛
 
-以下条件视为阻断性错误，并同时写入本地诊断：
+运行时只对继续更新会破坏方法或产出无效checkpoint的情况硬停止，并同时写入本地诊断：
 
 ```text
-Root/Local不完整batch
-constant/invalid group进入optimizer
-Local prefix或observation出现非零policy token
-Root first-action trainable coverage < 100%
-LOO sum abs max > 1e-6
-skipped update、NaN/Inf
+准备进入optimizer的Root/Local batch不完整，或120个candidate batches仍无法组成完整pair
+tree、clone、action boundary、mask等结构契约损坏
+NaN/Inf
 首步无非零gradient，或首个正学习率step无参数delta
 ```
+
+`constant/invalid group进入optimizer`、Local prefix非零policy token、Root/Local policy mass失衡、
+`LOO sum abs max > 1e-6`和skipped update仍会使正式运行审计失败；未破坏当步张量计算的项目
+由本地诊断在运行后核对，不额外为了SwanLab指标触发在线停止。
 
 以下为窗口告警，不单凭一条曲线自动宣告训练失败：
 

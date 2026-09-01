@@ -219,8 +219,8 @@ def validate_swanlab_dashboard_contract():
         swanlab_dashboard_metrics,
     )
 
-    if len(SWANLAB_DASHBOARD_METRICS) != 45:
-        raise SystemExit("CARL-BPO SwanLab dashboard must contain exactly 45 metrics")
+    if len(SWANLAB_DASHBOARD_METRICS) != 46:
+        raise SystemExit("CARL-BPO SwanLab dashboard must contain exactly 46 metrics")
     sections = {
         name.split("/", 1)[0] for name in SWANLAB_DASHBOARD_METRICS
     }

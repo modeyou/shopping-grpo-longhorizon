@@ -27,7 +27,7 @@
 +            from shopping_grpo.training.grpo.dynamic_sampling import aggregate_shopping_metrics
 +            validation_metrics.update({f"val-shopping/{key}": value for key, value in aggregate_shopping_metrics(sample_shopping).items()})
 +        return validation_metrics
-@@ -1382,0 +1400,191 @@ class RayPPOTrainer:
+@@ -1382,0 +1400,192 @@ class RayPPOTrainer:
 +        import time
 +        from shopping_grpo.training.grpo.dynamic_sampling import (
 +            CARL_GOAL_CONTRASTS,
@@ -40,6 +40,7 @@
 +            extract_aligned_bpo_fields,
 +            effective_group_update_target,
 +            extract_shopping_group_signals,
++            goal_advantage_mass_share,
 +            select_carl_local_stage_target,
 +            select_reward_varying_groups,
 +            summarize_bpo_group_diagnostics,
@@ -219,7 +220,7 @@
 +                )
 +            )
 +
-@@ -1386,0 +1595,12 @@ class RayPPOTrainer:
+@@ -1386,0 +1596,12 @@ class RayPPOTrainer:
 +        if dynamic_sampling_enabled:
 +            dynamic_trained_groups_total = self.global_steps * dynamic_target_prompts
 +            dynamic_effective_returns_total = (
@@ -232,19 +233,19 @@
 +                raise RuntimeError(
 +                    "resumed CARL-BPO checkpoint exceeds the frozen effective-return budget"
 +                )
-@@ -1409,2 +1629,4 @@ class RayPPOTrainer:
+@@ -1409,2 +1630,4 @@ class RayPPOTrainer:
 -        # we start from step 1
 -        self.global_steps += 1
 +        # The unpatched trainer uses a one-based in-flight step. Dynamic sampling
 +        # keeps the committed counter unchanged until an optimizer update occurs.
 +        if not dynamic_sampling_enabled:
 +            self.global_steps += 1
-@@ -1414,0 +1637 @@ class RayPPOTrainer:
+@@ -1414,0 +1638 @@ class RayPPOTrainer:
 +        first_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
-@@ -1416 +1639 @@ class RayPPOTrainer:
+@@ -1416 +1640 @@ class RayPPOTrainer:
 -            self.global_steps in self.config.global_profiler.steps
 +            first_step in self.config.global_profiler.steps
-@@ -1423,0 +1647,17 @@ class RayPPOTrainer:
+@@ -1423,0 +1648,17 @@ class RayPPOTrainer:
 +                current_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
 +                optimizer_updated = False
 +                dynamic_budget_checkpoint_due = False
@@ -262,7 +263,7 @@
 +                    )
 +                except ValueError as exc:
 +                    raise RuntimeError(str(exc)) from exc
-@@ -1441,0 +1682,18 @@ class RayPPOTrainer:
+@@ -1441,0 +1683,18 @@ class RayPPOTrainer:
 +                if dynamic_sampling_enabled:
 +                    group_assignments = build_carl_group_assignments(
 +                        len(batch.batch), dynamic_group_schedule
@@ -281,17 +282,17 @@
 +                        ),
 +                        dtype=object,
 +                    )
-@@ -1446 +1704 @@ class RayPPOTrainer:
+@@ -1446 +1705 @@ class RayPPOTrainer:
 -                gen_batch.meta_info["global_steps"] = self.global_steps
 +                gen_batch.meta_info["global_steps"] = current_step
-@@ -1464 +1722 @@ class RayPPOTrainer:
+@@ -1464 +1723 @@ class RayPPOTrainer:
 -                is_last_step = self.global_steps >= self.total_training_steps
 +                is_last_step = current_step >= self.total_training_steps
-@@ -1471 +1729,2 @@ class RayPPOTrainer:
+@@ -1471 +1730,2 @@ class RayPPOTrainer:
 -                        self.checkpoint_manager.sleep_replicas()
 +                        if not dynamic_sampling_enabled:
 +                            self.checkpoint_manager.sleep_replicas()
-@@ -1526,0 +1786,899 @@ class RayPPOTrainer:
+@@ -1526,0 +1787,905 @@ class RayPPOTrainer:
 +                    if dynamic_sampling_enabled:
 +                        seq_rewards = reward_tensor.sum(dim=-1).detach().cpu().tolist()
 +                        batch_uids = batch.non_tensor_batch["uid"].tolist()
@@ -1038,6 +1039,12 @@
 +                                    contrast == "gold_contrast"
 +                                    for contrast in selected_contrasts.values()
 +                                ),
++                                "carl_credit/goal_advantage_mass_share": goal_advantage_mass_share(
++                                    [
++                                        dynamic_candidate_pools[group_type]["group"]
++                                        for group_type in dynamic_group_schedule
++                                    ]
++                                ),
 +                                "carl_stage/target_product": int(local_stage_target == "product"),
 +                                "carl_stage/target_option": int(local_stage_target == "option"),
 +                                "carl_stage/target_search_strategy": int(local_stage_target == "search_strategy"),
@@ -1191,38 +1198,38 @@
 +                            }
 +                        )
 +
-@@ -1643 +2801 @@ class RayPPOTrainer:
+@@ -1643 +2808 @@ class RayPPOTrainer:
 -                    if self.config.trainer.critic_warmup > self.global_steps:
 +                    if self.config.trainer.critic_warmup > current_step:
-@@ -1645 +2803 @@ class RayPPOTrainer:
+@@ -1645 +2810 @@ class RayPPOTrainer:
 -                        self.checkpoint_manager.update_weights(self.global_steps)
 +                        self.checkpoint_manager.update_weights(current_step)
-@@ -1649,0 +2808,3 @@ class RayPPOTrainer:
+@@ -1649,0 +2815,3 @@ class RayPPOTrainer:
 +                        optimizer_updated = True
 +                        if dynamic_sampling_enabled:
 +                            self.global_steps = current_step
-@@ -1665 +2826,3 @@ class RayPPOTrainer:
+@@ -1665 +2833,3 @@ class RayPPOTrainer:
 -                            or self.global_steps % self.config.trainer.save_freq == 0
 +                            or current_step % self.config.trainer.save_freq == 0
 +                            or current_step in dynamic_checkpoint_steps
 +                            or dynamic_budget_checkpoint_due
-@@ -1675 +2838 @@ class RayPPOTrainer:
+@@ -1675 +2845 @@ class RayPPOTrainer:
 -                            self.checkpoint_manager.update_weights(self.global_steps)
 +                            self.checkpoint_manager.update_weights(current_step)
-@@ -1687 +2850,3 @@ class RayPPOTrainer:
+@@ -1687 +2857,3 @@ class RayPPOTrainer:
 -                    is_last_step or self.global_steps % self.config.trainer.test_freq == 0
 +                    is_last_step
 +                    or current_step % self.config.trainer.test_freq == 0
 +                    or current_step in dynamic_validation_steps
-@@ -1697 +2862 @@ class RayPPOTrainer:
+@@ -1697 +2869 @@ class RayPPOTrainer:
 -                        self.global_steps + 1 in self.config.global_profiler.steps
 +                        current_step + 1 in self.config.global_profiler.steps
-@@ -1715 +2880 @@ class RayPPOTrainer:
+@@ -1715 +2887 @@ class RayPPOTrainer:
 -                        "training/global_step": self.global_steps,
 +                        "training/global_step": current_step,
-@@ -1716,0 +2882 @@ class RayPPOTrainer:
+@@ -1716,0 +2889 @@ class RayPPOTrainer:
 +                        "training/optimizer_updated": int(optimizer_updated),
-@@ -1718,0 +2885,15 @@ class RayPPOTrainer:
+@@ -1718,0 +2892,15 @@ class RayPPOTrainer:
 +                if dynamic_sampling_enabled:
 +                    metrics.update(
 +                        batch.meta_info.get("shopping_bpo_actor_metrics", {})
@@ -1238,7 +1245,7 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750 +2931,17 @@ class RayPPOTrainer:
+@@ -1750 +2938,17 @@ class RayPPOTrainer:
 -                logger.log(data=metrics, step=self.global_steps)
 +                append_training_diagnostic(
 +                    diagnostics_path,
@@ -1257,7 +1264,7 @@
 +                logger.log(data=metrics, step=current_step)
 +                if is_last_step:
 +                    logger.finish()
-@@ -1753 +2950,6 @@ class RayPPOTrainer:
+@@ -1753 +2957,6 @@ class RayPPOTrainer:
 -                self.global_steps += 1
 +                if dynamic_sampling_enabled and not optimizer_updated:
 +                    raise RuntimeError(

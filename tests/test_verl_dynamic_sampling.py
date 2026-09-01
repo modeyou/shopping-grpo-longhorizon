@@ -16,6 +16,7 @@ from shopping_grpo.training.grpo.dynamic_sampling import (
     effective_group_update_target,
     extract_aligned_bpo_fields,
     extract_shopping_group_signals,
+    goal_advantage_mass_share,
     select_carl_local_stage_target,
     select_reward_varying_groups,
     summarize_bpo_group_diagnostics,
@@ -24,6 +25,25 @@ from shopping_grpo.training.grpo.dynamic_sampling import (
 
 
 class RewardGroupSelectionTest(unittest.TestCase):
+    def test_goal_advantage_mass_share_tracks_signal_not_group_count(self):
+        groups = [
+            {
+                "contrast_type": "completion_contrast",
+                "train_returns": (0.0, 1.0, 0.0, 0.0),
+            },
+            {
+                "contrast_type": "failure_utility_contrast",
+                "train_returns": (-0.5, -0.4, -0.5, -0.5),
+            },
+        ]
+
+        self.assertAlmostEqual(goal_advantage_mass_share(groups), 10.0 / 11.0)
+        self.assertIsNone(
+            goal_advantage_mass_share(
+                [{"contrast_type": "completion_contrast", "train_returns": (1.0, 1.0)}]
+            )
+        )
+
     def test_carl_local_stage_ledger_closes_exact_weighted_coverage(self):
         self.assertEqual(
             carl_local_stage_counts(20),

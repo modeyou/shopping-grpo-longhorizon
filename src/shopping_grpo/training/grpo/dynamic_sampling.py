@@ -71,6 +71,36 @@ CARL_LOCAL_STAGE_WEIGHTS = {
 CARL_GOAL_CONTRASTS = frozenset({"gold_contrast", "completion_contrast"})
 
 
+def goal_advantage_mass_share(groups: Sequence[Mapping[str, object]]) -> float | None:
+    """Return the selected goal groups' share of absolute sibling LOO mass.
+
+    This is monitoring only: incomplete or non-finite diagnostics suppress the
+    metric instead of interrupting an otherwise valid optimizer update.
+    """
+    goal_mass = 0.0
+    total_mass = 0.0
+    for group in groups:
+        try:
+            returns = tuple(float(value) for value in group.get("train_returns", ()))
+        except (TypeError, ValueError):
+            return None
+        if len(returns) < 2 or any(not math.isfinite(value) for value in returns):
+            return None
+        total = sum(returns)
+        mass = sum(
+            abs(value - (total - value) / (len(returns) - 1))
+            for value in returns
+        )
+        if not math.isfinite(mass):
+            return None
+        total_mass += mass
+        if str(group.get("contrast_type")) in CARL_GOAL_CONTRASTS:
+            goal_mass += mass
+    if total_mass <= 0.0:
+        return None
+    return goal_mass / total_mass
+
+
 def _validated_stage_weights(stage_weights=None) -> tuple[tuple[str, int], ...]:
     raw = CARL_LOCAL_STAGE_WEIGHTS if stage_weights is None else stage_weights
     if not isinstance(raw, Mapping):
@@ -785,6 +815,7 @@ _SWANLAB_DASHBOARD_ALIASES = {
     "bpo_action/active_token_ratio": "credit/active_action_token_ratio",
     "bpo_action/root_advantage_abs_mass": "credit/root_action_advantage_abs_mass",
     "bpo_action/local_advantage_abs_mass": "credit/local_action_advantage_abs_mass",
+    "carl_credit/goal_advantage_mass_share": "credit/goal_advantage_mass_share",
     # Optimization: one compact health view.
     "shopping_dynamic_sampling/skipped_updates_total": "optimization/skipped_updates_total",
     "actor/pg_loss": "optimization/pg_loss",
@@ -817,7 +848,7 @@ def swanlab_dashboard_metrics(metrics: Mapping[str, object]) -> dict[str, object
     for raw_name, value in metrics.items():
         name = str(raw_name)
         alias = _SWANLAB_DASHBOARD_ALIASES.get(name)
-        if alias is not None:
+        if alias is not None and value is not None:
             dashboard[alias] = value
     unknown_sections = {
         name.split("/", 1)[0] for name in dashboard if "/" in name

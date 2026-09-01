@@ -256,6 +256,9 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn('"optimizer_selection"', fit_source)
             self.assertIn('"carl_sampling/reservoir_replacements"', fit_source)
             self.assertIn('"carl_sampling/selected_goal_groups"', fit_source)
+            self.assertIn(
+                '"carl_credit/goal_advantage_mass_share"', fit_source
+            )
             self.assertIn('"carl_stage/effective_product"', fit_source)
             self.assertIn('"carl_stage/effective_option"', fit_source)
             self.assertIn(
