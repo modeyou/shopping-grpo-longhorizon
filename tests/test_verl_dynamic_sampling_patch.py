@@ -41,6 +41,12 @@ def original_source() -> Path:
 
 
 class VerlPatchScriptTest(unittest.TestCase):
+    def test_previous_v3_patch_is_a_supported_upgrade_source(self):
+        self.assertIn(
+            "c28a1053e5b9e289ef9ef3d835206c241ac92874c10abe58349c8dca76d6e24f",
+            patcher.SUPERSEDED_PATCHED_SHA256S,
+        )
+
     def run_script(self, target: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(SCRIPT), "--target", str(target), *args],
