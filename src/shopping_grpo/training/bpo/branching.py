@@ -101,6 +101,24 @@ def validate_tree_outputs(outputs, *, sibling_count=4):
     if len(values) != int(sibling_count):
         raise ValueError("BPO tree must contain exactly K sibling outputs")
     metadata = [value.extra_fields for value in values]
+    required_keys = {
+        "bpo_group_id",
+        "bpo_group_type",
+        "bpo_sibling_index",
+        "bpo_branch_action",
+        "bpo_branch_entropy",
+        "bpo_return_budget",
+        "bpo_env_idx",
+        "bpo_branch_prefix_sha256",
+        "bpo_backbone_action_count",
+        "bpo_branch_relative_position",
+    }
+    for sibling, item in enumerate(metadata):
+        missing = required_keys.difference(item)
+        if missing:
+            raise ValueError(
+                f"BPO sibling {sibling} metadata is missing: {sorted(missing)}"
+            )
     expected_indices = list(range(int(sibling_count)))
     actual_indices = [int(item.get("bpo_sibling_index", -1)) for item in metadata]
     if actual_indices != expected_indices:
@@ -108,11 +126,11 @@ def validate_tree_outputs(outputs, *, sibling_count=4):
 
     invariant_keys = (
         "bpo_group_id",
+        "bpo_group_type",
         "bpo_branch_action",
         "bpo_branch_entropy",
         "bpo_return_budget",
         "bpo_branch_prefix_sha256",
-        "bpo_backbone_action_count",
         "bpo_branch_relative_position",
     )
     for key in invariant_keys:
@@ -121,16 +139,30 @@ def validate_tree_outputs(outputs, *, sibling_count=4):
     if int(metadata[0]["bpo_return_budget"]) != int(sibling_count):
         raise ValueError("BPO return budget must equal sibling count for M=1")
 
-    group_type = str(metadata[0].get("bpo_group_type", "local"))
+    group_type = str(metadata[0]["bpo_group_type"])
     if group_type not in {"root", "local"}:
         raise ValueError(f"unknown CARL-BPO group type: {group_type!r}")
 
+    if group_type == "local" and len(
+        {int(item.get("bpo_backbone_action_count", -1)) for item in metadata}
+    ) != 1:
+        raise ValueError("BPO Local siblings disagree on bpo_backbone_action_count")
+
     env_indices = [int(item.get("bpo_env_idx", -1)) for item in metadata]
-    clone_env_indices = env_indices[1:]
-    if min(env_indices) < 0:
-        raise ValueError("BPO siblings must use non-negative environment leases")
-    if group_type == "local" and len(set(clone_env_indices)) != int(sibling_count) - 1:
-        raise ValueError("CARL Local clone siblings must use K-1 distinct leases")
+    if group_type == "root":
+        if int(metadata[0]["bpo_branch_action"]) != -1:
+            raise ValueError("CARL Root siblings must not declare a branch action")
+        if float(metadata[0]["bpo_branch_entropy"]) != 0.0:
+            raise ValueError("CARL Root siblings must use zero branch entropy")
+        if float(metadata[0]["bpo_branch_relative_position"]) != -1.0:
+            raise ValueError("CARL Root siblings must use the root position sentinel")
+        if set(env_indices) != {-1}:
+            raise ValueError("CARL Root siblings must use the non-applicable lease sentinel")
+    else:
+        if min(env_indices) < 0:
+            raise ValueError("BPO Local siblings must use non-negative environment leases")
+        if len(set(env_indices)) != int(sibling_count):
+            raise ValueError("CARL Local siblings must use K distinct leases")
 
     prompts = [tuple(output.prompt_ids) for output in values]
     if len(set(prompts)) != 1:
@@ -141,6 +173,9 @@ def validate_tree_outputs(outputs, *, sibling_count=4):
             "group_type": group_type,
             "branch_action": -1,
             "branch_entropy": 0.0,
+            "backbone_action_counts": [
+                int(item["bpo_backbone_action_count"]) for item in metadata
+            ],
             "prefix_tokens": 0,
             "env_indices": env_indices,
         }

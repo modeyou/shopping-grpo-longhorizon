@@ -177,6 +177,54 @@ def test_bpo_rollout_batch_audit_rejects_final_action_branch():
         )
 
 
+def test_root_rollout_audit_and_policy_weights_allow_independent_action_counts():
+    responses = torch.tensor([[10, 11, 12, 13, 14, 15]] * 4)
+    mask = torch.ones((4, 6), dtype=torch.float32)
+    starts = [[0, 3], [0, 2, 4], [0], [0, 1, 3, 5]]
+    ends = [[3, 6], [2, 4, 6], [6], [1, 3, 5, 6]]
+    metadata = {
+        "bpo_group_id": ["root"] * 4,
+        "bpo_group_type": ["root"] * 4,
+        "bpo_sibling_index": [0, 1, 2, 3],
+        "bpo_branch_action": [-1] * 4,
+        "bpo_action_token_starts": starts,
+        "bpo_action_token_ends": ends,
+        "bpo_action_metadata_valid": [True] * 4,
+        "bpo_branch_entropy": [0.0] * 4,
+        "bpo_return_budget": [4] * 4,
+        "bpo_env_idx": [-1] * 4,
+        "bpo_branch_prefix_sha256": ["same-prompt"] * 4,
+        "bpo_backbone_action_count": [2, 3, 1, 4],
+        "bpo_branch_relative_position": [-1.0] * 4,
+        "bpo_branch_semantic_action_sha256": [""] * 4,
+        "bpo_branch_semantic_valid": [False] * 4,
+    }
+
+    audits = audit_bpo_rollout_batch(
+        torch.tensor([[1, 2]] * 4),
+        responses,
+        mask,
+        metadata=metadata,
+        sibling_count=4,
+    )
+    weights = build_bpo_policy_weights(
+        mask, metadata=metadata, sibling_count=4, dtype=torch.float32
+    )
+
+    assert audits[0]["backbone_action_counts"] == [2, 3, 1, 4]
+    assert audits[0]["action_count"] == 10
+    assert torch.all(weights > 0)
+    for row, row_starts, row_ends in zip(range(4), starts, ends, strict=True):
+        action_masses = [
+            weights[row, start:end].sum()
+            for start, end in zip(row_starts, row_ends, strict=True)
+        ]
+        assert torch.allclose(
+            torch.stack(action_masses),
+            torch.full((len(action_masses),), action_masses[0]),
+        )
+
+
 def test_real_verl_dispatcher_accepts_bpo_on_cpu():
     OmegaConf = pytest.importorskip("omegaconf").OmegaConf
     config = OmegaConf.create(

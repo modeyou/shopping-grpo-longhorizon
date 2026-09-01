@@ -12,6 +12,7 @@ import tempfile
 from types import SimpleNamespace
 
 from scripts import check_grpo_runtime as common
+from shopping_grpo.training.bpo.branching import validate_tree_outputs
 from shopping_grpo.training.bpo.entropy_patch import PATCH_MARKER
 
 
@@ -140,6 +141,74 @@ def validate_bpo_config(config):
     for name, expected_value in scheduler_environment.items():
         if os.environ.get(name) != expected_value:
             raise SystemExit(f"formal BPO requires {name}={expected_value}")
+
+
+def validate_bpo_tree_contracts():
+    """Exercise Root/Local invariants before loading models or calling services."""
+
+    root_outputs = []
+    for sibling, action_count in enumerate((1, 2, 2, 3)):
+        root_outputs.append(
+            SimpleNamespace(
+                prompt_ids=[1, 2],
+                response_ids=[10 + sibling],
+                response_mask=[1],
+                extra_fields={
+                    "bpo_group_id": "preflight-root-tree",
+                    "bpo_group_type": "root",
+                    "bpo_sibling_index": sibling,
+                    "bpo_branch_action": -1,
+                    "bpo_branch_entropy": 0.0,
+                    "bpo_return_budget": 4,
+                    "bpo_env_idx": -1,
+                    "bpo_branch_prefix_sha256": "same-root-prompt",
+                    "bpo_backbone_action_count": action_count,
+                    "bpo_branch_relative_position": -1.0,
+                },
+            )
+        )
+    root_audit = validate_tree_outputs(root_outputs, sibling_count=4)
+    if root_audit["backbone_action_counts"] != [1, 2, 2, 3]:
+        raise SystemExit("BPO Root tree preflight lost independent action counts")
+
+    local_outputs = []
+    for sibling, env_idx in enumerate((0, 1, 2, 3)):
+        local_outputs.append(
+            SimpleNamespace(
+                prompt_ids=[1, 2],
+                response_ids=[10, 11, 20 + sibling],
+                response_mask=[1, 1, 1],
+                extra_fields={
+                    "bpo_group_id": "preflight-local-tree",
+                    "bpo_group_type": "local",
+                    "bpo_sibling_index": sibling,
+                    "bpo_branch_action": 1,
+                    "bpo_branch_entropy": 2.0,
+                    "bpo_action_token_starts": [0, 2],
+                    "bpo_return_budget": 4,
+                    "bpo_env_idx": env_idx,
+                    "bpo_branch_prefix_sha256": "same-local-prefix",
+                    "bpo_backbone_action_count": 3,
+                    "bpo_branch_relative_position": 0.5,
+                },
+            )
+        )
+    local_audit = validate_tree_outputs(local_outputs, sibling_count=4)
+    if local_audit["env_indices"] != [0, 1, 2, 3]:
+        raise SystemExit("BPO Local tree preflight lost isolated environment leases")
+
+    print(
+        "BPO Root/Local tree contracts preflight passed: "
+        + json.dumps(
+            {
+                "root_action_counts": root_audit["backbone_action_counts"],
+                "root_env_indices": root_audit["env_indices"],
+                "local_backbone_action_count": 3,
+                "local_env_indices": local_audit["env_indices"],
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def validate_entropy_patch(verl_source):
@@ -416,11 +485,11 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
             "bpo_sibling_index": np.asarray([0, 1, 2, 3] * 2),
             "bpo_branch_action": np.asarray([-1] * 4 + [1] * 4),
             "bpo_action_token_starts": np.asarray(
-                [[0]] * 4 + [[0, 2]] * 4,
+                [[0], [0, 2], [0, 1], [0, 2, 3]] + [[0, 2]] * 4,
                 dtype=object,
             ),
             "bpo_action_token_ends": np.asarray(
-                [[4]] * 4 + [[2, 4]] * 4,
+                [[4], [2, 4], [1, 4], [2, 3, 4]] + [[2, 4]] * 4,
                 dtype=object,
             ),
             "bpo_action_metadata_valid": np.asarray([True] * 8),
@@ -431,7 +500,9 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
                 ["root"] * 4 + ["local"] * 4,
                 dtype=object,
             ),
-            "bpo_backbone_action_count": np.asarray([1] * 4 + [3] * 4),
+            "bpo_backbone_action_count": np.asarray(
+                [1, 2, 2, 3] + [3] * 4
+            ),
             "bpo_branch_relative_position": np.asarray([-1.0] * 4 + [0.5] * 4),
             "bpo_branch_semantic_action_sha256": np.asarray(
                 [""] * 4 + ["product-a", "product-a", "product-b", "product-b"],
@@ -469,10 +540,13 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
     )
     root_advantage_mass = sequence_advantage_mass[:4].mean()
     local_advantage_mass = sequence_advantage_mass[4:].mean()
-    if not torch.isclose(root_advantage_mass, local_advantage_mass):
-        raise SystemExit(
-            "BPO Root/Local sequence-normalized advantage mass is not balanced"
-        )
+    if (
+        not torch.isfinite(root_advantage_mass)
+        or not torch.isfinite(local_advantage_mass)
+        or float(root_advantage_mass.item()) <= 0.0
+        or float(local_advantage_mass.item()) <= 0.0
+    ):
+        raise SystemExit("BPO Root/Local advantage mass must be finite and positive")
     actor_metrics = result.meta_info.get("shopping_bpo_actor_metrics") or {}
     required_actor_metrics = {
         "bpo_action/active_tokens",
@@ -495,6 +569,12 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
         for group in ("root", "local")
     ):
         raise SystemExit("BPO Root/Local policy weight mass is not 0.5/0.5")
+    if int(actor_metrics["bpo_action/root_actions"]) != 8:
+        raise SystemExit("BPO Root action accounting lost variable action counts")
+    if int(actor_metrics["bpo_action/local_actions"]) != 4:
+        raise SystemExit("BPO Local action accounting must contain K branch actions")
+    if int(actor_metrics["bpo_action/active_tokens"]) != 20:
+        raise SystemExit("BPO action policy support does not match the v3 mask contract")
     print(
         "BPO veRL dispatcher CPU preflight passed: "
         + json.dumps(
@@ -541,7 +621,6 @@ def validate_snapshot_fidelity():
     source = ShopAgentEnv(base_url=base_url, timeout=60, multiturn=True)
     clones = []
     snapshot_id = None
-    source_released = False
     try:
         source.reset(task_id, initial_request="")
         source.step("search[bpo snapshot warm state]")
@@ -549,14 +628,15 @@ def validate_snapshot_fidelity():
         source_env_idx = source.env_idx
         action = "search[bpo snapshot fidelity probe]"
         source_transition = source.step(action)
-        # Match formal rollout: release the completed backbone lease before
-        # restoring K-1 siblings from the still-live opaque snapshot.
-        source.release()
-        source_released = True
-        clones = [source.clone(snapshot_id) for _ in range(3)]
+        # Match the formal Local rollout: sibling 0 keeps the source lease
+        # alive while K-1 siblings restore and continue from the snapshot.
+        for _ in range(3):
+            clones.append(source.clone(snapshot_id))
         env_indices = [source_env_idx, *[clone.env_idx for clone in clones]]
-        if len(set(env_indices[1:])) != 3:
-            raise SystemExit("BPO snapshot preflight clone leases are not isolated")
+        if len(set(env_indices)) != 4:
+            raise SystemExit(
+                "BPO snapshot preflight source/clone leases are not isolated"
+            )
         transitions = [source_transition, *[clone.step(action) for clone in clones]]
         comparable = []
         for transition in transitions:
@@ -596,12 +676,15 @@ def validate_snapshot_fidelity():
             )
         )
     finally:
-        for env in reversed(clones):
-            env.release()
-        if not source_released:
-            source.release()
-        if snapshot_id is not None:
-            source.drop_snapshot(snapshot_id)
+        try:
+            for env in reversed(clones):
+                env.release()
+        finally:
+            try:
+                if snapshot_id is not None:
+                    source.drop_snapshot(snapshot_id)
+            finally:
+                source.release()
 
 
 def validate_swanlab(config):
@@ -794,6 +877,8 @@ def validate_visible_gpu_headroom(torch, *, minimum_free_gib=20.0):
 
 def main():
     config = common.compose_runtime_config(__import__("sys").argv[1:])
+    validate_bpo_config(config)
+    validate_bpo_tree_contracts()
     common.validate_environment_contract()
     validate_swanlab(config)
     validate_shopper_api()
@@ -823,7 +908,6 @@ def main():
         raise SystemExit("formal BPO requires CUDA")
     visible_gpu_free_gib = validate_visible_gpu_headroom(torch)
     verl_source = Path(verl.__file__).resolve()
-    validate_bpo_config(config)
     validate_entropy_patch(verl_source)
     validate_xml_tool_parser_patch(verl_source)
     validate_fused_ppo_gradient_patch(verl_source)

@@ -695,11 +695,13 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
             attach_bpo_tree_metrics(outputs)
             return outputs
         finally:
-            for retained in retained_candidates:
-                await asyncio.to_thread(
-                    source_env.drop_snapshot, retained.snapshot_id
-                )
-            # Keep the source lease alive until every snapshot clone has been
-            # restored and completed.  This prevents server-side slot reuse
-            # from racing with the three sibling restorations.
-            await session.close()
+            try:
+                for retained in retained_candidates:
+                    await asyncio.to_thread(
+                        source_env.drop_snapshot, retained.snapshot_id
+                    )
+            finally:
+                # Keep the source lease alive until every snapshot clone has
+                # been restored and completed, but always release it even if
+                # snapshot cleanup itself fails.
+                await session.close()

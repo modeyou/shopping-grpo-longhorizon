@@ -92,7 +92,7 @@ def test_tree_outputs_share_exact_prefix_and_isolated_clone_leases():
 
     outputs = []
     for sibling, env_idx, suffix in zip(
-        range(4), (0, 0, 1, 2), ((20, 21), (30, 31), (40, 41), (50, 51)), strict=True
+        range(4), (0, 1, 2, 3), ((20, 21), (30, 31), (40, 41), (50, 51)), strict=True
     ):
         outputs.append(
             SimpleNamespace(
@@ -101,6 +101,7 @@ def test_tree_outputs_share_exact_prefix_and_isolated_clone_leases():
                 response_mask=[1, 1, 1, 1],
                 extra_fields={
                     "bpo_group_id": "tree",
+                    "bpo_group_type": "local",
                     "bpo_sibling_index": sibling,
                     "bpo_branch_action": 1,
                     "bpo_branch_entropy": 2.5,
@@ -115,7 +116,7 @@ def test_tree_outputs_share_exact_prefix_and_isolated_clone_leases():
         )
     audit = validate_tree_outputs(outputs)
     assert audit["prefix_tokens"] == 2
-    assert audit["env_indices"] == [0, 0, 1, 2]
+    assert audit["env_indices"] == [0, 1, 2, 3]
     outputs[3].response_ids[1] = 99
     with pytest.raises(ValueError, match="token prefixes"):
         validate_tree_outputs(outputs)

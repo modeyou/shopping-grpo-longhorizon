@@ -211,6 +211,36 @@ class RewardGroupSelectionTest(unittest.TestCase):
         self.assertEqual(summary["bpo_cost_environment_transitions"], 2)
         self.assertEqual(summary["bpo_cost_shopper_api_calls"], 3)
 
+    def test_root_diagnostics_allow_independent_action_counts(self):
+        records = []
+        for sibling, action_count in enumerate((1, 2, 2, 3)):
+            records.append(
+                {
+                    "uid": "root-tree",
+                    "bpo_group_type": "root",
+                    "bpo_local_stage": "root",
+                    "bpo_local_stage_target": "root",
+                    "bpo_local_stage_fallback": False,
+                    "bpo_local_stage_unavailable": False,
+                    "bpo_branch_action": -1,
+                    "bpo_branch_entropy": 0.0,
+                    "bpo_branch_prefix_sha256": "same-prompt",
+                    "bpo_branch_action_sha256": f"response-{sibling}",
+                    "bpo_backbone_action_count": action_count,
+                    "bpo_branch_relative_position": -1.0,
+                    "bpo_branch_prefix_steps": 0,
+                    "bpo_branch_prefix_shopper_calls": 0,
+                    "bpo_branch_prefix_environment_transitions": 0,
+                    "actions": [{}] * action_count,
+                }
+            )
+
+        summary = summarize_bpo_group_diagnostics(records)["root-tree"]
+
+        self.assertEqual(summary["bpo_backbone_action_count"], 2.0)
+        self.assertEqual(summary["bpo_backbone_action_count_min"], 1)
+        self.assertEqual(summary["bpo_backbone_action_count_max"], 3)
+
     def test_training_diagnostics_append_public_rollouts_as_jsonl(self):
         rollouts = build_rollout_diagnostics(
             ["task-a", "task-a"],
