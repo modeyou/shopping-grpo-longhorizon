@@ -46,7 +46,12 @@ def audit(output: Path, log: Path) -> dict:
             "option": 7,
             "search_strategy": 5,
         },
-        "candidate_selector": "goal-priority-reservoir-v2",
+        "candidate_selector": "goal-priority-semantic-reservoir-v3",
+        "rollout_audit": "exact-tree-v2",
+        "semantic_action_contract": "canonical-tool-arguments-v1",
+        "local_credit_support": "branch-action-only-v1",
+        "policy_loss": "action-balanced-root-local-v1",
+        "actor_loss_aggregation": "seq-mean-token-mean",
         "trees_per_optimizer_step": 2,
         "returns_per_optimizer_step": 8,
         "maximum_optimizer_steps": 500,
@@ -64,7 +69,7 @@ def audit(output: Path, log: Path) -> dict:
         if method.get(name) != expected:
             raise ValueError(f"formal BPO contract mismatch: {name}")
     launch = contract.get("launch") or {}
-    if launch.get("algorithm") != "carl-bpo-v2":
+    if launch.get("algorithm") != "carl-bpo-v3":
         raise ValueError("CARL-BPO algorithm mismatch")
     if launch.get("reward_profile") != "none":
         raise ValueError("CARL-BPO must use Reward v4 with an explicit train return")
@@ -165,6 +170,8 @@ def audit(output: Path, log: Path) -> dict:
         "bpo_stage/fallback_count",
         "bpo_stage/unavailable_count",
         "bpo_diversity/unique_branch_actions_mean",
+        "bpo_diversity/unique_semantic_actions_mean",
+        "bpo_diversity/action_metadata_valid_rate",
         "bpo_diversity/unique_tool_sequences_mean",
         "bpo_return/sibling_std_mean",
         "bpo_return/sibling_range_mean",
@@ -176,6 +183,26 @@ def audit(output: Path, log: Path) -> dict:
         "carl_sampling/selected_failure_groups",
         "carl_sampling/reservoir_replacements",
         "carl_sampling/local_stage_mismatch_groups",
+        "carl_stage/generated_product",
+        "carl_stage/generated_option",
+        "carl_stage/generated_search_strategy",
+        "carl_stage/effective_product",
+        "carl_stage/effective_option",
+        "carl_stage/effective_search_strategy",
+        "carl_semantic/candidate_unique_actions_mean",
+        "carl_semantic/effective_unique_actions_mean",
+        "carl_semantic/selected_unique_actions",
+        "carl_semantic/within_key_return_range_mean",
+        "carl_semantic/within_key_return_range_max",
+        "bpo_action/active_tokens",
+        "bpo_action/original_actor_tokens",
+        "bpo_action/active_token_ratio",
+        "bpo_action/root_actions",
+        "bpo_action/local_actions",
+        "bpo_action/root_advantage_abs_mass",
+        "bpo_action/local_advantage_abs_mass",
+        "bpo_action/root_policy_weight_mass",
+        "bpo_action/local_policy_weight_mass",
     }
 
     for event in optimizer_events:
@@ -201,6 +228,18 @@ def audit(output: Path, log: Path) -> dict:
             for name in required_training_metrics
         ):
             raise ValueError("BPO key SwanLab metrics must all be finite")
+        if int(metrics["bpo_action/root_actions"]) < 4:
+            raise ValueError("BPO Root group is missing reconstructed actions")
+        if int(metrics["bpo_action/local_actions"]) != 4:
+            raise ValueError("BPO Local group must support one action per sibling")
+        if not 0 < float(metrics["bpo_action/active_token_ratio"]) <= 1:
+            raise ValueError("BPO active action token ratio is invalid")
+        for group_type in ("root", "local"):
+            value = float(metrics[f"bpo_action/{group_type}_policy_weight_mass"])
+            if abs(value - 0.5) > 1e-6:
+                raise ValueError(
+                    "BPO Root/Local action policy weights are not balanced 0.5/0.5"
+                )
 
         candidate_batches = int(metrics.get("bpo_sampling/candidate_batches", 0))
         first_tree = float(metrics.get("bpo_sampling/seconds_to_first_tree", -1))
@@ -222,6 +261,10 @@ def audit(output: Path, log: Path) -> dict:
         target = str(event.get("local_stage_target"))
         if local_stage != target or local_stage not in selected_stage_counts:
             raise ValueError("CARL-BPO selected Local group violates its stage target")
+        if int((selected["local"] or {}).get("unique_semantic_action_count", 0)) < 2:
+            raise ValueError(
+                "CARL-BPO selected Local group lacks semantic action diversity"
+            )
         selected_stage_counts[local_stage] += 1
     if selected_stage_counts != {
         "product": 200,

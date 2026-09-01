@@ -43,7 +43,7 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
     contract = {
         "schema_version": "shopping-carl-bpo-run-contract-v1",
         "launch": {
-            "algorithm": "carl-bpo-v2",
+            "algorithm": "carl-bpo-v3",
             "reward_profile": "none",
             "seed": 20260823,
             "logger": "swanlab",
@@ -57,7 +57,12 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
                 "option": 7,
                 "search_strategy": 5,
             },
-            "candidate_selector": "goal-priority-reservoir-v2",
+            "candidate_selector": "goal-priority-semantic-reservoir-v3",
+            "rollout_audit": "exact-tree-v2",
+            "semantic_action_contract": "canonical-tool-arguments-v1",
+            "local_credit_support": "branch-action-only-v1",
+            "policy_loss": "action-balanced-root-local-v1",
+            "actor_loss_aggregation": "seq-mean-token-mean",
             "trees_per_optimizer_step": 2,
             "returns_per_optimizer_step": 8,
             "maximum_optimizer_steps": 500,
@@ -114,6 +119,8 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
         "bpo_branch/relative_position_mean": 0.5,
         "bpo_branch/entropy_mean": 2.0,
         "bpo_diversity/unique_branch_actions_mean": 3.0,
+        "bpo_diversity/unique_semantic_actions_mean": 2.0,
+        "bpo_diversity/action_metadata_valid_rate": 1.0,
         "bpo_diversity/unique_tool_sequences_mean": 2.0,
         "bpo_return/sibling_std_mean": 0.25,
         "bpo_return/sibling_range_mean": 0.5,
@@ -125,6 +132,26 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
         "carl_sampling/selected_failure_groups": 1.0,
         "carl_sampling/reservoir_replacements": 0.0,
         "carl_sampling/local_stage_mismatch_groups": 0.0,
+        "carl_stage/generated_product": 1.0,
+        "carl_stage/generated_option": 1.0,
+        "carl_stage/generated_search_strategy": 0.0,
+        "carl_stage/effective_product": 1.0,
+        "carl_stage/effective_option": 1.0,
+        "carl_stage/effective_search_strategy": 0.0,
+        "carl_semantic/candidate_unique_actions_mean": 2.0,
+        "carl_semantic/effective_unique_actions_mean": 2.0,
+        "carl_semantic/selected_unique_actions": 2.0,
+        "carl_semantic/within_key_return_range_mean": 0.0,
+        "carl_semantic/within_key_return_range_max": 0.0,
+        "bpo_action/active_tokens": 128.0,
+        "bpo_action/original_actor_tokens": 256.0,
+        "bpo_action/active_token_ratio": 0.5,
+        "bpo_action/root_actions": 20.0,
+        "bpo_action/local_actions": 4.0,
+        "bpo_action/root_advantage_abs_mass": 0.35,
+        "bpo_action/local_advantage_abs_mass": 0.35,
+        "bpo_action/root_policy_weight_mass": 0.5,
+        "bpo_action/local_policy_weight_mass": 0.5,
     }
     events = []
     for step in range(1, 501):
@@ -137,7 +164,10 @@ def _write_run(tmp_path, *, returns=4000, branches=3000):
                     "local_stage_target": stage,
                     "selected_groups": {
                         "root": {"local_stage": "root"},
-                        "local": {"local_stage": stage},
+                        "local": {
+                            "local_stage": stage,
+                            "unique_semantic_action_count": 2,
+                        },
                     },
                 },
                 {"event": "optimizer_step", "global_step": step, "metrics": metrics},
@@ -190,6 +220,24 @@ def test_formal_audit_rejects_budget_or_tree_cost_mismatch(tmp_path):
 
     output, log = _write_run(tmp_path / "second", branches=1199)
     with pytest.raises(ValueError, match="K=4"):
+        audit(output, log)
+
+
+def test_formal_audit_rejects_unbalanced_action_policy_mass(tmp_path):
+    output, log = _write_run(tmp_path)
+    diagnostics = output / "training_diagnostics.jsonl"
+    events = [
+        json.loads(line)
+        for line in diagnostics.read_text(encoding="utf-8").splitlines()
+    ]
+    optimizer = next(event for event in events if event["event"] == "optimizer_step")
+    optimizer["metrics"]["bpo_action/root_policy_weight_mass"] = 0.6
+    diagnostics.write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not balanced 0.5/0.5"):
         audit(output, log)
 
 

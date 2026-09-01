@@ -28,9 +28,10 @@ SUPERSEDED_PATCHED_SHA256S = frozenset(
         "19b9bc29e0bda8a6aa56e63199cc5737ae77c52ba41b92eaa9d15a38f24a32b8",
         "dc299d924feca7ca14fd9f50dc7eb1ab9400e19d77c44615a5b4fbc9a8fe6089",
         "f59815348e3cde9302de7ff0e0962b32788a4099ecd9e4719ef21fe4841ba364",
+        "2082da6ec8244b0e863158032e0a992b55a7a0c672f5beb99e5bbbbdabe0d0ec",
     }
 )
-PATCH_MARKER = "SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V6"
+PATCH_MARKER = "SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V7"
 BACKUP_SUFFIX = ".shopping-grpo-dynamic-sampling.orig"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PATCH_FILE = PROJECT_ROOT / "patches/verl-0.8.0-shopping-dynamic-sampling.patch"

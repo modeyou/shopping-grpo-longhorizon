@@ -1,8 +1,32 @@
-"""CARL-BPO Root episode and Local suffix-only leave-one-out advantages."""
+"""CARL-BPO v3 Root/Local leave-one-out credit and action-balanced weights."""
 
 from __future__ import annotations
 
 from collections import defaultdict
+
+
+def _row_action_spans(response_mask, starts, ends, *, group_id):
+    """Validate exact action boundaries and return actor-token spans."""
+    response_length = int(response_mask.shape[-1])
+    starts = [int(value) for value in starts]
+    ends = [int(value) for value in ends]
+    if not starts or len(starts) != len(ends):
+        raise ValueError(f"BPO group {group_id!r} has incomplete action boundaries")
+    if starts != sorted(set(starts)) or starts[0] < 0:
+        raise ValueError(f"BPO group {group_id!r} has invalid action starts")
+    if ends[:-1] != starts[1:] or ends[-1] > response_length:
+        raise ValueError(f"BPO group {group_id!r} has inconsistent action ends")
+    spans = []
+    for start, end in zip(starts, ends, strict=True):
+        if start >= end:
+            raise ValueError(f"BPO group {group_id!r} has an empty action span")
+        actor_tokens = response_mask[start:end].ne(0)
+        if not bool(actor_tokens.any().item()):
+            raise ValueError(
+                f"BPO group {group_id!r} action has no actor-token policy support"
+            )
+        spans.append((start, end, actor_tokens))
+    return spans
 
 
 def audit_bpo_rollout_batch(
@@ -27,6 +51,10 @@ def audit_bpo_rollout_batch(
         "bpo_branch_prefix_sha256",
         "bpo_backbone_action_count",
         "bpo_branch_relative_position",
+        "bpo_action_token_ends",
+        "bpo_action_metadata_valid",
+        "bpo_branch_semantic_action_sha256",
+        "bpo_branch_semantic_valid",
     }
     missing = extra_required - set(metadata)
     if missing:
@@ -46,27 +74,24 @@ def audit_bpo_rollout_batch(
             str(metadata["bpo_branch_prefix_sha256"][row]) for row in ordered
         }
         budgets = {int(metadata["bpo_return_budget"][row]) for row in ordered}
-        backbone_action_counts = {
-            int(metadata["bpo_backbone_action_count"][row]) for row in ordered
-        }
-        relative_positions = {
-            float(metadata["bpo_branch_relative_position"][row]) for row in ordered
-        }
         if (
             len(branch_actions) != 1
             or len(entropies) != 1
             or len(prefix_hashes) != 1
-            or len(backbone_action_counts) != 1
-            or len(relative_positions) != 1
         ):
             raise ValueError(f"BPO group {group_id!r} does not share one branch state")
         if budgets != {int(sibling_count)}:
             raise ValueError(f"BPO group {group_id!r} has an invalid return budget")
 
+        if not all(bool(metadata["bpo_action_metadata_valid"][row]) for row in ordered):
+            raise ValueError(f"BPO group {group_id!r} has invalid action metadata")
         env_indices = [int(metadata["bpo_env_idx"][row]) for row in ordered]
-        if min(env_indices) < 0:
-            raise ValueError(f"BPO group {group_id!r} has invalid environment leases")
-        if group_type == "local" and len(set(env_indices[1:])) != sibling_count - 1:
+        if group_type == "root":
+            if set(env_indices) != {-1}:
+                raise ValueError(
+                    f"BPO Root group {group_id!r} must use the non-applicable lease sentinel"
+                )
+        elif min(env_indices) < 0 or len(set(env_indices)) != sibling_count:
             raise ValueError(f"BPO group {group_id!r} clone leases are not isolated")
 
         prompt_rows = [
@@ -75,14 +100,31 @@ def audit_bpo_rollout_batch(
         if len(set(prompt_rows)) != 1:
             raise ValueError(f"BPO group {group_id!r} prompts are not identical")
         if group_type == "root":
+            if branch_actions != {-1} or entropies != {0.0}:
+                raise ValueError(f"BPO Root group {group_id!r} has branch metadata")
+            action_counts = []
+            for row in ordered:
+                spans = _row_action_spans(
+                    response_mask[row],
+                    metadata["bpo_action_token_starts"][row],
+                    metadata["bpo_action_token_ends"][row],
+                    group_id=group_id,
+                )
+                action_count = int(metadata["bpo_backbone_action_count"][row])
+                if action_count != len(spans):
+                    raise ValueError(
+                        f"BPO Root group {group_id!r} action count is inconsistent"
+                    )
+                action_counts.append(action_count)
             audits.append(
                 {
                     "group_id": group_id,
                     "group_type": group_type,
                     "branch_action": -1,
                     "branch_entropy": 0.0,
-                    "backbone_action_count": 1,
-                    "branch_relative_position": 0.0,
+                    "backbone_action_counts": action_counts,
+                    "action_count": sum(action_counts),
+                    "branch_relative_position": -1.0,
                     "prefix_tokens": 0,
                     "env_indices": env_indices,
                 }
@@ -90,6 +132,14 @@ def audit_bpo_rollout_batch(
             continue
 
         branch_action = next(iter(branch_actions))
+        backbone_action_counts = {
+            int(metadata["bpo_backbone_action_count"][row]) for row in ordered
+        }
+        relative_positions = {
+            float(metadata["bpo_branch_relative_position"][row]) for row in ordered
+        }
+        if len(backbone_action_counts) != 1 or len(relative_positions) != 1:
+            raise ValueError(f"BPO group {group_id!r} does not share one branch state")
         backbone_action_count = next(iter(backbone_action_counts))
         if backbone_action_count < 2 or branch_action >= backbone_action_count - 1:
             raise ValueError(
@@ -106,6 +156,10 @@ def audit_bpo_rollout_batch(
         prefix_starts = []
         for row in ordered:
             starts = [int(value) for value in metadata["bpo_action_token_starts"][row]]
+            ends = [int(value) for value in metadata["bpo_action_token_ends"][row]]
+            _row_action_spans(
+                response_mask[row], starts, ends, group_id=group_id
+            )
             if branch_action < 0 or branch_action >= len(starts):
                 raise ValueError(f"BPO group {group_id!r} has an invalid branch action")
             if starts != sorted(starts) or starts[0] < 0 or starts[-1] >= response_length:
@@ -120,6 +174,21 @@ def audit_bpo_rollout_batch(
             raise ValueError(f"BPO group {group_id!r} token prefixes are not identical")
         if len(set(prefix_starts)) != 1:
             raise ValueError(f"BPO group {group_id!r} action prefixes are not identical")
+        semantic_valid = [
+            bool(metadata["bpo_branch_semantic_valid"][row]) for row in ordered
+        ]
+        semantic_hashes = [
+            str(metadata["bpo_branch_semantic_action_sha256"][row])
+            for row in ordered
+        ]
+        if (
+            not all(semantic_valid)
+            or not all(semantic_hashes)
+            or len(set(semantic_hashes)) < 2
+        ):
+            raise ValueError(
+                f"BPO Local group {group_id!r} lacks semantic action diversity"
+            )
         audits.append(
             {
                 "group_id": group_id,
@@ -129,6 +198,8 @@ def audit_bpo_rollout_batch(
                 "backbone_action_count": backbone_action_count,
                 "branch_relative_position": relative_position,
                 "prefix_tokens": len(prefixes[0]),
+                "unique_semantic_actions": len(set(semantic_hashes)),
+                "action_count": int(sibling_count),
                 "env_indices": env_indices,
             }
         )
@@ -137,8 +208,13 @@ def audit_bpo_rollout_batch(
 
 def _validate_metadata(metadata, batch_size, sibling_count):
     required = {
-        "bpo_group_id", "bpo_sibling_index", "bpo_branch_action",
+        "bpo_group_id",
+        "bpo_group_type",
+        "bpo_sibling_index",
+        "bpo_branch_action",
         "bpo_action_token_starts",
+        "bpo_action_token_ends",
+        "bpo_action_metadata_valid",
     }
     missing = required - set(metadata)
     if missing:
@@ -162,7 +238,15 @@ def build_bpo_policy_weights(
     sibling_count=4,
     dtype=None,
 ):
-    """Build token weights before veRL's actor loss/remove-padding path."""
+    """Encode the exact v3 action mean in veRL's sequence-token mean loss.
+
+    veRL averages each response over ``response_mask`` and then averages
+    responses.  The positive weights below make that objective equal to an
+    action mean inside each Root/Local group and give every present group type
+    equal total mass.  The runtime replaces the actor loss mask with the
+    non-zero support of these weights, so Local prefix/suffix tokens are absent
+    from both numerator and denominator.
+    """
     import torch
 
     if response_mask.ndim != 2:
@@ -180,52 +264,62 @@ def build_bpo_policy_weights(
         device=response_mask.device,
     )
     group_rows = defaultdict(list)
+    group_types = {}
     for row in range(batch_size):
-        group_rows[str(metadata["bpo_group_id"][row])].append(row)
-    for row in range(batch_size):
+        group_id = str(metadata["bpo_group_id"][row])
         group_type = str(metadata.get("bpo_group_type", ["local"] * batch_size)[row])
-        if group_type == "root":
-            weights[row] = actor_mask[row].to(weight_dtype)
-            continue
-        if group_type != "local":
+        if group_type not in {"root", "local"}:
             raise ValueError(f"unknown BPO group type: {group_type!r}")
-        branch_action = int(metadata["bpo_branch_action"][row])
-        starts = [int(value) for value in metadata["bpo_action_token_starts"][row]]
-        if not starts or branch_action < 0 or branch_action >= len(starts):
-            raise ValueError("invalid BPO action boundary metadata")
-        if (
-            starts != sorted(starts)
-            or starts[0] < 0
-            or starts[-1] >= response_length
-        ):
-            raise ValueError("BPO action boundaries are not valid response offsets")
-        branch_start = starts[branch_action]
-        weights[row, branch_start:] = actor_mask[row, branch_start:].to(weight_dtype)
+        group_rows[group_id].append(row)
+        previous = group_types.setdefault(group_id, group_type)
+        if previous != group_type:
+            raise ValueError(f"BPO group {group_id!r} has inconsistent group type")
 
-    # The upstream actor loss is token-mean.  Normalize each Root/Local group
-    # to equal effective actor-token mass.  Tool observations and padding must
-    # be removed before counting support; otherwise Local groups with long tool
-    # outputs are silently down-weighted even though those tokens cannot carry
-    # policy gradient.
-    active_counts = {
-        group_id: int(sum(weights[row].ne(0).sum().item() for row in rows))
-        for group_id, rows in group_rows.items()
-    }
-    empty_groups = [
-        group_id
-        for group_id, active_count in active_counts.items()
-        if active_count == 0
-    ]
-    if empty_groups:
-        raise ValueError(
-            "BPO groups have no actor-token policy support: "
-            f"{sorted(empty_groups)}"
-        )
-    total_active = sum(active_counts.values())
-    group_count = len(active_counts)
-    for group_id, rows in group_rows.items():
-        count = active_counts[group_id]
-        weights[rows] *= float(total_active) / float(group_count * count)
+    groups_by_type = defaultdict(list)
+    for group_id, group_type in group_types.items():
+        groups_by_type[group_type].append(group_id)
+    type_mass = 1.0 / len(groups_by_type)
+
+    for group_type, group_ids in groups_by_type.items():
+        group_mass = type_mass / len(group_ids)
+        for group_id in group_ids:
+            rows = group_rows[group_id]
+            units = []
+            row_support_counts = {}
+            for row in rows:
+                if not bool(metadata.get("bpo_action_metadata_valid", [True] * batch_size)[row]):
+                    raise ValueError(f"BPO group {group_id!r} has invalid action metadata")
+                starts = metadata["bpo_action_token_starts"][row]
+                row_ends = metadata["bpo_action_token_ends"][row]
+                spans = _row_action_spans(
+                    response_mask[row], starts, row_ends, group_id=group_id
+                )
+                selected = spans
+                if group_type == "local":
+                    branch_action = int(metadata["bpo_branch_action"][row])
+                    if branch_action < 0 or branch_action >= len(spans):
+                        raise ValueError("invalid BPO branch action metadata")
+                    selected = [spans[branch_action]]
+                row_support_counts[row] = sum(
+                    int(actor_tokens.sum().item())
+                    for _, _, actor_tokens in selected
+                )
+                for start, end, actor_tokens in selected:
+                    units.append((row, start, end, actor_tokens))
+            if not units:
+                raise ValueError(
+                    f"BPO group {group_id!r} has no actor-token policy support"
+                )
+            unit_coefficient = float(batch_size) * group_mass / len(units)
+            for row, start, end, actor_tokens in units:
+                action_token_count = int(actor_tokens.sum().item())
+                coefficient = (
+                    unit_coefficient
+                    * row_support_counts[row]
+                    / action_token_count
+                )
+                span_weights = weights[row, start:end]
+                span_weights[actor_tokens] = coefficient
     return weights
 
 
@@ -301,7 +395,7 @@ def compute_bpo_advantage(
     sibling_count=4,
     return_diagnostics=False,
 ):
-    """Compute LOO returns with Root-wide and Local suffix-only policy support."""
+    """Compute LOO values with Root-action and Local-branch-action support."""
     import torch
 
     if token_level_rewards.shape != response_mask.shape:
@@ -335,9 +429,11 @@ def compute_bpo_advantage(
             dtype=token_level_rewards.dtype,
         )
         advantages = scalar_advantages.unsqueeze(-1) * weights * response_mask
+        policy_mask = weights.ne(0).to(response_mask.dtype)
     if return_diagnostics:
         return advantages, advantages.clone(), {
             "policy_weights": weights,
+            "policy_mask": policy_mask,
             "scalar_advantages": scalar_advantages,
             "scores": scores,
         }

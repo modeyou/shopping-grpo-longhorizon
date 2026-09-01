@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from copy import copy, deepcopy
 import hashlib
 import math
@@ -19,6 +20,7 @@ from shopping_grpo.training.bpo.branching import (
 )
 from shopping_grpo.training.bpo.session import ClonedBranchSession
 from shopping_grpo.training.bpo.reward import completion_aligned_train_return
+from shopping_grpo.training.bpo.semantic_action import canonical_semantic_action
 from shopping_grpo.training.grpo.adapter.agent_loop import ShoppingToolAgentLoop
 from shopping_grpo.training.grpo.adapter.runtime import (
     current_runtime_state,
@@ -32,6 +34,11 @@ from shopping_grpo.training.grpo.dynamic_sampling import (
     aggregate_bpo_tree_metrics,
     build_rollout_diagnostics,
     summarize_bpo_group_diagnostics,
+)
+
+
+_root_action_starts: ContextVar[list[int] | None] = ContextVar(
+    "shopping_bpo_root_action_starts", default=None
 )
 
 
@@ -104,6 +111,21 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
             raise ValueError("CARL-BPO requires exactly one branch boundary")
         if self.entropy_probe != "exact-full-vocabulary":
             raise ValueError("CARL-BPO requires exact full-vocabulary entropy")
+    async def _handle_generating_state(
+        self,
+        agent_data,
+        sampling_params,
+        ignore_termination=False,
+    ):
+        """Capture every Root assistant-action boundary before generation."""
+        action_starts = _root_action_starts.get()
+        if action_starts is not None:
+            action_starts.append(len(agent_data.response_mask))
+        return await super()._handle_generating_state(
+            agent_data,
+            sampling_params,
+            ignore_termination=ignore_termination,
+        )
 
     @staticmethod
     def _attach_training_return(output):
@@ -171,13 +193,41 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         return retained
 
     @staticmethod
-    def _attach_root_metadata(output, *, group_id, sibling_index, prompt_ids):
+    def _action_boundaries(output, action_starts):
+        """Return sanitized starts/ends plus an exact-support validity flag."""
+        response_length = len(output.response_ids)
+        raw_starts = [int(value) for value in action_starts]
+        starts = sorted({value for value in raw_starts if 0 <= value < response_length})
+        ends = [*starts[1:], response_length] if starts else []
+        valid = raw_starts == starts and bool(starts)
+        if valid:
+            valid = all(
+                any(
+                    int(enabled) != 0
+                    for enabled in output.response_mask[start:end]
+                )
+                for start, end in zip(starts, ends, strict=True)
+            )
+        return starts, ends, bool(valid)
+
+    @staticmethod
+    def _attach_root_metadata(
+        output,
+        *,
+        group_id,
+        sibling_index,
+        prompt_ids,
+        action_starts,
+    ):
         prefix_digest = hashlib.sha256(
             ",".join(str(value) for value in prompt_ids).encode("ascii")
         ).hexdigest()
         response_digest = hashlib.sha256(
             ",".join(str(value) for value in output.response_ids).encode("ascii")
         ).hexdigest()
+        starts, ends, action_metadata_valid = (
+            ShoppingBPOAgentLoop._action_boundaries(output, action_starts)
+        )
         output.extra_fields.update(
             {
                 "bpo_group_id": group_id,
@@ -185,13 +235,18 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 "bpo_sibling_index": int(sibling_index),
                 "bpo_branch_action": -1,
                 "bpo_branch_entropy": 0.0,
-                "bpo_action_token_starts": [0],
+                "bpo_action_token_starts": starts,
+                "bpo_action_token_ends": ends,
+                "bpo_action_metadata_valid": action_metadata_valid,
                 "bpo_return_budget": 4,
-                "bpo_env_idx": 0,
+                "bpo_env_idx": -1,
                 "bpo_branch_prefix_sha256": prefix_digest,
                 "bpo_branch_action_sha256": response_digest,
-                "bpo_backbone_action_count": 1,
-                "bpo_branch_relative_position": 0.0,
+                "bpo_branch_semantic_action_sha256": "",
+                "bpo_branch_semantic_tool": "",
+                "bpo_branch_semantic_valid": False,
+                "bpo_backbone_action_count": len(starts),
+                "bpo_branch_relative_position": -1.0,
                 "bpo_branch_prefix_steps": 0,
                 "bpo_branch_prefix_shopper_calls": 0,
                 "bpo_branch_prefix_environment_transitions": 0,
@@ -207,9 +262,14 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         group_id = uuid4().hex
         outputs = []
         for sibling_index in range(self.sibling_count):
-            output = await ShoppingToolAgentLoop.run(
-                self, sampling_params, **kwargs
-            )
+            action_starts = []
+            token = _root_action_starts.set(action_starts)
+            try:
+                output = await ShoppingToolAgentLoop.run(
+                    self, sampling_params, **kwargs
+                )
+            finally:
+                _root_action_starts.reset(token)
             # The adapter's parent ``run`` owns a second finalization path and
             # therefore does not dispatch through this subclass override.
             self._attach_training_return(output)
@@ -218,6 +278,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 group_id=group_id,
                 sibling_index=sibling_index,
                 prompt_ids=output.prompt_ids,
+                action_starts=list(action_starts),
             )
             outputs.append(output)
         validate_tree_outputs(outputs, sibling_count=self.sibling_count)
@@ -324,6 +385,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
     async def _drive(self, data, sampling_params, *, action_starts):
         state = AgentState.GENERATING
         at_restored_boundary = True
+        branch_tool_calls = None
         while state != AgentState.TERMINATED:
             if state == AgentState.GENERATING:
                 if at_restored_boundary:
@@ -331,11 +393,13 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 else:
                     action_starts.append(len(data.response_mask))
                 state = await self._handle_generating_state(data, sampling_params)
+                if branch_tool_calls is None:
+                    branch_tool_calls = deepcopy(list(data.tool_calls or []))
             elif state == AgentState.PROCESSING_TOOLS:
                 state = await self._handle_processing_tools_state(data)
             else:
                 raise RuntimeError(f"invalid BPO continuation state: {state}")
-        return data
+        return data, branch_tool_calls
 
     async def _run_clone(self, candidate, sampling_params, task_id, sibling_index):
         payload = candidate.payload
@@ -350,7 +414,9 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         try:
             data = clone_agent_data(payload["agent_data"])
             action_starts = list(payload["action_starts"])
-            await self._drive(data, sampling_params, action_starts=action_starts)
+            data, branch_tool_calls = await self._drive(
+                data, sampling_params, action_starts=action_starts
+            )
             output = self._finalize_shopping_output(
                 self._make_output(data), current_runtime_state.get(), task_id
             )
@@ -361,6 +427,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 sibling_index,
                 payload["group_id"],
                 session.env.env_idx,
+                branch_tool_calls,
             )
             return output
         finally:
@@ -374,13 +441,15 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         sibling_index,
         group_id,
         env_idx,
+        branch_tool_calls,
     ):
-        branch_start = int(action_starts[int(candidate.action_index)])
-        branch_end = (
-            int(action_starts[int(candidate.action_index) + 1])
-            if int(candidate.action_index) + 1 < len(action_starts)
-            else len(output.response_ids)
+        starts, ends, action_metadata_valid = (
+            ShoppingBPOAgentLoop._action_boundaries(output, action_starts)
         )
+        branch_action = int(candidate.action_index)
+        branch_boundary_valid = action_metadata_valid and branch_action < len(starts)
+        branch_start = starts[branch_action] if branch_boundary_valid else 0
+        branch_end = ends[branch_action] if branch_boundary_valid else 0
         prefix_ids = [int(value) for value in output.response_ids[:branch_start]]
         prefix_digest = hashlib.sha256(
             ",".join(str(value) for value in prefix_ids).encode("ascii")
@@ -397,18 +466,34 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         branch_action_digest = hashlib.sha256(
             ",".join(str(value) for value in branch_action_ids).encode("ascii")
         ).hexdigest()
+        semantic_action = canonical_semantic_action(
+            branch_tool_calls,
+            tool_schemas=getattr(
+                candidate.payload["agent_data"], "_active_tool_schemas", ()
+            ),
+        )
+        semantic_valid = bool(branch_boundary_valid and semantic_action is not None)
         output.extra_fields.update(
             {
                 "bpo_group_id": group_id,
                 "bpo_group_type": "local",
                 "bpo_sibling_index": int(sibling_index),
-                "bpo_branch_action": int(candidate.action_index),
+                "bpo_branch_action": branch_action,
                 "bpo_branch_entropy": float(candidate.entropy),
-                "bpo_action_token_starts": list(action_starts),
+                "bpo_action_token_starts": starts,
+                "bpo_action_token_ends": ends,
+                "bpo_action_metadata_valid": branch_boundary_valid,
                 "bpo_return_budget": 4,
                 "bpo_env_idx": int(env_idx),
                 "bpo_branch_prefix_sha256": prefix_digest,
                 "bpo_branch_action_sha256": branch_action_digest,
+                "bpo_branch_semantic_action_sha256": (
+                    semantic_action.sha256 if semantic_valid else ""
+                ),
+                "bpo_branch_semantic_tool": (
+                    semantic_action.tool if semantic_valid else ""
+                ),
+                "bpo_branch_semantic_valid": semantic_valid,
                 "bpo_backbone_action_count": int(
                     candidate.payload["backbone_action_count"]
                 ),
@@ -520,6 +605,9 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                                 "source_env": source_env,
                                 "action_starts": list(action_starts),
                                 "group_id": group_id,
+                                "reference_tool_calls": deepcopy(
+                                    list(data.tool_calls or [])
+                                ),
                                 "branch_prefix_steps": len(prefix_state["steps"]),
                                 "branch_prefix_shopper_calls": int(
                                     prefix_shopper.call_count
@@ -584,6 +672,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 0,
                 group_id,
                 source_env.env_idx,
+                candidate.payload["reference_tool_calls"],
             )
             branch_results = await asyncio.gather(
                 *[

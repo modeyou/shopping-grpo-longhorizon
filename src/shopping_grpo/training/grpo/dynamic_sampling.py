@@ -152,7 +152,12 @@ def carl_candidate_priority(group: Mapping[str, object], generation_batch: int) 
     return (
         rank,
         -(max(returns) - min(returns)),
-        -int(group.get("bpo_unique_branch_action_count", 0)),
+        -int(
+            group.get(
+                "bpo_unique_semantic_action_count",
+                group.get("unique_semantic_action_count", 0),
+            )
+        ),
         -int(group.get("bpo_unique_tool_sequence_count", 0)),
         int(generation_batch),
         str(group.get("uid", "")),
@@ -250,10 +255,15 @@ BPO_DIAGNOSTIC_FIELDS = (
     "bpo_branch_action",
     "bpo_branch_entropy",
     "bpo_action_token_starts",
+    "bpo_action_token_ends",
+    "bpo_action_metadata_valid",
     "bpo_return_budget",
     "bpo_env_idx",
     "bpo_branch_prefix_sha256",
     "bpo_branch_action_sha256",
+    "bpo_branch_semantic_action_sha256",
+    "bpo_branch_semantic_tool",
+    "bpo_branch_semantic_valid",
     "bpo_backbone_action_count",
     "bpo_branch_relative_position",
     "bpo_branch_prefix_steps",
@@ -337,18 +347,25 @@ def summarize_bpo_group_diagnostics(
         }
         if len(stage_unavailable) != 1:
             raise ValueError("BPO sibling diagnostics disagree on stage availability")
-        backbone_counts = {
+        backbone_count_values = [
             int(record["bpo_backbone_action_count"]) for record in records
-        }
+        ]
+        backbone_counts = set(backbone_count_values)
         prefix_hashes = {
             str(record["bpo_branch_prefix_sha256"]) for record in records
         }
-        if len(branch_actions) != 1 or len(backbone_counts) != 1:
+        if len(branch_actions) != 1 or (
+            group_type == "local" and len(backbone_counts) != 1
+        ):
             raise ValueError("BPO sibling diagnostics disagree on branch location")
         if len(prefix_hashes) != 1:
             raise ValueError("BPO sibling diagnostics disagree on branch prefix")
         branch_action = next(iter(branch_actions))
-        backbone_action_count = next(iter(backbone_counts))
+        backbone_action_count = (
+            next(iter(backbone_counts))
+            if group_type == "local"
+            else sum(backbone_count_values) / len(backbone_count_values)
+        )
         prefix_steps = {int(record["bpo_branch_prefix_steps"]) for record in records}
         prefix_calls = {
             int(record["bpo_branch_prefix_shopper_calls"]) for record in records
@@ -377,6 +394,10 @@ def summarize_bpo_group_diagnostics(
                 if isinstance(action, Mapping)
             )
         sibling_action_hashes = []
+        semantic_action_hashes = []
+        semantic_action_tools = []
+        semantic_action_valid = []
+        action_metadata_valid = []
         tool_sequences = []
         termination_reasons = []
         error_types = []
@@ -384,6 +405,18 @@ def summarize_bpo_group_diagnostics(
         for record in records:
             actions = list(record.get("actions") or [])
             sibling_action_hashes.append(str(record["bpo_branch_action_sha256"]))
+            semantic_action_hashes.append(
+                str(record.get("bpo_branch_semantic_action_sha256") or "")
+            )
+            semantic_action_tools.append(
+                str(record.get("bpo_branch_semantic_tool") or "")
+            )
+            semantic_action_valid.append(
+                bool(record.get("bpo_branch_semantic_valid", False))
+            )
+            action_metadata_valid.append(
+                bool(record.get("bpo_action_metadata_valid", True))
+            )
             tool_sequences.append(
                 tuple(
                     str(action.get("name") or action.get("tool") or "")
@@ -405,6 +438,8 @@ def summarize_bpo_group_diagnostics(
             "bpo_local_stage_unavailable": next(iter(stage_unavailable)),
             "bpo_branch_action": branch_action,
             "bpo_backbone_action_count": backbone_action_count,
+            "bpo_backbone_action_count_min": min(backbone_count_values),
+            "bpo_backbone_action_count_max": max(backbone_count_values),
             "bpo_branch_relative_position": float(
                 records[0]["bpo_branch_relative_position"]
             ),
@@ -417,6 +452,16 @@ def summarize_bpo_group_diagnostics(
             "bpo_unique_branch_action_count": len(
                 set(sibling_action_hashes)
             ),
+            "bpo_unique_semantic_action_count": (
+                len(set(semantic_action_hashes))
+                if group_type == "local" and all(semantic_action_valid)
+                else 0
+            ),
+            "bpo_semantic_action_tools": tuple(semantic_action_tools),
+            "bpo_semantic_action_valid": bool(
+                group_type == "local" and all(semantic_action_valid)
+            ),
+            "bpo_action_metadata_valid": all(action_metadata_valid),
             "bpo_unique_tool_sequence_count": len(set(tool_sequences)),
             "bpo_termination_reasons": tuple(termination_reasons),
             "bpo_error_types": tuple(error_types),
@@ -746,6 +791,8 @@ _SWANLAB_DASHBOARD_ALIASES = {
     "bpo_stage/fallback_count": "sampling/local_fallback_groups",
     "bpo_stage/unavailable_count": "sampling/local_stage_unavailable_groups",
     "bpo_diversity/unique_branch_actions_mean": "sampling/unique_branch_actions_mean",
+    "bpo_diversity/unique_semantic_actions_mean": "sampling/unique_semantic_actions_mean",
+    "bpo_diversity/action_metadata_valid_rate": "sampling/action_metadata_valid_rate",
     "bpo_diversity/unique_tool_sequences_mean": "sampling/unique_tool_sequences_mean",
     "carl_budget/accepted_groups_total": "sampling/accepted_groups_total",
     "carl_budget/accepted_returns_total": "sampling/accepted_returns_total",
@@ -766,6 +813,12 @@ _SWANLAB_DASHBOARD_ALIASES = {
     "carl_stage/selected_product": "sampling/stage_selected_product",
     "carl_stage/selected_option": "sampling/stage_selected_option",
     "carl_stage/selected_search_strategy": "sampling/stage_selected_search_strategy",
+    "carl_stage/generated_product": "sampling/stage_generated_product",
+    "carl_stage/generated_option": "sampling/stage_generated_option",
+    "carl_stage/generated_search_strategy": "sampling/stage_generated_search_strategy",
+    "carl_stage/effective_product": "sampling/stage_effective_product",
+    "carl_stage/effective_option": "sampling/stage_effective_option",
+    "carl_stage/effective_search_strategy": "sampling/stage_effective_search_strategy",
     # Return signal and branching-credit coverage.
     "reward/train_return_mean": "credit/train_return_mean",
     "reward/train_return_min": "credit/train_return_min",
@@ -788,6 +841,20 @@ _SWANLAB_DASHBOARD_ALIASES = {
     "bpo_branch/prefix_steps_mean": "credit/prefix_steps_mean",
     "bpo_branch/prefix_shopper_calls_mean": "credit/prefix_shopper_calls_mean",
     "bpo_branch/prefix_environment_transitions_mean": "credit/prefix_environment_transitions_mean",
+    "carl_semantic/candidate_unique_actions_mean": "credit/candidate_semantic_actions_mean",
+    "carl_semantic/effective_unique_actions_mean": "credit/effective_semantic_actions_mean",
+    "carl_semantic/selected_unique_actions": "credit/selected_semantic_actions",
+    "carl_semantic/within_key_return_range_mean": "credit/within_semantic_return_range_mean",
+    "carl_semantic/within_key_return_range_max": "credit/within_semantic_return_range_max",
+    "bpo_action/active_tokens": "credit/active_action_tokens",
+    "bpo_action/original_actor_tokens": "credit/original_actor_tokens",
+    "bpo_action/active_token_ratio": "credit/active_action_token_ratio",
+    "bpo_action/root_actions": "credit/root_actions",
+    "bpo_action/local_actions": "credit/local_actions",
+    "bpo_action/root_advantage_abs_mass": "credit/root_action_advantage_abs_mass",
+    "bpo_action/local_advantage_abs_mass": "credit/local_action_advantage_abs_mass",
+    "bpo_action/root_policy_weight_mass": "credit/root_action_policy_weight_mass",
+    "bpo_action/local_policy_weight_mass": "credit/local_action_policy_weight_mass",
     # Optimizer state.
     "training/global_step": "optimization/global_step",
     "training/optimizer_updated": "optimization/optimizer_updated",
@@ -932,6 +999,12 @@ def aggregate_bpo_tree_metrics(
         "bpo_diversity/unique_branch_actions_mean": mean(
             values("bpo_unique_branch_action_count")
         ),
+        "bpo_diversity/unique_semantic_actions_mean": mean(
+            values("bpo_unique_semantic_action_count")
+        ),
+        "bpo_diversity/action_metadata_valid_rate": mean(
+            values("bpo_action_metadata_valid")
+        ),
         "bpo_diversity/unique_tool_sequences_mean": mean(
             values("bpo_unique_tool_sequence_count")
         ),
@@ -1001,6 +1074,9 @@ def select_reward_varying_groups(
     purchase_success: Sequence[bool] | None = None,
     group_types: Sequence[str] | None = None,
     local_stage_fallback: Sequence[bool] | None = None,
+    action_metadata_valid: Sequence[bool] | None = None,
+    semantic_action_hashes: Sequence[str] | None = None,
+    semantic_action_valid: Sequence[bool] | None = None,
     sampling_invalid: Sequence[bool] | None = None,
     sampling_invalid_reasons: Sequence[Sequence[str]] | None = None,
     tolerance: float = 1.0e-8,
@@ -1021,6 +1097,9 @@ def select_reward_varying_groups(
         "purchase_success": purchase_success,
         "group_types": group_types,
         "local_stage_fallback": local_stage_fallback,
+        "action_metadata_valid": action_metadata_valid,
+        "semantic_action_hashes": semantic_action_hashes,
+        "semantic_action_valid": semantic_action_valid,
         "sampling_invalid": sampling_invalid,
         "sampling_invalid_reasons": sampling_invalid_reasons,
     }
@@ -1057,6 +1136,21 @@ def select_reward_varying_groups(
         if local_stage_fallback is not None
         else [False] * len(uids)
     )
+    action_metadata_values = (
+        [bool(value) for value in action_metadata_valid]
+        if action_metadata_valid is not None
+        else [True] * len(uids)
+    )
+    semantic_hash_values = (
+        [str(value) for value in semantic_action_hashes]
+        if semantic_action_hashes is not None
+        else [""] * len(uids)
+    )
+    semantic_valid_values = (
+        [bool(value) for value in semantic_action_valid]
+        if semantic_action_valid is not None
+        else [False] * len(uids)
+    )
     grouped: dict[Hashable, dict[str, Any]] = {}
     for index, (
         uid,
@@ -1065,6 +1159,9 @@ def select_reward_varying_groups(
         raw_success,
         raw_group_type,
         raw_stage_fallback,
+        raw_action_metadata_valid,
+        raw_semantic_hash,
+        raw_semantic_valid,
         raw_invalid,
         raw_reasons,
     ) in enumerate(
@@ -1075,6 +1172,9 @@ def select_reward_varying_groups(
             success_values,
             group_type_values,
             stage_fallback_values,
+            action_metadata_values,
+            semantic_hash_values,
+            semantic_valid_values,
             invalid_values,
             reason_values,
             strict=True,
@@ -1105,6 +1205,9 @@ def select_reward_varying_groups(
                 "purchase_success": [],
                 "group_types": [],
                 "local_stage_fallback": [],
+                "action_metadata_valid": [],
+                "semantic_action_hashes": [],
+                "semantic_action_valid": [],
                 "sampling_invalid": [],
                 "sampling_invalid_reasons": [],
             },
@@ -1116,8 +1219,21 @@ def select_reward_varying_groups(
         group["purchase_success"].append(bool(raw_success))
         group["group_types"].append(str(raw_group_type))
         group["local_stage_fallback"].append(bool(raw_stage_fallback))
+        group["action_metadata_valid"].append(bool(raw_action_metadata_valid))
+        group["semantic_action_hashes"].append(str(raw_semantic_hash))
+        group["semantic_action_valid"].append(bool(raw_semantic_valid))
         group["sampling_invalid"].append(bool(raw_invalid))
         group["sampling_invalid_reasons"].extend(str(reason) for reason in raw_reasons)
+
+    semantic_contract_supplied = (
+        semantic_action_hashes is not None or semantic_action_valid is not None
+    )
+    if semantic_contract_supplied and (
+        semantic_action_hashes is None or semantic_action_valid is None
+    ):
+        raise ValueError(
+            "semantic action hashes and validity must be supplied together"
+        )
 
     kept_uids: list[Hashable] = []
     dropped_uids: list[Hashable] = []
@@ -1136,6 +1252,43 @@ def select_reward_varying_groups(
         has_local_stage_mismatch = (
             group_type == "local" and any(group["local_stage_fallback"])
         )
+        has_invalid_action_metadata = not all(group["action_metadata_valid"])
+        has_invalid_semantic_action = (
+            semantic_contract_supplied
+            and group_type == "local"
+            and (
+                not all(group["semantic_action_valid"])
+                or not all(group["semantic_action_hashes"])
+            )
+        )
+        unique_semantic_action_count = (
+            len(set(group["semantic_action_hashes"]))
+            if semantic_contract_supplied
+            and group_type == "local"
+            and not has_invalid_semantic_action
+            else 0
+        )
+        semantic_return_ranges = []
+        semantic_action_sample_counts = {}
+        if (
+            semantic_contract_supplied
+            and group_type == "local"
+            and not has_invalid_semantic_action
+        ):
+            returns_by_action = {}
+            for action_hash, value in zip(
+                group["semantic_action_hashes"], train_returns, strict=True
+            ):
+                returns_by_action.setdefault(action_hash, []).append(float(value))
+            semantic_action_sample_counts = {
+                action_hash: len(values)
+                for action_hash, values in sorted(returns_by_action.items())
+            }
+            semantic_return_ranges = [
+                max(values) - min(values)
+                for values in returns_by_action.values()
+                if len(values) > 1
+            ]
         reasons = tuple(sorted(set(group["sampling_invalid_reasons"])))
         all_success = all(group["purchase_success"])
         any_success = any(group["purchase_success"])
@@ -1151,6 +1304,16 @@ def select_reward_varying_groups(
             drop_reason = "local_stage_mismatch"
         elif has_sampling_invalid:
             drop_reason = "sampling_invalid"
+        elif has_invalid_action_metadata:
+            drop_reason = "action_metadata_invalid"
+        elif has_invalid_semantic_action:
+            drop_reason = "semantic_action_invalid"
+        elif (
+            semantic_contract_supplied
+            and group_type == "local"
+            and unique_semantic_action_count < 2
+        ):
+            drop_reason = "insufficient_semantic_action_diversity"
         elif not utility_varying:
             drop_reason = "constant_reward"
         else:
@@ -1174,6 +1337,19 @@ def select_reward_varying_groups(
                 "reward_varying": utility_varying,
                 "sampling_invalid": has_sampling_invalid,
                 "local_stage_mismatch": has_local_stage_mismatch,
+                "action_metadata_valid": not has_invalid_action_metadata,
+                "semantic_action_valid": not has_invalid_semantic_action,
+                "unique_semantic_action_count": unique_semantic_action_count,
+                "bpo_unique_semantic_action_count": unique_semantic_action_count,
+                "semantic_action_sample_counts": semantic_action_sample_counts,
+                "semantic_action_within_key_return_range_mean": (
+                    sum(semantic_return_ranges) / len(semantic_return_ranges)
+                    if semantic_return_ranges
+                    else 0.0
+                ),
+                "semantic_action_within_key_return_range_max": max(
+                    semantic_return_ranges, default=0.0
+                ),
                 "sampling_invalid_reasons": reasons,
                 "drop_reason": drop_reason,
                 "contrast_type": contrast_type,
@@ -1230,6 +1406,19 @@ def select_reward_varying_groups(
         ),
         "local_stage_mismatch_group_count": sum(
             group["local_stage_mismatch"] for group in groups
+        ),
+        "action_metadata_invalid_group_count": sum(
+            not group["action_metadata_valid"] for group in groups
+        ),
+        "semantic_action_invalid_group_count": sum(
+            semantic_contract_supplied
+            and group["group_type"] == "local"
+            and not group["semantic_action_valid"]
+            for group in groups
+        ),
+        "insufficient_semantic_action_diversity_group_count": sum(
+            group["drop_reason"] == "insufficient_semantic_action_diversity"
+            for group in groups
         ),
         "sampling_invalid_reason_counts": {
             reason: sum(

@@ -160,15 +160,18 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert "upstream_lambda" not in config["algorithm"]["bpo"]
     assert config["shopping_bpo"] == {
         "enable": True,
-        "algorithm": "carl-bpo-v2",
+        "algorithm": "carl-bpo-v3",
         "sibling_count": 4,
         "branch_count": 1,
         "return_budget": 4,
-        "selection": "maximum_exact_entropy",
+        "selection": "maximum_exact_entropy_with_semantic_gate",
         "entropy_tie_break": "earliest_action",
         "entropy_probe": "exact-full-vocabulary",
         "entropy_state": "action-boundary-first-token",
-        "rollout_audit": "exact-tree-v1",
+        "rollout_audit": "exact-tree-v2",
+        "semantic_action_contract": "canonical-tool-arguments-v1",
+        "local_credit_support": "branch-action-only-v1",
+        "policy_loss": "action-balanced-root-local-v1",
         "group_schedule": ["root", "local"],
         "local_stage_weights": {
             "product": 8,
@@ -190,6 +193,9 @@ def test_formal_bpo_config_is_independent_and_frozen():
     assert model["use_liger"] is True
     assert model["use_remove_padding"] is True
     assert config["actor_rollout_ref"]["actor"]["calculate_entropy"] is False
+    assert config["actor_rollout_ref"]["actor"]["loss_agg_mode"] == (
+        "seq-mean-token-mean"
+    )
     assert config["trainer"]["n_gpus_per_node"] == 4
     assert config["trainer"]["project_name"] == "shopping-multiturn-agentic"
     assert config["trainer"]["total_training_steps"] == 500

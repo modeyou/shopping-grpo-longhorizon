@@ -226,6 +226,12 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn("ready_reward_tensor.sum(dim=-1)", fit_source)
             self.assertIn("SHOPPING_GRPO_DYNAMIC_SAMPLING_PARTIAL", fit_source)
             self.assertIn("extract_aligned_bpo_fields", fit_source)
+            self.assertIn("required_v3_fields", fit_source)
+            self.assertIn('"bpo_action_metadata_valid"', fit_source)
+            self.assertIn('"bpo_branch_semantic_action_sha256"', fit_source)
+            self.assertIn('"bpo_branch_semantic_valid"', fit_source)
+            self.assertIn("semantic_action_hashes=aligned_bpo_fields", fit_source)
+            self.assertIn("semantic_action_valid=aligned_bpo_fields", fit_source)
             self.assertIn("summarize_bpo_group_diagnostics", fit_source)
             self.assertIn('"drop_reason": group["drop_reason"]', fit_source)
             self.assertIn('"group/all_zero_utility_ratio"', fit_source)
@@ -250,6 +256,22 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn('"optimizer_selection"', fit_source)
             self.assertIn('"carl_sampling/reservoir_replacements"', fit_source)
             self.assertIn('"carl_sampling/selected_goal_groups"', fit_source)
+            self.assertIn('"carl_stage/effective_product"', fit_source)
+            self.assertIn('"carl_stage/effective_option"', fit_source)
+            self.assertIn(
+                '"carl_stage/effective_search_strategy"', fit_source
+            )
+            self.assertIn(
+                '"carl_semantic/candidate_unique_actions_mean"', fit_source
+            )
+            self.assertIn(
+                '"carl_semantic/effective_unique_actions_mean"', fit_source
+            )
+            self.assertIn('"carl_semantic/selected_unique_actions"', fit_source)
+            self.assertIn(
+                '"carl_semantic/within_key_return_range_mean"', fit_source
+            )
+            self.assertIn("shopping_bpo_actor_metrics", fit_source)
             self.assertIn('local_stage_fallback=local_stage_fallback', fit_source)
             self.assertIn(
                 "dynamic_trained_groups_total = self.global_steps * dynamic_target_prompts",
@@ -271,6 +293,14 @@ class VerlPatchScriptTest(unittest.TestCase):
                 "exhausted max_num_gen_batches=",
                 fit_source,
             )
+            # Semantic/action quality failures are candidate drop reasons.  The
+            # only supply-side hard stop remains exhaustion of the configured
+            # generation-batch ceiling, after preserving committed state.
+            self.assertEqual(
+                fit_source.count("strict BPO sampling could not collect"), 1
+            )
+            self.assertNotIn("semantic action diversity could not", fit_source)
+            self.assertNotIn("semantic action invalid; abort", fit_source)
             self.assertLess(
                 fit_source.index("SHOPPING_GRPO_DYNAMIC_SAMPLING_SKIPPED"),
                 fit_source.index("self.checkpoint_manager.sleep_replicas()", ready),

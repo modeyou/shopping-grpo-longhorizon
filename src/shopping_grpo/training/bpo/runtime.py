@@ -690,10 +690,14 @@ def install_bpo_runtime():
                 "bpo_sibling_index",
                 "bpo_branch_action",
                 "bpo_action_token_starts",
+                "bpo_action_token_ends",
+                "bpo_action_metadata_valid",
                 "bpo_branch_entropy",
                 "bpo_return_budget",
                 "bpo_env_idx",
                 "bpo_branch_prefix_sha256",
+                "bpo_branch_semantic_action_sha256",
+                "bpo_branch_semantic_valid",
                 "bpo_backbone_action_count",
                 "bpo_branch_relative_position",
             )
@@ -726,6 +730,12 @@ def install_bpo_runtime():
             returns,
             internals["policy_weights"],
         )
+        # veRL's actor consumes response_mask as the PPO loss mask.  Replace it
+        # only after rollout/reward/tree audits so Local prefix and post-action
+        # suffix tokens are absent from both the PPO numerator and denominator.
+        data.batch["response_mask"] = internals["policy_mask"].to(
+            dtype=data.batch["response_mask"].dtype
+        )
         global_step = _diagnostic_global_step(data.meta_info)
         actor_payload = {
             "diagnostics": actor_batch,
@@ -733,6 +743,63 @@ def install_bpo_runtime():
             "sibling_count": int(bpo_config.get("sibling_count", 4)),
             "tree_audits": audits,
         }
+        policy_mask = internals["policy_mask"].ne(0)
+        per_row_advantage_abs = advantages.detach().float().abs().sum(dim=-1) / (
+            policy_mask.sum(dim=-1).clamp_min(1)
+        )
+        per_row_policy_weight = (
+            internals["policy_weights"].detach().float().sum(dim=-1)
+            / policy_mask.sum(dim=-1).clamp_min(1)
+        )
+        group_types = [str(value) for value in metadata["bpo_group_type"]]
+        root_rows = [
+            index for index, value in enumerate(group_types) if value == "root"
+        ]
+        local_rows = [
+            index for index, value in enumerate(group_types) if value == "local"
+        ]
+        actor_metrics = {
+            "bpo_action/active_tokens": float(
+                actor_batch["policy_mask_nonzero_tokens"]
+            ),
+            "bpo_action/original_actor_tokens": float(
+                actor_batch["response_mask_total_tokens"]
+            ),
+            "bpo_action/active_token_ratio": float(
+                actor_batch["policy_mask_nonzero_tokens"]
+                / max(actor_batch["response_mask_total_tokens"], 1)
+            ),
+            "bpo_action/root_actions": float(
+                sum(
+                    int(audit["action_count"])
+                    for audit in audits
+                    if audit["group_type"] == "root"
+                )
+            ),
+            "bpo_action/local_actions": float(
+                sum(
+                    int(audit["action_count"])
+                    for audit in audits
+                    if audit["group_type"] == "local"
+                )
+            ),
+            # Each value is the type's absolute-advantage contribution to the
+            # native batch mean when the PPO token factor has unit magnitude.
+            "bpo_action/root_advantage_abs_mass": float(
+                per_row_advantage_abs[root_rows].sum().item() / len(group_types)
+            ),
+            "bpo_action/local_advantage_abs_mass": float(
+                per_row_advantage_abs[local_rows].sum().item() / len(group_types)
+            ),
+            "bpo_action/root_policy_weight_mass": float(
+                per_row_policy_weight[root_rows].sum().item() / len(group_types)
+            ),
+            "bpo_action/local_policy_weight_mass": float(
+                per_row_policy_weight[local_rows].sum().item() / len(group_types)
+            ),
+        }
+        data.meta_info["shopping_bpo_actor_metrics"] = actor_metrics
+        actor_payload["metrics"] = actor_metrics
         _append_runtime_diagnostic(
             "bpo_actor_batch",
             global_step,

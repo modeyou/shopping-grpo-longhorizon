@@ -65,7 +65,14 @@ def test_swanlab_dashboard_has_exactly_five_readable_top_level_sections():
         {
             "val-shopping/summary/purchase_success_rate": 0.7,
             "bpo_batch/local_groups": 1,
+            "carl_stage/effective_option": 3,
             "reward/train_return_mean": 0.8,
+            "carl_semantic/selected_unique_actions": 2,
+            "bpo_action/active_tokens": 128,
+            "bpo_action/root_advantage_abs_mass": 0.4,
+            "bpo_action/local_advantage_abs_mass": 0.4,
+            "bpo_action/root_policy_weight_mass": 0.5,
+            "bpo_action/local_policy_weight_mass": 0.5,
             "actor/pg_loss": 0.02,
             "timing_s/gen": 12.0,
             "reward/shaped_mean": 999.0,
@@ -75,7 +82,14 @@ def test_swanlab_dashboard_has_exactly_five_readable_top_level_sections():
     assert dashboard == {
         "validation/completion_success": 0.7,
         "sampling/accepted_local_groups": 1,
+        "sampling/stage_effective_option": 3,
         "credit/train_return_mean": 0.8,
+        "credit/selected_semantic_actions": 2,
+        "credit/active_action_tokens": 128,
+        "credit/root_action_advantage_abs_mass": 0.4,
+        "credit/local_action_advantage_abs_mass": 0.4,
+        "credit/root_action_policy_weight_mass": 0.5,
+        "credit/local_action_policy_weight_mass": 0.5,
         "optimization/pg_loss": 0.02,
         "runtime/timing_s.gen": 12.0,
     }
@@ -94,6 +108,8 @@ def test_bpo_tree_metrics_capture_branch_diversity_and_return_spread():
             "bpo_branch_prefix_shopper_calls": 1,
             "bpo_branch_prefix_environment_transitions": 0,
             "bpo_unique_branch_action_count": 4,
+            "bpo_unique_semantic_action_count": 2,
+            "bpo_action_metadata_valid": True,
             "bpo_unique_tool_sequence_count": 3,
         }
     }

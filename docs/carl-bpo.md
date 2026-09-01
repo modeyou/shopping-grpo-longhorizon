@@ -2,7 +2,8 @@
 
 > **名称**：CARL-BPO（Completion-Aligned Root–Local Branching Policy Optimization）
 > **中文名**：完成率对齐的 Root–Local 分支策略优化
-> **状态**：CARL-BPO v1 作为历史对照；v2 已完成代码实现，等待服务器 preflight 与再次确认后运行
+> **状态**：CARL-BPO v1/v2/v2.1 作为历史诊断对照；v2.1 已完成但未在 DEV-500 上超过
+> SFT-325；v3 方案已确认，等待代码实现与确定性审计，尚未批准启动新训练
 > **起点模型**：SFT `checkpoint-325`
 
 本文把正式 `full-bpo-v1` 的失败分析落成一套做减法后的 RL 改进方案。CARL-BPO
@@ -1298,3 +1299,315 @@ v2.1 不改变 Reward、return、LOO、mask、PPO loss、Root/Local 结构或40/
 4. 每25个已提交 optimizer steps 保存 checkpoint，并保留全部20个定期 checkpoint；
 5. 第120批终止前额外保存最后一个已提交 optimizer step，pending pair 永不训练；
 6. 新正式运行从 SFT `checkpoint-325` 的 step 0 开始，形成连续的新 SwanLab 曲线。
+
+## 18. CARL-BPO v3：Snapshot-Enhanced Action Credit
+
+### 18.1 状态、目标与边界
+
+CARL-BPO v3 的中文名为“快照增强的动作级信用 BPO”。本节是 v3 的设计冻结稿，优先级高于
+第 1—17 节中 v1/v2/v2.1 的历史实现说明。后续实现必须逐项满足本节；不得为了复用旧代码而
+保留与 v3 冲突的 suffix-only、全局 token-mean 或占位 action metadata 路径。
+
+v3 只解决已经被正式运行证据支持的两个问题：
+
+1. **信用单位不对齐**：v2.1 把一个 Local scalar LOO 复制到整个分叉后缀，再由全局
+   token-mean 聚合；长后缀、长 reasoning 和无 Local 信用的前缀会改变实际更新权重。
+2. **Local 对照不一定是动作对照**：只要终局 return 不同就能入选，即使 K=4 的首个
+   语义工具动作完全相同；这种差异可能主要来自后续采样噪声，而不是当前分叉动作。
+
+v3 不同时重做 Reward、任务数据、优化器、学习率、K、Root/Local 数量或评测协议。它首先把
+“同状态下比较动作”这件事在数据、信用和 loss 三处做成同一个合同。
+
+### 18.2 算法锚点与项目适配
+
+v3 采用 **snapshot-enhanced GiGPO** 作为方法锚点：
+
+- Root group 对应 episode-level macro group，比较从同一任务起点采样的完整轨迹；
+- Local group 对应 state-level micro group，但本项目不依赖跨轨迹 state hash，而使用
+  ShopSimulator 的精确 snapshot clone 构造同一工具状态；
+- Root 给完整轨迹中的 agent actions 分配 episode LOO；
+- Local 用分叉后的完整 continuation 估计当前 branch action 的后果，但 Local LOO 只更新
+  branch action 本身。
+
+这是对 GiGPO 两级信用思想的项目适配，不声称逐字复现论文。它也不是重新启用 BPO
+`upstream_lambda`：共享前缀没有 Local 梯度，Root 已独立负责早期动作信用。
+
+### 18.3 固定采样拓扑
+
+每个 optimizer step 仍严格包含两个 group：
+
+```text
+1 Root group  × K=4 完整轨迹
+1 Local group × K=4 同 snapshot continuations
+```
+
+因此仍是 8 个 sibling returns/step，`M=1`，K 固定为4。Root 和 Local 可以来自不同 task；
+不把一次更新改成同一 backbone 上的多分叉，也不把 K 提高为8或更多。
+
+保持不变的项目合同：
+
+- 起点：SFT `checkpoint-325`；
+- 每步 Root/Local 各1组；
+- 最多500个 optimizer steps，4000 accepted returns；
+- Reward、train-return 映射和 K=4 sibling LOO 数值定义不变；
+- Root/Local 总目标权重固定为 `0.5 / 0.5`；
+- Local 有效阶段的累计目标仍为 `product/option/search_strategy = 40/35/25`；
+- dev500 的 `gold_purchase` 和 `gold_purchase + valid_alternative_purchase` 仍是主要验收指标。
+
+### 18.4 Root group：完整轨迹信用
+
+对同一 Root prompt 的 K=4 条完整轨迹，终局 train return 为 `R_i`，episode LOO 为：
+
+```text
+A_root_i = R_i - mean(R_j, j != i)
+```
+
+轨迹 `i` 中每个实际环境 action 都使用 `A_root_i`。Root 继续拒绝 constant-return group；
+Completion/Gold contrast 优先，failure-utility contrast 只作为低优先级的有效信号。
+
+v3 必须记录 Root 每一个 action 的真实 actor-token 起止位置和 action 数量。旧的
+`bpo_env_idx=0`、`bpo_action_token_starts=[0]`、`bpo_backbone_action_count=1` 等占位诊断值必须删除，
+不能作为兼容路径保留。Root 的采样筛选结构本身不需要改变；需要改变的是 action metadata 和
+loss 聚合单位。
+
+### 18.5 Local group：只给当前分叉动作信用
+
+Local 先生成 backbone，在一个非终局工具动作边界前保存精确 snapshot，再从完全相同的：
+
+- environment snapshot；
+- Shopper history；
+- model/tool context；
+- prefix token sequence
+
+采样 K=4 条 continuation。其终局 train return 为 `R_k`，Local LOO 仍为：
+
+```text
+A_local_k = R_k - mean(R_l, l != k)
+```
+
+但 `A_local_k` 只作用于 continuation `k` 的第一个 branch action actor-token span：
+
+```text
+共享前缀                    policy support = 0
+branch action reasoning/tool policy support = 1
+branch action 后的 suffix     policy support = 0
+tool observation / padding    policy support = 0
+```
+
+完整 suffix 仍必须 rollout 到终局，因为它用于估计 branch action 的后果；它不再因为共享同一个
+Local scalar advantage 而参与 actor 更新。Local prefix 和 post-branch suffix 既不能进入 loss
+分子，也不能进入 loss 分母。
+
+v3 不增加“上游信用”参数，也不恢复 `upstream_lambda`。早期搜索、提问和购买策略由 Root
+episode LOO 学习；Local 只回答“在这个精确状态下，当前哪个动作更好”。
+
+### 18.6 Action-balanced PPO loss
+
+令 `U(a)` 是一个环境 action 内真正由 actor 生成且被 v3 policy support 选中的 token 集合，
+`ppo_u(A)` 是沿用当前 veRL ratio、clip 和 advantage 语义的单 token PPO surrogate。每个 action
+先在自身有效 token 内取平均：
+
+```text
+L_action(a, A) = mean(ppo_u(A), u in U(a))
+```
+
+然后分别聚合 Root 和 Local：
+
+```text
+L_root  = mean(L_action(a_it, A_root_i), 所有 Root actions)
+L_local = mean(L_action(branch_k, A_local_k), k=1..4)
+L_total = 0.5 * L_root + 0.5 * L_local
+```
+
+这使每个环境 action 成为一个 loss 单位，而不是让 token 数量决定权重。它同时满足：
+
+- 较长 reasoning 不会仅因 token 更多而获得更大梯度质量；
+- Local 较长 suffix 不会增加当前分叉动作的权重；
+- Local 零信用前缀不会稀释有效 loss；
+- Root 与 Local 在各自内部归一化后严格等权。
+
+这里的“action-balanced”不表示强制所有轨迹 action 数相同，也不表示把四个 Local sibling
+先按语义动作合并。K=4 中允许同一语义动作重复出现；每条 sibling 仍是一个后果样本，但至少
+必须存在两个不同语义动作，并额外记录同一语义动作内的 return 方差。
+
+### 18.7 Local 阶段分类：正式目标只有三种
+
+在当前 ShopSimulator 工具协议下，v3 的可训练 Local target stage **只有以下三种**：
+
+| Local stage | 结构化工具动作 | 学习问题 |
+|---|---|---|
+| `product` | `open_product`、`view_description`、`view_features`、`view_reviews`、`view_attributes` | 打开/检查哪个商品及商品信息 |
+| `option` | `select_option` | 选择哪个规格、颜色、尺寸等选项 |
+| `search_strategy` | `search_products`、`back_to_search`、`prev_page`、`next_page` | 如何搜索、翻页和恢复搜索 |
+
+stage 由 backbone 上被选中的 reference action boundary 决定，用来表示“在哪类决策位置保存
+snapshot”并计算40/35/25配额。它不要求从该 snapshot 采样的四条 sibling 首动作都属于同一
+stage；Local 的目的正是比较同一状态下模型实际可能采取的不同动作。每条 sibling 首动作仍须是
+单一、可解析且在当前状态可执行的 tool action。
+
+除此之外确实还有 agent 动作和标签，但它们不是第四种 Local stage：
+
+| 名称 | v3 处理 | 为什么不是 Local stage |
+|---|---|---|
+| `ask_shopper` | 不定义 target stage；主要由 Root 学习 | 属于对话/信息获取策略，不用来选择商品环境中的 Local snapshot |
+| `buy_now` | 不定义 target stage；主要由 Root 学习 | 是终局提交动作，购买之后不存在新的可分叉边界 |
+| malformed、multi-tool、unknown、protocol-only | Local 排除并记诊断 | 没有唯一可验证的语义 branch action |
+| `root` | group type | 表示完整轨迹组，不是局部阶段 |
+| `gap`、`complete` | task/interaction condition | 表示用户信息条件，不是动作阶段 |
+| Completion、Gold、Failure、constant | contrast type | 表示 sibling outcome 关系，不是动作阶段 |
+| partial、wrong、repeat、unknown | terminal outcome | 表示 Reward 结果，不是动作阶段 |
+
+当前不新增 `ask` 或 `purchase` Local stage。只有未来工具/状态机能够在同一非终局 snapshot 下
+为它们定义可执行、可比较且有明确 action boundary 的 siblings 时，才另行修改本合同。
+如果 `ask_shopper` 或 `buy_now` 是在三类合法 snapshot 上自然采样出的单一有效 sibling 首动作，
+它可以作为该 Local group 中被比较的 semantic action 并只更新自身 branch-action tokens；它
+仍不改变该 group 的 target stage，也不单独占用第四类配额。
+
+### 18.8 Canonical semantic action 门槛
+
+v2.1 的 branch action hash 是生成 token 序列的 hash。它可以识别完全相同的输出，但不同
+reasoning、XML 空白或协议格式可能得到不同 hash，即使最终工具调用语义相同。因此 v3 必须从
+结构化 parser 结果生成 canonical semantic action key：
+
+```text
+semantic_key = canonical_json({"tool": tool_name, "arguments": normalized_arguments})
+```
+
+规范化至少包括 schema 校验、对象 key 排序、确定性的 JSON 序列化以及无语义空白规范化；
+不得把 free-form reasoning、XML 格式或观察文本放入 key。诊断同时保存 semantic key hash 和
+旧 token-span hash，以便区分“语义动作相同”与“表述形式不同”。
+
+一个 Local group 进入 optimizer 必须同时满足：
+
+1. K=4 来自同一精确 snapshot/prefix；
+2. reference boundary 的 stage 与目标 stage 一致，四条 sibling 首动作均为单一、可解析且
+   在当前 snapshot 可执行的 tool action；
+3. terminal train return 存在 contrast；
+4. K=4 中至少有两个不同 canonical semantic action key；
+5. branch action token span 非空且可与结构化 tool call 一一对应。
+
+不要求四个 semantic key 全部不同。`>=2` 只能排除“同一个动作的四次后续采样”，不能在 K=4
+下消除所有 continuation noise；因此还必须记录 `unique_semantic_actions`、每个 key 的样本数和
+within-key return range，作为运行中判断 Local 信号质量的证据。
+
+### 18.9 40/35/25 的正确含义
+
+`40/35/25` 保留，但分母改为**通过第 18.8 节全部门槛并真正进入 optimizer 的 Local groups**：
+
+```text
+500 Local groups = 200 product + 175 option + 125 search_strategy
+```
+
+它不是候选生成比例，也不是按“return 非恒定”就计账。阶段候选只能填自己的 target pool，
+禁止跨阶段静默 fallback；某一阶段在120批内仍无法提供有效组时，保存最后一个已提交
+checkpoint 后硬停止，不得用无语义动作分歧的组补齐。
+
+暂不因为 `search_strategy` 更容易产生有效对照而提高其占比。这样做只会让训练进一步偏向
+最容易采到 contrast 的阶段，而不是 SFT-325 的能力缺口。后续只有正式 v3 供给和 DEV-500
+证据同时支持时才讨论重估比例。
+
+### 18.10 v2.1 原始证据与候选供给估计
+
+完成的 v2.1 正式运行共有7318个生成 group、1000个 accepted group（500 Root + 500 Local）。
+对全部生成 Local 候选按“terminal return 有差异且重建出至少两个语义动作”离线估算：
+
+| stage | 生成候选 | 满足估算门槛 | 候选有效率 | v2.1 selected | selected 中完全相同 action-token hash |
+|---|---:|---:|---:|---:|---:|
+| `product` | 1364 | 172 | 12.6% | 200 | 105/200（52.5%） |
+| `option` | 1499 | 137 | 9.1% | 175 | 57/175（32.6%） |
+| `search_strategy` | 785 | 234 | 29.8% | 125 | 4/125（3.2%） |
+
+这三个百分比是**同三类 Local stage 各自的候选有效率**，不是三个 stage 的目标占比，也不表示
+还有未列出的第四类。离线“重建语义动作”来自现有 diagnostics，尚未使用 v3 canonical key，
+所以12.6%/9.1%/29.8%只能作为容量规划估计，不能作为正式验收真值。
+
+其他支持证据：
+
+- Root 500组中467组为 Completion contrast、12组为 Gold contrast，Root 轨迹 hash 几乎全部
+  四条不同，说明主要缺陷不在 Root 生成多样性；
+- selected Local 的 Completion contrast 分别为 product 159、option 131、search_strategy 108；
+- selected Local 的平均 `|LOO|` 分别约为0.569、0.525、0.603，问题不是全部 advantage 数值接近0；
+- product 的同 action-token hash 比例随训练后段上升，说明仅靠首 token entropy 和 return
+  contrast 没有持续保证语义动作多样性；
+- 以当前同分布候选率粗略估算，凑齐200/175/125个有效 Local 约需3920个 Local 候选，较
+  v2.1 的3648个约多7.5%；该数值不是运行上限或成功保证。
+
+### 18.11 实现落点与禁止项
+
+实现必须按职责拆分：
+
+1. `agent_loop.py` 记录真实 Root/Local action boundaries、结构化 tool call 和 snapshot identity；
+2. 独立的 action canonicalization 函数生成 semantic key，供筛选、审计和测试共用；
+3. `dynamic_sampling.py` 只负责有效组门槛、阶段 pool 和40/35/25账本；
+4. `advantage.py` 只负责 Root episode LOO、Local branch-action LOO support 和 group weights；
+5. veRL actor loss 只负责 action 内 token 平均、action 间平均和 Root/Local 0.5/0.5 聚合；
+6. audit/SwanLab 从同一 authoritative metadata 聚合，不另写一套阶段或动作推断逻辑。
+
+禁止：
+
+- 把 Local suffix 重新设为非零 policy support；
+- 把 Local 零信用 prefix 留在 PPO denominator；
+- 用第一个生成 token 的 entropy 代替 canonical semantic action 门槛；
+- 用 token hash 数量冒充 semantic action 数量；
+- 恢复 `upstream_lambda` 或设计新的上游广播系数；
+- 修改 Reward 来掩盖动作信用或采样门槛问题；
+- 使用错误阶段、constant、invalid 或同语义动作组填补配额；
+- 为旧 checkpoint/旧 metadata 添加兼容 fallback。v3 从 SFT-325 新开正式 run。
+
+### 18.12 确定性测试、preflight 与运行验收
+
+代码实现后、任何正式训练前必须通过：
+
+1. Root K=4 的每个真实 action boundary 可重建，action 数不再恒为占位值1；
+2. 同 tool/arguments、不同 reasoning/XML 格式得到相同 semantic key；
+3. 不同 product、option 或 search arguments 得到不同 semantic key；
+4. Local 四条相同 semantic key，即使 return 不同也拒绝；
+5. Local 至少两个 semantic key 且 return 有差异时才可进入 target pool；
+6. Local prefix、observation 和 post-branch suffix 对 actor 参数的梯度严格为0；
+7. 改变某个 action 的 token 长度而保持其逐 token loss 均值不变，不改变该 action 的权重；
+8. Root 不同 action 等权，Root/Local 聚合权重严格为0.5/0.5；
+9. fused/remove-padding/Liger 开关下 action mask、分母和 unfused reference 数值/梯度一致；
+10. 500个 authoritative Local selections 严格为200/175/125，且全部
+    `unique_semantic_actions >= 2`；
+11. SwanLab 至少记录每阶段 generated/effective/accepted、semantic diversity、within-key
+    return range、active actions/tokens 和 Root/Local action loss；
+12. 120批硬停止、25步 checkpoint 和 pending group 不训练合同继续成立。
+
+第一步运行门槛应额外人工核对一条 Root 和一条 Local 的 token span、semantic key、LOO、
+active support 与最终 actor loss。审计通过前不启动500步正式训练；正式训练仍需用户再次确认。
+
+### 18.13 Local 信用的四项必查风险与处理原则
+
+v3 的结构正确性通过并不等于 Local 信号足够有效。新正式运行必须持续回答以下四个问题：
+
+1. **Local 实际梯度贡献是否与 Root 同量级**：`0.5/0.5` 只是 policy-weight mass
+   合同，不保证参数梯度范数相等。必须同时检查 Root/Local 的 active actions/tokens、
+   `|advantage|` mass、policy-weight mass 与 clip fraction。正式 trainer 不为此增加两次
+   FSDP backward；只有 loss-side 证据显示异常时，才在隔离的固定批次上比较
+   Root-only/Local-only gradient norm 和方向。
+2. **K=4 能否稳定产生至少两个语义动作**：按 `product/option/search_strategy`
+   分别记录 generated、return-contrast、semantic-effective 和 accepted，并计算有效率、
+   每个 accepted Local 消耗的候选数与时间。简单、几乎确定性的状态不强制制造局部
+   对比，由 Root episode 信用覆盖；若某阶段长期无法探索出第二个动作，这是探索/
+   能力缺口，不能用同动作组填充。
+3. **Local 差异是动作因果还是 continuation noise**：四条同 semantic key 无论
+   return 是否不同都拒绝。对已满足 `unique_semantic_actions >= 2` 的组，仍按 key
+   记录样本数、return mean/range 和 within-key return range。K=4 不足以稳定估计
+   同动作方差，因此本轮不根据单组方差自动改权，但必须保留证据供25步审计。
+4. **Local 是否值得固定占用50% loss mass**：比较各阶段的 accepted 供给、
+   `|LOO|`、semantic diversity、within-key noise 和对 DEV 行为的方向性改变。在没有
+   这些证据前，不增加 Local 权重，不因其 active token 少而认定它梯度小；
+   action-balanced 后更需防止少量高方差 Local 信号被过度放大。
+
+运行处理分两类：
+
+- **结构性硬合同**：snapshot/prefix 不一致、semantic action 少于2、Local 非 branch-action
+  token 进入 policy support、Root/Local policy-weight mass 不是 `0.5/0.5`、数值非有限时硬停。
+- **统计性质量风险**：候选有效率低、within-key range 高、Local `|LOO|` 过小/过大、
+  Root/Local 实际梯度不平衡只报警并记录，不新增运行中自动硬停。第一个
+  `global_step_25` 作为统一人工审计点，审计后再决定继续、调整 Local 权重、增加
+  K/探索，或改用按 semantic action 聚合的 return estimator。
+
+本轮不立即增大 K 或 Local 采样温度。这两项会同时改变 rollout 成本、行为分布与
+PPO 数据合同；应先用 v3 的 authoritative metrics 确认问题是“没有第二个动作”、
+“同动作后果噪声”还是“Local advantage 尺度不合适”，再只改对应环节。

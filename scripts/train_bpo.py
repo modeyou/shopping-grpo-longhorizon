@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--shopper-base-url", default=os.environ.get("SHOPPER_BASE_URL"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--experiment-name", default="carl-bpo-v2-step500-r4000-seed20260823"
+        "--experiment-name", default="carl-bpo-v3-step500-r4000-seed20260823"
     )
     parser.add_argument("--logger", choices=("console", "swanlab"), default="swanlab")
     parser.add_argument("--seed", type=int, default=20260823)
@@ -126,6 +126,9 @@ def _step0_validation_contract(args, *, model, val_data, manifest):
         "bpo_advantage": ROOT / "src/shopping_grpo/training/bpo/advantage.py",
         "bpo_branching": ROOT / "src/shopping_grpo/training/bpo/branching.py",
         "bpo_reward": ROOT / "src/shopping_grpo/training/bpo/reward.py",
+        "bpo_semantic_action": (
+            ROOT / "src/shopping_grpo/training/bpo/semantic_action.py"
+        ),
         "bpo_step0_validation": (
             ROOT / "src/shopping_grpo/training/bpo/step0_validation.py"
         ),
@@ -153,7 +156,7 @@ def _step0_validation_contract(args, *, model, val_data, manifest):
             git_commit=_git_commit(),
             inputs=runtime_inputs,
             settings={
-                "algorithm": "carl-bpo-v2",
+                "algorithm": "carl-bpo-v3",
                 "environment_url": str(args.env_url),
                 "reward_profile": "none",
                 "reward_version": "shopsimulator-reward-v4",
@@ -318,7 +321,7 @@ def build(args):
         *_overrides(args),
     ]
     audit = {
-        "algorithm": "carl-bpo-v2",
+        "algorithm": "carl-bpo-v3",
         "command": command,
         "model": str(model),
         "train_data": str(train_data),
@@ -361,6 +364,9 @@ def write_contract(environment, audit):
         "bpo_advantage": ROOT / "src/shopping_grpo/training/bpo/advantage.py",
         "bpo_branching": ROOT / "src/shopping_grpo/training/bpo/branching.py",
         "bpo_reward": ROOT / "src/shopping_grpo/training/bpo/reward.py",
+        "bpo_semantic_action": (
+            ROOT / "src/shopping_grpo/training/bpo/semantic_action.py"
+        ),
         "bpo_runtime": ROOT / "src/shopping_grpo/training/bpo/runtime.py",
         "grpo_dynamic_sampling": (
             ROOT / "src/shopping_grpo/training/grpo/dynamic_sampling.py"
@@ -404,10 +410,14 @@ def write_contract(environment, audit):
                 "option": 7,
                 "search_strategy": 5,
             },
-            "candidate_selector": "goal-priority-reservoir-v2",
+            "candidate_selector": "goal-priority-semantic-reservoir-v3",
             "branch_candidate_policy": "exclude-final-action-v1",
             "entropy_state": "action-boundary-first-token",
-            "rollout_audit": "exact-tree-v1",
+            "rollout_audit": "exact-tree-v2",
+            "semantic_action_contract": "canonical-tool-arguments-v1",
+            "local_credit_support": "branch-action-only-v1",
+            "policy_loss": "action-balanced-root-local-v1",
+            "actor_loss_aggregation": "seq-mean-token-mean",
             "ppo_clip": 0.2,
             "gpu_memory_utilization": 0.45,
             "max_num_seqs": 8,

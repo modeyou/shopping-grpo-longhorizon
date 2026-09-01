@@ -27,11 +27,14 @@ def validate_bpo_config(config):
         "sibling_count": 4,
         "branch_count": 1,
         "return_budget": 4,
-        "algorithm": "carl-bpo-v2",
-        "selection": "maximum_exact_entropy",
+        "algorithm": "carl-bpo-v3",
+        "selection": "maximum_exact_entropy_with_semantic_gate",
         "entropy_probe": "exact-full-vocabulary",
         "entropy_state": "action-boundary-first-token",
-        "rollout_audit": "exact-tree-v1",
+        "rollout_audit": "exact-tree-v2",
+        "semantic_action_contract": "canonical-tool-arguments-v1",
+        "local_credit_support": "branch-action-only-v1",
+        "policy_loss": "action-balanced-root-local-v1",
     }
     for key, value in expected.items():
         if bpo.get(key) != value:
@@ -89,6 +92,10 @@ def validate_bpo_config(config):
         )
     if float(config.actor_rollout_ref.actor.clip_ratio_low) != 0.2:
         raise SystemExit("formal BPO requires PPO clip ratio 0.2")
+    if str(config.actor_rollout_ref.actor.loss_agg_mode) != "seq-mean-token-mean":
+        raise SystemExit(
+            "CARL-BPO v3 requires actor.loss_agg_mode=seq-mean-token-mean"
+        )
     if int(config.trainer.n_gpus_per_node) != 4:
         raise SystemExit("formal BPO requires four GPUs")
     if int(bpo.effective_return_budget) != 4000:
@@ -407,20 +414,32 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
             "bpo_group_type": np.asarray(["root"] * 4 + ["local"] * 4),
             "bpo_stage_target": np.asarray(["root"] * 4 + ["product"] * 4),
             "bpo_sibling_index": np.asarray([0, 1, 2, 3] * 2),
-            "bpo_branch_action": np.asarray([0] * 4 + [1] * 4),
+            "bpo_branch_action": np.asarray([-1] * 4 + [1] * 4),
             "bpo_action_token_starts": np.asarray(
                 [[0]] * 4 + [[0, 2]] * 4,
                 dtype=object,
             ),
+            "bpo_action_token_ends": np.asarray(
+                [[4]] * 4 + [[2, 4]] * 4,
+                dtype=object,
+            ),
+            "bpo_action_metadata_valid": np.asarray([True] * 8),
             "bpo_branch_entropy": np.asarray([0.0] * 4 + [2.0] * 4),
             "bpo_return_budget": np.asarray([4] * 8),
-            "bpo_env_idx": np.asarray([0] * 4 + [0, 0, 1, 2]),
+            "bpo_env_idx": np.asarray([-1] * 4 + [0, 1, 2, 3]),
             "bpo_branch_prefix_sha256": np.asarray(
                 ["root"] * 4 + ["local"] * 4,
                 dtype=object,
             ),
             "bpo_backbone_action_count": np.asarray([1] * 4 + [3] * 4),
-            "bpo_branch_relative_position": np.asarray([0.0] * 4 + [0.5] * 4),
+            "bpo_branch_relative_position": np.asarray([-1.0] * 4 + [0.5] * 4),
+            "bpo_branch_semantic_action_sha256": np.asarray(
+                [""] * 4 + ["product-a", "product-a", "product-b", "product-b"],
+                dtype=object,
+            ),
+            "bpo_branch_semantic_valid": np.asarray(
+                [False] * 4 + [True] * 4
+            ),
         },
     )
     try:
@@ -444,12 +463,38 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
         raise SystemExit("BPO veRL dispatcher produced NaN or Inf")
     if not torch.equal(advantages, returns):
         raise SystemExit("BPO veRL dispatcher returns do not match BPO advantages")
-    root_advantage_mass = advantages[:4].abs().sum()
-    local_advantage_mass = advantages[4:].abs().sum()
+    advantage_support = advantages.ne(0)
+    sequence_advantage_mass = advantages.abs().sum(dim=-1) / advantage_support.sum(
+        dim=-1
+    )
+    root_advantage_mass = sequence_advantage_mass[:4].mean()
+    local_advantage_mass = sequence_advantage_mass[4:].mean()
     if not torch.isclose(root_advantage_mass, local_advantage_mass):
         raise SystemExit(
-            "BPO Root/Local effective actor-token advantage mass is not balanced"
+            "BPO Root/Local sequence-normalized advantage mass is not balanced"
         )
+    actor_metrics = result.meta_info.get("shopping_bpo_actor_metrics") or {}
+    required_actor_metrics = {
+        "bpo_action/active_tokens",
+        "bpo_action/original_actor_tokens",
+        "bpo_action/active_token_ratio",
+        "bpo_action/root_actions",
+        "bpo_action/local_actions",
+        "bpo_action/root_policy_weight_mass",
+        "bpo_action/local_policy_weight_mass",
+    }
+    missing_actor_metrics = required_actor_metrics.difference(actor_metrics)
+    if missing_actor_metrics:
+        raise SystemExit(
+            "BPO veRL dispatcher is missing action metrics: "
+            + ", ".join(sorted(missing_actor_metrics))
+        )
+    if any(
+        abs(float(actor_metrics[f"bpo_action/{group}_policy_weight_mass"]) - 0.5)
+        > 1e-6
+        for group in ("root", "local")
+    ):
+        raise SystemExit("BPO Root/Local policy weight mass is not 0.5/0.5")
     print(
         "BPO veRL dispatcher CPU preflight passed: "
         + json.dumps(
@@ -465,6 +510,7 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
                 "group_types": ["root", "local"],
                 "root_advantage_mass": float(root_advantage_mass.item()),
                 "local_advantage_mass": float(local_advantage_mass.item()),
+                "action_metrics": actor_metrics,
                 "sparse_cuda_mapping": sparse_cuda_mapping,
             },
             sort_keys=True,
@@ -790,7 +836,7 @@ def main():
         "BPO runtime preflight passed: "
         + json.dumps(
             {
-                "algorithm": "carl-bpo-v2",
+                "algorithm": "carl-bpo-v3",
                 "agent_loop": ShoppingBPOAgentLoop.__name__,
                 "branch_count": 1,
                 "sibling_count": 4,

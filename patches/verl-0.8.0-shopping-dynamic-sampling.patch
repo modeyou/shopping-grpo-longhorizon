@@ -1,7 +1,7 @@
 --- a/verl/trainer/ppo/ray_trainer.py
 +++ b/verl/trainer/ppo/ray_trainer.py
 @@ -20,0 +21,2 @@ This trainer supports model-agonistic model initialization with huggingface
-+# SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V6
++# SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V7
 +
 @@ -609,0 +612 @@ class RayPPOTrainer:
 +        sample_shopping = []
@@ -27,7 +27,7 @@
 +            from shopping_grpo.training.grpo.dynamic_sampling import aggregate_shopping_metrics
 +            validation_metrics.update({f"val-shopping/{key}": value for key, value in aggregate_shopping_metrics(sample_shopping).items()})
 +        return validation_metrics
-@@ -1382,0 +1400,179 @@ class RayPPOTrainer:
+@@ -1382,0 +1400,191 @@ class RayPPOTrainer:
 +        import time
 +        from shopping_grpo.training.grpo.dynamic_sampling import (
 +            CARL_GOAL_CONTRASTS,
@@ -159,6 +159,18 @@
 +            dynamic_no_purchase_success_groups = 0
 +            dynamic_sampling_invalid_groups = 0
 +            dynamic_local_stage_mismatch_groups = 0
++            dynamic_local_stage_generated = {
++                "product": 0, "option": 0, "search_strategy": 0
++            }
++            dynamic_local_stage_effective = {
++                "product": 0, "option": 0, "search_strategy": 0
++            }
++            dynamic_semantic_unique_sum = 0
++            dynamic_semantic_local_groups = 0
++            dynamic_semantic_effective_unique_sum = 0
++            dynamic_semantic_effective_groups = 0
++            dynamic_semantic_within_key_range_sum = 0.0
++            dynamic_semantic_within_key_range_max = 0.0
 +            dynamic_completion_contrast_groups = 0
 +            dynamic_gold_contrast_groups = 0
 +            dynamic_failure_utility_contrast_groups = 0
@@ -207,7 +219,7 @@
 +                )
 +            )
 +
-@@ -1386,0 +1583,12 @@ class RayPPOTrainer:
+@@ -1386,0 +1595,12 @@ class RayPPOTrainer:
 +        if dynamic_sampling_enabled:
 +            dynamic_trained_groups_total = self.global_steps * dynamic_target_prompts
 +            dynamic_effective_returns_total = (
@@ -220,19 +232,19 @@
 +                raise RuntimeError(
 +                    "resumed CARL-BPO checkpoint exceeds the frozen effective-return budget"
 +                )
-@@ -1409,2 +1617,4 @@ class RayPPOTrainer:
+@@ -1409,2 +1629,4 @@ class RayPPOTrainer:
 -        # we start from step 1
 -        self.global_steps += 1
 +        # The unpatched trainer uses a one-based in-flight step. Dynamic sampling
 +        # keeps the committed counter unchanged until an optimizer update occurs.
 +        if not dynamic_sampling_enabled:
 +            self.global_steps += 1
-@@ -1414,0 +1625 @@ class RayPPOTrainer:
+@@ -1414,0 +1637 @@ class RayPPOTrainer:
 +        first_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
-@@ -1416 +1627 @@ class RayPPOTrainer:
+@@ -1416 +1639 @@ class RayPPOTrainer:
 -            self.global_steps in self.config.global_profiler.steps
 +            first_step in self.config.global_profiler.steps
-@@ -1423,0 +1635,17 @@ class RayPPOTrainer:
+@@ -1423,0 +1647,17 @@ class RayPPOTrainer:
 +                current_step = self.global_steps + 1 if dynamic_sampling_enabled else self.global_steps
 +                optimizer_updated = False
 +                dynamic_budget_checkpoint_due = False
@@ -250,7 +262,7 @@
 +                    )
 +                except ValueError as exc:
 +                    raise RuntimeError(str(exc)) from exc
-@@ -1441,0 +1670,18 @@ class RayPPOTrainer:
+@@ -1441,0 +1682,18 @@ class RayPPOTrainer:
 +                if dynamic_sampling_enabled:
 +                    group_assignments = build_carl_group_assignments(
 +                        len(batch.batch), dynamic_group_schedule
@@ -269,17 +281,17 @@
 +                        ),
 +                        dtype=object,
 +                    )
-@@ -1446 +1692 @@ class RayPPOTrainer:
+@@ -1446 +1704 @@ class RayPPOTrainer:
 -                gen_batch.meta_info["global_steps"] = self.global_steps
 +                gen_batch.meta_info["global_steps"] = current_step
-@@ -1464 +1710 @@ class RayPPOTrainer:
+@@ -1464 +1722 @@ class RayPPOTrainer:
 -                is_last_step = self.global_steps >= self.total_training_steps
 +                is_last_step = current_step >= self.total_training_steps
-@@ -1471 +1717,2 @@ class RayPPOTrainer:
+@@ -1471 +1729,2 @@ class RayPPOTrainer:
 -                        self.checkpoint_manager.sleep_replicas()
 +                        if not dynamic_sampling_enabled:
 +                            self.checkpoint_manager.sleep_replicas()
-@@ -1526,0 +1774,780 @@ class RayPPOTrainer:
+@@ -1526,0 +1786,899 @@ class RayPPOTrainer:
 +                    if dynamic_sampling_enabled:
 +                        seq_rewards = reward_tensor.sum(dim=-1).detach().cpu().tolist()
 +                        batch_uids = batch.non_tensor_batch["uid"].tolist()
@@ -308,12 +320,32 @@
 +                            "bpo_local_stage_fallback",
 +                            [False] * len(batch_uids),
 +                        )
++                        required_v3_fields = {
++                            "bpo_action_metadata_valid",
++                            "bpo_branch_semantic_action_sha256",
++                            "bpo_branch_semantic_valid",
++                        }
++                        missing_v3_fields = required_v3_fields - set(aligned_bpo_fields)
++                        if missing_v3_fields:
++                            raise RuntimeError(
++                                "CARL-BPO v3 rollout metadata is missing: "
++                                f"{sorted(missing_v3_fields)}"
++                            )
 +                        _, group_stats = select_reward_varying_groups(
 +                            batch_uids,
 +                            seq_rewards,
 +                            terminal_utilities=terminal_utilities, purchase_success=purchase_success,
 +                            group_types=group_types,
 +                            local_stage_fallback=local_stage_fallback,
++                            action_metadata_valid=aligned_bpo_fields[
++                                "bpo_action_metadata_valid"
++                            ],
++                            semantic_action_hashes=aligned_bpo_fields[
++                                "bpo_branch_semantic_action_sha256"
++                            ],
++                            semantic_action_valid=aligned_bpo_fields[
++                                "bpo_branch_semantic_valid"
++                            ],
 +                            sampling_invalid=sampling_invalid, sampling_invalid_reasons=sampling_invalid_reasons,
 +                            tolerance=dynamic_reward_tolerance,
 +                        )
@@ -389,6 +421,47 @@
 +                        bpo_group_diagnostics = summarize_bpo_group_diagnostics(
 +                            rollout_diagnostics
 +                        )
++                        for generated_group in group_stats["groups"]:
++                            if generated_group["group_type"] != "local":
++                                continue
++                            local_diagnostic = bpo_group_diagnostics.get(
++                                generated_group["uid"], {}
++                            )
++                            generated_stage = str(
++                                local_diagnostic.get("bpo_local_stage", "")
++                            )
++                            if generated_stage in dynamic_local_stage_generated:
++                                dynamic_local_stage_generated[generated_stage] += 1
++                                if generated_group["kept"]:
++                                    dynamic_local_stage_effective[generated_stage] += 1
++                            unique_semantic_actions = int(
++                                generated_group.get(
++                                    "unique_semantic_action_count", 0
++                                )
++                            )
++                            dynamic_semantic_unique_sum += unique_semantic_actions
++                            dynamic_semantic_local_groups += 1
++                            if generated_group["kept"]:
++                                dynamic_semantic_effective_unique_sum += (
++                                    unique_semantic_actions
++                                )
++                                dynamic_semantic_effective_groups += 1
++                            within_key_range = float(
++                                generated_group.get(
++                                    "semantic_action_within_key_return_range_mean",
++                                    0.0,
++                                )
++                            )
++                            dynamic_semantic_within_key_range_sum += within_key_range
++                            dynamic_semantic_within_key_range_max = max(
++                                dynamic_semantic_within_key_range_max,
++                                float(
++                                    generated_group.get(
++                                        "semantic_action_within_key_return_range_max",
++                                        0.0,
++                                    )
++                                ),
++                            )
 +                        reservoir_events = {}
 +                        for uid in group_stats["kept_uids"]:
 +                            group = groups_by_uid[uid]
@@ -726,6 +799,18 @@
 +                                dynamic_no_purchase_success_groups = 0
 +                                dynamic_sampling_invalid_groups = 0
 +                                dynamic_local_stage_mismatch_groups = 0
++                                dynamic_local_stage_generated = {
++                                    "product": 0, "option": 0, "search_strategy": 0
++                                }
++                                dynamic_local_stage_effective = {
++                                    "product": 0, "option": 0, "search_strategy": 0
++                                }
++                                dynamic_semantic_unique_sum = 0
++                                dynamic_semantic_local_groups = 0
++                                dynamic_semantic_effective_unique_sum = 0
++                                dynamic_semantic_effective_groups = 0
++                                dynamic_semantic_within_key_range_sum = 0.0
++                                dynamic_semantic_within_key_range_max = 0.0
 +                                dynamic_completion_contrast_groups = 0
 +                                dynamic_gold_contrast_groups = 0
 +                                dynamic_failure_utility_contrast_groups = 0
@@ -787,6 +872,16 @@
 +                                "local_stage": dynamic_candidate_pools[group_type][
 +                                    "group"
 +                                ].get("bpo_local_stage", "root"),
++                                "unique_semantic_action_count": dynamic_candidate_pools[
++                                    group_type
++                                ]["group"].get(
++                                    "bpo_unique_semantic_action_count", 0
++                                ),
++                                "semantic_action_within_key_return_range_max": dynamic_candidate_pools[
++                                    group_type
++                                ]["group"].get(
++                                    "semantic_action_within_key_return_range_max", 0.0
++                                ),
 +                            }
 +                            for group_type in dynamic_group_schedule
 +                        }
@@ -907,6 +1002,30 @@
 +                                "carl_sampling/goal_pair_ready": int(goal_pair_ready),
 +                                "carl_sampling/reservoir_replacements": dynamic_reservoir_replacements,
 +                                "carl_sampling/local_stage_mismatch_groups": dynamic_local_stage_mismatch_groups,
++                                "carl_stage/generated_product": dynamic_local_stage_generated["product"],
++                                "carl_stage/generated_option": dynamic_local_stage_generated["option"],
++                                "carl_stage/generated_search_strategy": dynamic_local_stage_generated["search_strategy"],
++                                "carl_stage/effective_product": dynamic_local_stage_effective["product"],
++                                "carl_stage/effective_option": dynamic_local_stage_effective["option"],
++                                "carl_stage/effective_search_strategy": dynamic_local_stage_effective["search_strategy"],
++                                "carl_semantic/candidate_unique_actions_mean": (
++                                    dynamic_semantic_unique_sum
++                                    / max(dynamic_semantic_local_groups, 1)
++                                ),
++                                "carl_semantic/effective_unique_actions_mean": (
++                                    dynamic_semantic_effective_unique_sum
++                                    / max(dynamic_semantic_effective_groups, 1)
++                                ),
++                                "carl_semantic/selected_unique_actions": selected_groups[
++                                    "local"
++                                ]["unique_semantic_action_count"],
++                                "carl_semantic/within_key_return_range_mean": (
++                                    dynamic_semantic_within_key_range_sum
++                                    / max(dynamic_semantic_local_groups, 1)
++                                ),
++                                "carl_semantic/within_key_return_range_max": (
++                                    dynamic_semantic_within_key_range_max
++                                ),
 +                                "carl_sampling/selected_goal_groups": sum(
 +                                    contrast in CARL_GOAL_CONTRASTS
 +                                    for contrast in selected_contrasts.values()
@@ -1003,6 +1122,18 @@
 +                        dynamic_no_purchase_success_groups = 0
 +                        dynamic_sampling_invalid_groups = 0
 +                        dynamic_local_stage_mismatch_groups = 0
++                        dynamic_local_stage_generated = {
++                            "product": 0, "option": 0, "search_strategy": 0
++                        }
++                        dynamic_local_stage_effective = {
++                            "product": 0, "option": 0, "search_strategy": 0
++                        }
++                        dynamic_semantic_unique_sum = 0
++                        dynamic_semantic_local_groups = 0
++                        dynamic_semantic_effective_unique_sum = 0
++                        dynamic_semantic_effective_groups = 0
++                        dynamic_semantic_within_key_range_sum = 0.0
++                        dynamic_semantic_within_key_range_max = 0.0
 +                        dynamic_completion_contrast_groups = 0
 +                        dynamic_gold_contrast_groups = 0
 +                        dynamic_failure_utility_contrast_groups = 0
@@ -1060,39 +1191,42 @@
 +                            }
 +                        )
 +
-@@ -1643 +2670 @@ class RayPPOTrainer:
+@@ -1643 +2801 @@ class RayPPOTrainer:
 -                    if self.config.trainer.critic_warmup > self.global_steps:
 +                    if self.config.trainer.critic_warmup > current_step:
-@@ -1645 +2672 @@ class RayPPOTrainer:
+@@ -1645 +2803 @@ class RayPPOTrainer:
 -                        self.checkpoint_manager.update_weights(self.global_steps)
 +                        self.checkpoint_manager.update_weights(current_step)
-@@ -1649,0 +2677,3 @@ class RayPPOTrainer:
+@@ -1649,0 +2808,3 @@ class RayPPOTrainer:
 +                        optimizer_updated = True
 +                        if dynamic_sampling_enabled:
 +                            self.global_steps = current_step
-@@ -1665 +2695,3 @@ class RayPPOTrainer:
+@@ -1665 +2826,3 @@ class RayPPOTrainer:
 -                            or self.global_steps % self.config.trainer.save_freq == 0
 +                            or current_step % self.config.trainer.save_freq == 0
 +                            or current_step in dynamic_checkpoint_steps
 +                            or dynamic_budget_checkpoint_due
-@@ -1675 +2707 @@ class RayPPOTrainer:
+@@ -1675 +2838 @@ class RayPPOTrainer:
 -                            self.checkpoint_manager.update_weights(self.global_steps)
 +                            self.checkpoint_manager.update_weights(current_step)
-@@ -1687 +2719,3 @@ class RayPPOTrainer:
+@@ -1687 +2850,3 @@ class RayPPOTrainer:
 -                    is_last_step or self.global_steps % self.config.trainer.test_freq == 0
 +                    is_last_step
 +                    or current_step % self.config.trainer.test_freq == 0
 +                    or current_step in dynamic_validation_steps
-@@ -1697 +2731 @@ class RayPPOTrainer:
+@@ -1697 +2862 @@ class RayPPOTrainer:
 -                        self.global_steps + 1 in self.config.global_profiler.steps
 +                        current_step + 1 in self.config.global_profiler.steps
-@@ -1715 +2749 @@ class RayPPOTrainer:
+@@ -1715 +2880 @@ class RayPPOTrainer:
 -                        "training/global_step": self.global_steps,
 +                        "training/global_step": current_step,
-@@ -1716,0 +2751 @@ class RayPPOTrainer:
+@@ -1716,0 +2882 @@ class RayPPOTrainer:
 +                        "training/optimizer_updated": int(optimizer_updated),
-@@ -1718,0 +2754,12 @@ class RayPPOTrainer:
+@@ -1718,0 +2885,15 @@ class RayPPOTrainer:
 +                if dynamic_sampling_enabled:
++                    metrics.update(
++                        batch.meta_info.get("shopping_bpo_actor_metrics", {})
++                    )
 +                    metrics.update(
 +                        {
 +                            "shopping_dynamic_sampling/skipped_update": 0,
@@ -1104,7 +1238,7 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750 +2797,17 @@ class RayPPOTrainer:
+@@ -1750 +2931,17 @@ class RayPPOTrainer:
 -                logger.log(data=metrics, step=self.global_steps)
 +                append_training_diagnostic(
 +                    diagnostics_path,
@@ -1123,7 +1257,7 @@
 +                logger.log(data=metrics, step=current_step)
 +                if is_last_step:
 +                    logger.finish()
-@@ -1753 +2816,6 @@ class RayPPOTrainer:
+@@ -1753 +2950,6 @@ class RayPPOTrainer:
 -                self.global_steps += 1
 +                if dynamic_sampling_enabled and not optimizer_updated:
 +                    raise RuntimeError(

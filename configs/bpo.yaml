@@ -45,7 +45,9 @@ actor_rollout_ref:
     ppo_max_token_len_per_gpu: 24576
     use_dynamic_bsz: false
     freeze_vision_tower: true
-    loss_agg_mode: token-mean
+    # v3 encodes per-action weights in advantages and removes inactive Local
+    # tokens before this native veRL sequence/token mean.
+    loss_agg_mode: seq-mean-token-mean
     clip_ratio_low: 0.20
     clip_ratio_high: 0.20
     entropy_coeff: 0.0
@@ -123,15 +125,18 @@ algorithm:
 
 shopping_bpo:
   enable: true
-  algorithm: carl-bpo-v2
+  algorithm: carl-bpo-v3
   sibling_count: 4
   branch_count: 1
   return_budget: 4
-  selection: maximum_exact_entropy
+  selection: maximum_exact_entropy_with_semantic_gate
   entropy_tie_break: earliest_action
   entropy_probe: exact-full-vocabulary
   entropy_state: action-boundary-first-token
-  rollout_audit: exact-tree-v1
+  rollout_audit: exact-tree-v2
+  semantic_action_contract: canonical-tool-arguments-v1
+  local_credit_support: branch-action-only-v1
+  policy_loss: action-balanced-root-local-v1
   group_schedule: [root, local]
   # Driver-owned weighted-fair coverage; at 500 Local groups this is 200/175/125.
   local_stage_weights:
@@ -179,7 +184,7 @@ trainer:
   val_before_train: true
   logger: [console]
   project_name: shopping-multiturn-agentic
-  experiment_name: carl-bpo-v2-step500-r4000-seed20260823
+  experiment_name: carl-bpo-v3-step500-r4000-seed20260823
   default_local_dir: ${oc.env:BPO_OUTPUT_DIR}
   n_gpus_per_node: 4
   nnodes: 1
