@@ -5,6 +5,7 @@ import pytest
 
 from shopping_grpo.training.bpo.branching import (
     BranchCandidate,
+    classify_entropy_probe_token,
     first_decision_token,
     full_vocabulary_entropy,
     retain_branch_candidates,
@@ -34,6 +35,20 @@ def test_first_decision_token_skips_protocol_tokens():
     assert first_decision_token(["<|im_start|>", "assistant", " ", "search_products"]) == 3
     with pytest.raises(ValueError, match="no semantic"):
         first_decision_token(["<|im_start|>", "assistant", " "])
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        (" ", "whitespace"),
+        ("<|im_start|>", "special"),
+        ("<tool_call>", "protocol"),
+        ("{", "structure"),
+        ("▁search_products", "semantic"),
+    ],
+)
+def test_entropy_probe_token_classification_is_diagnostic_only(token, expected):
+    assert classify_entropy_probe_token(token) == expected
 
 
 def test_maximum_entropy_uses_earliest_action_as_tie_break():

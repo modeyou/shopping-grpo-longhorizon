@@ -53,6 +53,34 @@ def first_decision_token(tokens):
     raise ValueError("assistant action contains no semantic decision token")
 
 
+def classify_entropy_probe_token(token):
+    """Classify a decoded probe token without influencing branch selection."""
+    raw = str(token)
+    normalized = raw.replace("▁", "").replace("Ġ", "").strip()
+    if not normalized:
+        return "whitespace"
+    if normalized.startswith("<|") and normalized.endswith("|>"):
+        return "special"
+    lowered = normalized.lower()
+    protocol = {
+        "assistant",
+        "analysis",
+        "commentary",
+        "final",
+        "<tool_call>",
+        "</tool_call>",
+        "<function>",
+        "</function>",
+        "<think>",
+        "</think>",
+    }
+    if lowered in protocol or (normalized.startswith("<") and normalized.endswith(">")):
+        return "protocol"
+    if all(character in "{}[]():,\"'" for character in normalized):
+        return "structure"
+    return "semantic"
+
+
 def select_branch_candidate(candidates):
     """Choose maximum entropy, breaking exact ties toward earliest action."""
     values = list(candidates)

@@ -14,6 +14,7 @@ from verl.experimental.agent_loop.tool_agent_loop import AgentData, AgentState
 
 from shopping_grpo.training.bpo.branching import (
     BranchCandidate,
+    classify_entropy_probe_token,
     retain_branch_candidates,
     select_nonterminal_branch_candidate,
     validate_tree_outputs,
@@ -235,6 +236,11 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 "bpo_sibling_index": int(sibling_index),
                 "bpo_branch_action": -1,
                 "bpo_branch_entropy": 0.0,
+                "bpo_entropy_probe_sampled_token_id": -1,
+                "bpo_entropy_probe_argmax_token_id": -1,
+                "bpo_entropy_probe_sampled_token_text": "",
+                "bpo_entropy_probe_argmax_token_text": "",
+                "bpo_entropy_probe_argmax_token_type": "not_applicable",
                 "bpo_action_token_starts": starts,
                 "bpo_action_token_ends": ends,
                 "bpo_action_metadata_valid": action_metadata_valid,
@@ -378,9 +384,39 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
         entropy = float(entropy)
         if not math.isfinite(entropy):
             raise RuntimeError(
-                "BPO entropy probe produced NaN/Inf; verify the V2 entropy patch"
+                "BPO entropy probe produced NaN/Inf; verify the exact entropy patch"
             )
-        return entropy
+        extra_fields = output.extra_fields or {}
+        sampled_token_id = int(
+            extra_fields.get("bpo_entropy_probe_sampled_token_id", -1)
+        )
+        argmax_token_id = int(
+            extra_fields.get("bpo_entropy_probe_argmax_token_id", -1)
+        )
+        if sampled_token_id < 0 or argmax_token_id < 0:
+            raise RuntimeError(
+                "BPO entropy probe token metadata is missing; apply the pinned V3 patch"
+            )
+
+        def decode(token_id):
+            convert = getattr(self.tokenizer, "convert_ids_to_tokens", None)
+            if callable(convert):
+                value = convert(int(token_id))
+                if value is not None:
+                    return str(value)
+            return str(
+                self.tokenizer.decode([int(token_id)], skip_special_tokens=False)
+            )
+
+        sampled_text = decode(sampled_token_id)
+        argmax_text = decode(argmax_token_id)
+        return entropy, {
+            "sampled_token_id": sampled_token_id,
+            "argmax_token_id": argmax_token_id,
+            "sampled_token_text": sampled_text,
+            "argmax_token_text": argmax_text,
+            "argmax_token_type": classify_entropy_probe_token(argmax_text),
+        }
 
     async def _drive(self, data, sampling_params, *, action_starts):
         state = AgentState.GENERATING
@@ -480,6 +516,21 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                 "bpo_sibling_index": int(sibling_index),
                 "bpo_branch_action": branch_action,
                 "bpo_branch_entropy": float(candidate.entropy),
+                "bpo_entropy_probe_sampled_token_id": int(
+                    candidate.payload["entropy_probe"]["sampled_token_id"]
+                ),
+                "bpo_entropy_probe_argmax_token_id": int(
+                    candidate.payload["entropy_probe"]["argmax_token_id"]
+                ),
+                "bpo_entropy_probe_sampled_token_text": str(
+                    candidate.payload["entropy_probe"]["sampled_token_text"]
+                ),
+                "bpo_entropy_probe_argmax_token_text": str(
+                    candidate.payload["entropy_probe"]["argmax_token_text"]
+                ),
+                "bpo_entropy_probe_argmax_token_type": str(
+                    candidate.payload["entropy_probe"]["argmax_token_type"]
+                ),
                 "bpo_action_token_starts": starts,
                 "bpo_action_token_ends": ends,
                 "bpo_action_metadata_valid": branch_boundary_valid,
@@ -573,7 +624,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                     # entropy contract fails without allocating an opaque
                     # ShopSimulator snapshot.  The snapshot remains at the
                     # same pre-action semantic boundary.
-                    entropy = await self._probe_entropy(
+                    entropy, entropy_probe = await self._probe_entropy(
                         prompt_before,
                         sampling_params,
                     )
@@ -616,6 +667,7 @@ class ShoppingBPOAgentLoop(ShoppingToolAgentLoop):
                                     step.get("tool") != "ask_shopper"
                                     for step in prefix_state["steps"]
                                 ),
+                                "entropy_probe": entropy_probe,
                             },
                         )
                         previous = list(retained_candidates)

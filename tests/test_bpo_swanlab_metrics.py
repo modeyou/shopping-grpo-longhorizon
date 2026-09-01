@@ -74,6 +74,7 @@ def test_swanlab_dashboard_has_exactly_five_readable_top_level_sections():
             "bpo_action/root_advantage_abs_mass": 0.4,
             "bpo_action/local_advantage_abs_mass": 0.4,
             "carl_credit/goal_advantage_mass_share": 0.9,
+            "carl_budget/accepted_returns_total": 24,
             "actor/pg_loss": 0.02,
             "timing_s/gen": 12.0,
             "reward/shaped_mean": 999.0,
@@ -97,6 +98,7 @@ def test_swanlab_dashboard_has_exactly_five_readable_top_level_sections():
         "credit/root_action_advantage_abs_mass": 0.4,
         "credit/local_action_advantage_abs_mass": 0.4,
         "credit/goal_advantage_mass_share": 0.9,
+        "sampling/accepted_sibling_terminal_outcomes_total": 24,
         "optimization/pg_loss": 0.02,
         "runtime/generation_seconds": 12.0,
     }

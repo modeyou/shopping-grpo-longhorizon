@@ -33,6 +33,7 @@ def test_exact_entropy_patch_is_idempotent_and_scalarizes_distribution():
     assert patched.count(PATCH_MARKER) == 1
     assert 'sampling_params["logprobs"] = -1 if bpo_entropy_probe' in patched
     assert 'extra_fields["bpo_full_vocab_entropy"]' in patched
+    assert 'extra_fields["bpo_entropy_probe_argmax_token_id"]' in patched
     assert "probability_mass" in patched
     assert "value == -math.inf" in patched
     assert "if probability > 0.0" in patched
@@ -127,6 +128,8 @@ def test_generated_patch_handles_realistic_negative_infinity_logprob():
     assert token_ids == [0]
     assert math.isfinite(extra_fields["bpo_full_vocab_entropy"])
     assert extra_fields["bpo_full_vocab_entropy"] == pytest.approx(math.log(2))
+    assert extra_fields["bpo_entropy_probe_sampled_token_id"] == 0
+    assert extra_fields["bpo_entropy_probe_argmax_token_id"] == 0
 
 
 def test_apply_upgrades_v1_from_verified_original_backup(tmp_path, monkeypatch):

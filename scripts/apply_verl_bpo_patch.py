@@ -58,7 +58,7 @@ def sha256(path):
 
 
 def expected_patched_sha256(target):
-    """Derive the one accepted V2 hash from the verified pinned source backup."""
+    """Derive the accepted patch hash from the verified pinned source backup."""
     backup = Path(str(Path(target).resolve()) + BACKUP_SUFFIX)
     if not backup.is_file() or sha256(backup) != EXPECTED_ORIGINAL_SHA256:
         raise RuntimeError(f"verified BPO patch backup is missing: {backup}")

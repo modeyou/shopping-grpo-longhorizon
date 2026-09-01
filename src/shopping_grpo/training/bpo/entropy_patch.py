@@ -1,7 +1,10 @@
 """Deterministic source transform for the pinned veRL vLLM entropy probe."""
 
-PATCH_MARKER = "SHOPPING_BPO_EXACT_ENTROPY_PATCH_V2"
-LEGACY_PATCH_MARKERS = ("SHOPPING_BPO_EXACT_ENTROPY_PATCH_V1",)
+PATCH_MARKER = "SHOPPING_BPO_EXACT_ENTROPY_PATCH_V3"
+LEGACY_PATCH_MARKERS = (
+    "SHOPPING_BPO_EXACT_ENTROPY_PATCH_V1",
+    "SHOPPING_BPO_EXACT_ENTROPY_PATCH_V2",
+)
 
 
 def patch_source(source: str) -> str:
@@ -64,7 +67,13 @@ def patch_source(source: str) -> str:
         + "                    probabilities, vocabulary_logprobs, strict=True\n"
         + "                )\n"
         + "                if probability > 0.0\n"
-        + "            )\n",
+        + "            )\n"
+        + '            extra_fields["bpo_entropy_probe_sampled_token_id"] = int(token_ids[0])\n'
+        + "            argmax_token_id, _ = max(\n"
+        + "                distributions[0].items(),\n"
+        + "                key=lambda item: float(item[1].logprob),\n"
+        + "            )\n"
+        + '            extra_fields["bpo_entropy_probe_argmax_token_id"] = int(argmax_token_id)\n',
         1,
     )
     return source

@@ -12,6 +12,7 @@ from shopping_grpo.training.bpo.advantage import (
     audit_bpo_rollout_batch,
     compute_bpo_advantage,
     summarize_bpo_actor_batch,
+    summarize_bpo_token_mass,
 )
 from shopping_grpo.training.bpo.step0_validation import install_step0_validation_cache
 from shopping_grpo.training.grpo.compat import install_torch_padding_fallback
@@ -730,6 +731,11 @@ def install_bpo_runtime():
             returns,
             internals["policy_weights"],
         )
+        token_mass = summarize_bpo_token_mass(
+            data.batch["response_mask"],
+            metadata=metadata,
+            sibling_count=int(bpo_config.get("sibling_count", 4)),
+        )
         # veRL's actor consumes response_mask as the PPO loss mask.  Replace it
         # only after rollout/reward/tree audits so Local prefix and post-action
         # suffix tokens are absent from both the PPO numerator and denominator.
@@ -739,6 +745,7 @@ def install_bpo_runtime():
         global_step = _diagnostic_global_step(data.meta_info)
         actor_payload = {
             "diagnostics": actor_batch,
+            "token_mass": token_mass,
             "tree_count": len(audits),
             "sibling_count": int(bpo_config.get("sibling_count", 4)),
             "tree_audits": audits,

@@ -387,6 +387,70 @@ def summarize_bpo_actor_batch(
     }
 
 
+def summarize_bpo_token_mass(
+    response_mask,
+    *,
+    metadata,
+    sibling_count=4,
+):
+    """Return exact actor-token mass for every selected group/sibling/action."""
+    batch_size = int(response_mask.shape[0])
+    groups = _validate_metadata(metadata, batch_size, sibling_count)
+    result = []
+    for group_id, rows in groups.items():
+        ordered = sorted(
+            rows, key=lambda row: int(metadata["bpo_sibling_index"][row])
+        )
+        group_types = {str(metadata["bpo_group_type"][row]) for row in ordered}
+        if len(group_types) != 1:
+            raise ValueError(f"BPO group {group_id!r} has inconsistent group type")
+        group_type = next(iter(group_types))
+        siblings = []
+        for row in ordered:
+            spans = _row_action_spans(
+                response_mask[row],
+                metadata["bpo_action_token_starts"][row],
+                metadata["bpo_action_token_ends"][row],
+                group_id=group_id,
+            )
+            branch_action = int(metadata["bpo_branch_action"][row])
+            actions = []
+            for action_index, (start, end, actor_tokens) in enumerate(spans):
+                selected = group_type == "root" or action_index == branch_action
+                actions.append(
+                    {
+                        "action_index": action_index,
+                        "start": start,
+                        "end": end,
+                        "span_tokens": end - start,
+                        "actor_tokens": int(actor_tokens.sum().item()),
+                        "selected_for_policy": selected,
+                    }
+                )
+            siblings.append(
+                {
+                    "sibling_index": int(metadata["bpo_sibling_index"][row]),
+                    "actions": actions,
+                    "selected_actor_tokens": sum(
+                        action["actor_tokens"]
+                        for action in actions
+                        if action["selected_for_policy"]
+                    ),
+                }
+            )
+        result.append(
+            {
+                "group_id": str(group_id),
+                "group_type": group_type,
+                "siblings": siblings,
+                "selected_actor_tokens": sum(
+                    sibling["selected_actor_tokens"] for sibling in siblings
+                ),
+            }
+        )
+    return {"groups": result}
+
+
 def compute_bpo_advantage(
     token_level_rewards,
     response_mask,
