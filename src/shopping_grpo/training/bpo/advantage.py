@@ -160,7 +160,6 @@ def build_bpo_policy_weights(
     *,
     metadata,
     sibling_count=4,
-    upstream_lambda=0.0,
     dtype=None,
 ):
     """Build token weights before veRL's actor loss/remove-padding path."""
@@ -170,12 +169,11 @@ def build_bpo_policy_weights(
         raise ValueError("BPO response mask must be a two-dimensional tensor")
     if sibling_count < 2:
         raise ValueError("BPO sibling_count must be at least two")
-    if not 0.0 <= float(upstream_lambda) <= 1.0:
-        raise ValueError("BPO upstream_lambda must be in [0, 1]")
 
     batch_size, response_length = response_mask.shape
     _validate_metadata(metadata, batch_size, sibling_count)
     weight_dtype = dtype if dtype is not None else response_mask.dtype
+    actor_mask = response_mask.ne(0)
     weights = torch.zeros(
         (batch_size, response_length),
         dtype=weight_dtype,
@@ -187,7 +185,7 @@ def build_bpo_policy_weights(
     for row in range(batch_size):
         group_type = str(metadata.get("bpo_group_type", ["local"] * batch_size)[row])
         if group_type == "root":
-            weights[row] = response_mask[row]
+            weights[row] = actor_mask[row].to(weight_dtype)
             continue
         if group_type != "local":
             raise ValueError(f"unknown BPO group type: {group_type!r}")
@@ -201,28 +199,33 @@ def build_bpo_policy_weights(
             or starts[-1] >= response_length
         ):
             raise ValueError("BPO action boundaries are not valid response offsets")
-        for action_index, start in enumerate(starts):
-            end = (
-                starts[action_index + 1]
-                if action_index + 1 < len(starts)
-                else response_length
-            )
-            if action_index >= branch_action:
-                weights[row, start:end] = 1.0
+        branch_start = starts[branch_action]
+        weights[row, branch_start:] = actor_mask[row, branch_start:].to(weight_dtype)
 
     # The upstream actor loss is token-mean.  Normalize each Root/Local group
-    # to equal mass without changing token-level PPO weighting within a group.
+    # to equal effective actor-token mass.  Tool observations and padding must
+    # be removed before counting support; otherwise Local groups with long tool
+    # outputs are silently down-weighted even though those tokens cannot carry
+    # policy gradient.
     active_counts = {
         group_id: int(sum(weights[row].ne(0).sum().item() for row in rows))
         for group_id, rows in group_rows.items()
     }
+    empty_groups = [
+        group_id
+        for group_id, active_count in active_counts.items()
+        if active_count == 0
+    ]
+    if empty_groups:
+        raise ValueError(
+            "BPO groups have no actor-token policy support: "
+            f"{sorted(empty_groups)}"
+        )
     total_active = sum(active_counts.values())
     group_count = len(active_counts)
-    if total_active and group_count:
-        for group_id, rows in group_rows.items():
-            count = active_counts[group_id]
-            if count:
-                weights[rows] *= float(total_active) / float(group_count * count)
+    for group_id, rows in group_rows.items():
+        count = active_counts[group_id]
+        weights[rows] *= float(total_active) / float(group_count * count)
     return weights
 
 
@@ -255,6 +258,8 @@ def summarize_bpo_actor_batch(
 
     mask = response_mask.detach()
     policy = policy_weights.detach()
+    if bool(((policy != 0) & (mask == 0)).any().item()):
+        raise ValueError("BPO policy weights extend outside the actor response mask")
     policy_mask = (policy != 0) & (mask != 0)
     advantage_float = advantages.detach().float()
     reward_float = token_level_rewards.detach().float()
@@ -294,7 +299,6 @@ def compute_bpo_advantage(
     *,
     metadata,
     sibling_count=4,
-    upstream_lambda=0.0,
     return_diagnostics=False,
 ):
     """Compute LOO returns with Root-wide and Local suffix-only policy support."""
@@ -304,8 +308,6 @@ def compute_bpo_advantage(
         raise ValueError("reward and response mask shapes must match")
     if sibling_count < 2:
         raise ValueError("BPO sibling_count must be at least two")
-    if not 0.0 <= float(upstream_lambda) <= 1.0:
-        raise ValueError("BPO upstream_lambda must be in [0, 1]")
     batch_size, response_length = token_level_rewards.shape
     groups = _validate_metadata(metadata, batch_size, sibling_count)
     # Outcome rewards can live on tool/environment tokens whose actor mask is
@@ -330,7 +332,6 @@ def compute_bpo_advantage(
             response_mask,
             metadata=metadata,
             sibling_count=sibling_count,
-            upstream_lambda=upstream_lambda,
             dtype=token_level_rewards.dtype,
         )
         advantages = scalar_advantages.unsqueeze(-1) * weights * response_mask

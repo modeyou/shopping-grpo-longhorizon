@@ -87,8 +87,6 @@ def validate_bpo_config(config):
             "formal BPO requires actor.calculate_entropy=false; branch entropy "
             "comes from the exact one-token vLLM probe"
         )
-    if float(algorithm.bpo.upstream_lambda) != 0.0:
-        raise SystemExit("CARL-BPO requires no upstream prefix propagation")
     if float(config.actor_rollout_ref.actor.clip_ratio_low) != 0.2:
         raise SystemExit("formal BPO requires PPO clip ratio 0.2")
     if int(config.trainer.n_gpus_per_node) != 4:
@@ -446,6 +444,12 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
         raise SystemExit("BPO veRL dispatcher produced NaN or Inf")
     if not torch.equal(advantages, returns):
         raise SystemExit("BPO veRL dispatcher returns do not match BPO advantages")
+    root_advantage_mass = advantages[:4].abs().sum()
+    local_advantage_mass = advantages[4:].abs().sum()
+    if not torch.isclose(root_advantage_mass, local_advantage_mass):
+        raise SystemExit(
+            "BPO Root/Local effective actor-token advantage mass is not balanced"
+        )
     print(
         "BPO veRL dispatcher CPU preflight passed: "
         + json.dumps(
@@ -459,6 +463,8 @@ def validate_bpo_runtime_hooks(config, *, validate_official_config=True):
                 "use_reference_policy": use_reference_policy,
                 "sibling_count": 4,
                 "group_types": ["root", "local"],
+                "root_advantage_mass": float(root_advantage_mass.item()),
+                "local_advantage_mass": float(local_advantage_mass.item()),
                 "sparse_cuda_mapping": sparse_cuda_mapping,
             },
             sort_keys=True,
@@ -812,7 +818,6 @@ def main():
                 "dynamic_max_generation_batches": int(
                     config.shopping_dynamic_sampling.max_num_gen_batches
                 ),
-                "upstream_lambda": 0.0,
                 "gpu_memory_utilization": 0.45,
                 "max_num_seqs": 8,
                 "minimum_free_gpu_memory_gib": 20.0,

@@ -157,6 +157,7 @@ def test_formal_bpo_config_is_independent_and_frozen():
     model = config["actor_rollout_ref"]["model"]
     rollout = config["actor_rollout_ref"]["rollout"]
     assert config["algorithm"]["adv_estimator"] == "bpo"
+    assert "upstream_lambda" not in config["algorithm"]["bpo"]
     assert config["shopping_bpo"] == {
         "enable": True,
         "algorithm": "carl-bpo-v2",

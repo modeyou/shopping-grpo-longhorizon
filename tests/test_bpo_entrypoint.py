@@ -77,6 +77,7 @@ def test_bpo_launcher_uses_independent_entrypoint_and_native_v4(tmp_path, monkey
     assert run_contract["frozen_method"]["optimizer_update_audit"] == (
         "startup-hard-gate-first-gradient-and-positive-lr-delta-v1"
     )
+    assert "upstream_lambda" not in run_contract["frozen_method"]
     assert "bpo_fused_ppo_gradient_patch" in run_contract["inputs"]
 
 def test_bpo_launcher_rejects_an_external_ray_address(monkeypatch):

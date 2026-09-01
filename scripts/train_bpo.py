@@ -408,7 +408,6 @@ def write_contract(environment, audit):
             "branch_candidate_policy": "exclude-final-action-v1",
             "entropy_state": "action-boundary-first-token",
             "rollout_audit": "exact-tree-v1",
-            "upstream_lambda": 0.0,
             "ppo_clip": 0.2,
             "gpu_memory_utilization": 0.45,
             "max_num_seqs": 8,

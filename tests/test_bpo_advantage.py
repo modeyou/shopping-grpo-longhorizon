@@ -27,7 +27,6 @@ def test_carl_loo_advantage_starts_at_local_branch():
         mask,
         metadata=metadata,
         sibling_count=4,
-        upstream_lambda=0.5,
     )
     expected = torch.tensor([2 / 3, -2 / 3, -2.0, 2.0])
     assert torch.allclose(advantages[:, 2], expected)
@@ -53,7 +52,6 @@ def test_bpo_outcome_reward_is_not_dropped_by_actor_response_mask():
         mask,
         metadata=metadata,
         sibling_count=4,
-        upstream_lambda=0.5,
     )
 
     expected = torch.tensor([2 / 3, -2 / 3, -2.0, 2.0])
@@ -78,14 +76,12 @@ def test_bpo_actor_diagnostics_expose_mask_and_advantage_support():
         mask,
         metadata=metadata,
         sibling_count=4,
-        upstream_lambda=0.5,
         return_diagnostics=True,
     )
     policy_weights = build_bpo_policy_weights(
         mask,
         metadata=metadata,
         sibling_count=4,
-        upstream_lambda=0.5,
         dtype=rewards.dtype,
     )
     diagnostics = summarize_bpo_actor_batch(
@@ -222,7 +218,6 @@ def test_real_verl_dispatcher_accepts_bpo_on_cpu():
                 "use_kl_in_reward": False,
                 "bpo": {
                     "sibling_count": 4,
-                    "upstream_lambda": 0.0,
                 }
             },
             "actor_rollout_ref": {

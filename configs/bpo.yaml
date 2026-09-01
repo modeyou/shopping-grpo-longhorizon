@@ -115,7 +115,6 @@ algorithm:
   bpo:
     sibling_count: 4
     branch_count: 1
-    upstream_lambda: 0.0
   rollout_correction:
     bypass_mode: true
     rollout_is: null

@@ -715,7 +715,6 @@ def install_bpo_runtime():
             data.batch["response_mask"],
             metadata=metadata,
             sibling_count=int(bpo_config.get("sibling_count", 4)),
-            upstream_lambda=0.0,
             return_diagnostics=True,
         )
         data.batch["advantages"] = advantages
