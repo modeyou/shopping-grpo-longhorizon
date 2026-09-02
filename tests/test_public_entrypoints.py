@@ -165,6 +165,8 @@ class PublicEntrypointTest(unittest.TestCase):
         )
         self.assertEqual(environment["SHOPPING_REWARD_SHAPING_PROFILE"], "none")
         self.assertEqual(environment["GRPO_SEED"], "20260823")
+        self.assertEqual(environment["SHOPPING_ENV_CONCURRENCY_PER_WORKER"], "2")
+        self.assertEqual(environment["SHOPPING_EXPECTED_SHOPSIM_SLOTS"], "20")
         self.assertIn("trainer.logger=[console]", command)
 
     def test_grpo_run_contract_is_hashed_and_secret_free(self):
@@ -207,6 +209,8 @@ class PublicEntrypointTest(unittest.TestCase):
                 "SHOPPER_API_KEY": "must-not-be-written",
                 "CUDA_VISIBLE_DEVICES": "0,2,3,4",
                 "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
+                "SHOPPING_ENV_CONCURRENCY_PER_WORKER": "2",
+                "SHOPPING_EXPECTED_SHOPSIM_SLOTS": "20",
             }
             audit = {
                 "command": ["python", "-m", "verl.trainer.main_ppo"],
@@ -234,6 +238,10 @@ class PublicEntrypointTest(unittest.TestCase):
         self.assertTrue(
             contract["runtime_contract"]["ray_preserves_cuda_visible_devices"]
         )
+        self.assertEqual(
+            contract["runtime_contract"]["environment_concurrency_per_worker"], 2
+        )
+        self.assertEqual(contract["runtime_contract"]["expected_shopsim_slots"], 20)
         self.assertIn("sha256", contract["inputs"]["train_data"])
         self.assertIn("sha256", contract["inputs"]["data_manifest"])
         self.assertEqual(len(contract["inputs"]["model_artifacts"]), 1)

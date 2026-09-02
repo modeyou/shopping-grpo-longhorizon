@@ -2,7 +2,10 @@
 
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from scripts.check_grpo_runtime import validate_environment_concurrency
 from scripts.run_formal_grpo import TOTAL_UPDATES, build_command
 
 
@@ -50,3 +53,24 @@ def test_formal_resume_keeps_500_step_target(tmp_path):
     command = build_command(args)
     assert '--resume-from-checkpoint' in command
     assert 'trainer.total_training_steps=500' in command
+
+
+def test_formal_validation_concurrency_fits_shopsimulator_capacity():
+    config = SimpleNamespace(
+        actor_rollout_ref=SimpleNamespace(
+            rollout=SimpleNamespace(agent=SimpleNamespace(num_workers=8))
+        )
+    )
+    with patch.dict(
+        'os.environ',
+        {
+            'SHOPPING_ENV_CONCURRENCY_PER_WORKER': '2',
+            'SHOPPING_EXPECTED_SHOPSIM_SLOTS': '20',
+        },
+    ):
+        validate_environment_concurrency(config)
+
+    agent_config = (
+        Path(__file__).resolve().parents[1] / 'configs' / 'agent_loop.yaml'
+    ).read_text(encoding='utf-8')
+    assert 'SHOPPING_ENV_CONCURRENCY_PER_WORKER,2' in agent_config

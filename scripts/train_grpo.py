@@ -237,6 +237,8 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
             "GRPO_CONFIG_NAME": config.stem,
             "GRPO_RESUME_FROM_CHECKPOINT": str(resume_checkpoint or ""),
             "SHOPPING_GRPO_ENV_ROLE": "formal-grpo-v1",
+            "SHOPPING_ENV_CONCURRENCY_PER_WORKER": "2",
+            "SHOPPING_EXPECTED_SHOPSIM_SLOTS": "20",
         }
     )
     if args.logger == "swanlab":
@@ -428,6 +430,13 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
             "python_executable": sys.executable,
             "python_prefix": sys.prefix,
             "environment_role": environment.get("SHOPPING_GRPO_ENV_ROLE"),
+            "agent_loop_workers": 8,
+            "environment_concurrency_per_worker": int(
+                environment["SHOPPING_ENV_CONCURRENCY_PER_WORKER"]
+            ),
+            "expected_shopsim_slots": int(
+                environment["SHOPPING_EXPECTED_SHOPSIM_SLOTS"]
+            ),
             "swanlab_mode": environment.get("SWANLAB_MODE"),
             "swanlab_log_dir": environment.get("SWANLAB_LOG_DIR"),
             "gpu_telemetry": str(

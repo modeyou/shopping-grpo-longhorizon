@@ -15,6 +15,7 @@ from shopping_grpo.environment.projection import (
     ObservationProjectionError,
     project_observation,
 )
+from shopping_grpo.training.grpo.adapter.concurrency import environment_semaphore
 from shopping_grpo.training.grpo.adapter.runtime import (
     apply_bounded_reward_shaping,
     apply_reward_length_shaping,
@@ -37,6 +38,7 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         base_url="http://127.0.0.1:5700",
         timeout=60,
         max_steps=35,
+        max_concurrent_environments_per_worker=2,
         required_environment_version=None,
         required_reward_version=None,
         reward_mode="native",
@@ -70,6 +72,13 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         self.base_url = base_url
         self.timeout = int(timeout)
         self.max_steps = int(max_steps)
+        self.max_concurrent_environments_per_worker = int(
+            max_concurrent_environments_per_worker
+        )
+        if self.max_concurrent_environments_per_worker < 1:
+            raise ValueError(
+                "max_concurrent_environments_per_worker must be positive"
+            )
         self.required_environment_version = required_environment_version
         self.required_reward_version = required_reward_version
         self.reward_mode = str(reward_mode)
@@ -325,7 +334,18 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             shopper_factory=getattr(self, "shopper_factory", None),
             env_factory=self.env_factory,
         )
-        state = await session.start(task_id, multiturn_spec=spec if multiturn_enabled else None)
+        lease_limiter = environment_semaphore(
+            self.max_concurrent_environments_per_worker
+        )
+        await lease_limiter.acquire()
+        try:
+            state = await session.start(
+                task_id,
+                multiturn_spec=spec if multiturn_enabled else None,
+            )
+        except BaseException:
+            lease_limiter.release()
+            raise
         try:
             output = await super().run(sampling_params, **kwargs)
             if not state["done"] and not state["error"]:
@@ -410,4 +430,7 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             }
             return output
         finally:
-            await session.close()
+            try:
+                await session.close()
+            finally:
+                lease_limiter.release()

@@ -3,6 +3,7 @@
   base_url: ${oc.env:SHOPSIM_BASE_URL,http://127.0.0.1:5700}
   timeout: 60
   max_steps: 35
+  max_concurrent_environments_per_worker: ${oc.decode:${oc.env:SHOPPING_ENV_CONCURRENCY_PER_WORKER,2}}
   reward_shaping_profile: ${oc.env:SHOPPING_REWARD_SHAPING_PROFILE,none}
   reward_length_shaping_enable: ${oc.env:SHOPPING_LENGTH_SHAPING_ENABLE,false}
   reward_length_soft_threshold: ${oc.env:SHOPPING_SOFT_LENGTH_THRESHOLD,20}

@@ -77,6 +77,8 @@ checkpoint-325 的 DEV-500 三条件 strict success 为：Gap+Ask 69.0%、Gap-No
 
 在线 validation 始终使用完整冻结集：200 tasks，每个 task 保留 gap/complete 两行，共 400 rows。step 0 和之后每 50 个真实 optimizer updates 使用完全相同的 task IDs、Parquet、采样参数和 Reward 合同；不再创建 50-task 子集，也不在训练中切换验证数据。
 
+veRL 0.8 不按 data.val_batch_size 切分 AgentLoop validation，而是把完整 400 rows 分发给 8 个 AgentLoopWorker；每个 worker 又并发执行自己的样本分片。为避免瞬时耗尽 ShopSimulator 的 20 个 lease 槽位，ShoppingToolAgentLoop 在取得环境之前使用 worker 进程内共享 semaphore，把每个 worker 的在途环境限制为 2，因此全局理论峰值为 16。限制从 session.start() 前持续到 session.close() 后，覆盖成功、异常与取消路径；它不缩减 validation、不改变 rollout、Reward 或 optimizer。preflight 必须验证 8 × 2 = 16 ≤ 20，run contract 必须记录 worker 数、每 worker 上限与预期槽位数。
+
 ## veRL 显存与算子适配
 
 原作者使用单张 96 GiB GPU；本项目使用四张 24 GiB RTX 4090，冻结以下运行时适配：

@@ -311,6 +311,31 @@ def validate_formal_training_contract(config):
     print("formal 500-update GRPO contract preflight passed: " + json.dumps(checks, sort_keys=True))
 
 
+def validate_environment_concurrency(config):
+    """Keep whole-batch validation below the ShopSimulator lease capacity."""
+    workers = int(config.actor_rollout_ref.rollout.agent.num_workers)
+    per_worker = int(os.environ.get("SHOPPING_ENV_CONCURRENCY_PER_WORKER", "0"))
+    slots = int(os.environ.get("SHOPPING_EXPECTED_SHOPSIM_SLOTS", "0"))
+    maximum = workers * per_worker
+    if workers != 8 or per_worker != 2 or slots != 20 or maximum > slots:
+        raise SystemExit(
+            "formal GRPO environment concurrency mismatch: "
+            f"workers={workers}, per_worker={per_worker}, slots={slots}"
+        )
+    print(
+        "GRPO environment-concurrency preflight passed: "
+        + json.dumps(
+            {
+                "agent_loop_workers": workers,
+                "per_worker": per_worker,
+                "maximum_concurrent_leases": maximum,
+                "expected_shopsim_slots": slots,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def validate_swanlab_tracking(config):
     """Validate SwanLab only when the user explicitly enables it."""
     logger_backends = list(config.trainer.get("logger", []))
@@ -792,6 +817,7 @@ def main():
         raise SystemExit("veRL 0.8 SwanLab tracking backend is unavailable")
     validate_dynamic_sampling(config, verl_source, installed)
     validate_formal_training_contract(config)
+    validate_environment_concurrency(config)
     validate_swanlab_tracking(config)
     validate_fused_ppo_gradient_patch(torch, verl_source)
     validate_liger_integration(config, verl_source)
