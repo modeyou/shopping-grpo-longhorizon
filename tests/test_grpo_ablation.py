@@ -15,6 +15,8 @@ from shopping_grpo.training.grpo.adapter.runtime import (
 )
 from shopping_grpo.training.grpo.dynamic_sampling import (
     aggregate_shopping_metrics,
+    aggregate_validation_shopping_metrics,
+    augment_training_monitor_metrics,
     extract_shopping_group_signals,
 )
 
@@ -306,6 +308,54 @@ class GrpoAblationTest(unittest.TestCase):
         self.assertEqual(metrics["trajectory/overlong_rate"], 1.0)
         self.assertEqual(metrics["trajectory/repeat_loop_rate"], 1.0)
         self.assertEqual(metrics["trajectory/max_steps_rate"], 1.0)
+
+    def test_validation_metrics_are_balanced_and_split_by_mode(self):
+        def info(mode, strict):
+            reward = {
+                "full": strict, "strict": strict, "native": strict,
+                "semantic": strict, "total": strict,
+                "terminal_utility": strict, "efficiency": 1.0,
+                "penalty_overlong": 0.0, "penalty_unfinished": 0.0,
+                "penalty_repeat": 0.0, "repeat_action_rate": 0.0,
+                "purchase_success": bool(strict), "sampling_invalid": False,
+                "r_type": strict, "r_att": strict,
+                "r_option": strict, "r_price": strict,
+            }
+            return {
+                "interaction_mode": mode, "steps": 2, "done": True,
+                "termination_reason": "gold_purchase", "reward_type": "gold_purchase",
+                "infrastructure_invalid": False, "reward": reward,
+                "shopper_questions": 1 if mode == "gap" else 0,
+            }
+
+        metrics = aggregate_validation_shopping_metrics([
+            info("gap", 1.0), info("gap", 0.0), info("complete", 1.0),
+        ])
+
+        self.assertEqual(metrics["validation/gap/reward/strict_mean"], 0.5)
+        self.assertEqual(metrics["validation/complete/reward/strict_mean"], 1.0)
+        self.assertEqual(
+            metrics["validation/selection/balanced_strict_success_rate"], 0.75
+        )
+        self.assertEqual(metrics["validation/overall/trajectory/count"], 3.0)
+        self.assertEqual(metrics["validation/gap/trajectory/shopper_ask_rate"], 1.0)
+        self.assertEqual(
+            metrics["validation/complete/trajectory/shopper_ask_rate"], 0.0
+        )
+
+    def test_training_monitor_exposes_native_verl_metrics_without_entropy_cost(self):
+        source = {
+            "actor/pg_loss": 0.2, "actor/grad_norm": 0.5, "actor/lr": 1e-6,
+            "actor/pg_clipfrac": 0.1, "actor/pg_clipfrac_lower": 0.0,
+            "actor/ppo_kl": 0.01, "critic/advantages/mean": 0.0,
+            "critic/advantages/min": -1.0, "critic/advantages/max": 1.0,
+        }
+        metrics = augment_training_monitor_metrics(source)
+        self.assertEqual(metrics["optimization/pg_loss"], 0.2)
+        self.assertEqual(metrics["optimization/grad_norm"], 0.5)
+        self.assertEqual(metrics["monitor/critical_metric_present_ratio"], 1.0)
+        self.assertEqual(metrics["monitor/observed_metrics_all_finite"], 1.0)
+        self.assertEqual(metrics["monitor/entropy_available"], 0.0)
 
 
 if __name__ == "__main__":

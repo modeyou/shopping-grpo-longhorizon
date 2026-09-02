@@ -137,5 +137,6 @@ trainer:
   project_name: shopping-multiturn-agentic
   experiment_name: shopping-agent-grpo
   default_local_dir: ${oc.env:GRPO_OUTPUT_DIR}
+  validation_data_dir: ${oc.env:SHOPPING_GRPO_VALIDATION_DATA_DIR}
   n_gpus_per_node: 4
   nnodes: 1

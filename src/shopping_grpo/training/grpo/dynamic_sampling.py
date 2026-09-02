@@ -93,6 +93,11 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
     match_scores = []
     evidence_coverage = []
     partial_purchase = []
+    shopper_questions = []
+    shopper_rejections = []
+    guard_rejections = []
+    observation_truncated = []
+    context_compactions = []
     for index, info in enumerate(shopping_infos):
         if not isinstance(info, Mapping) or not isinstance(info.get("reward"), Mapping):
             raise ValueError(f"shopping extra field at index {index} is missing reward diagnostics")
@@ -148,6 +153,13 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         partial_purchase.append(
             float(info.get("reward_type") == "partial_alternative_purchase")
         )
+        shopper_questions.append(float(info.get("shopper_questions", 0)))
+        shopper_rejections.append(float(info.get("shopper_rejections", 0)))
+        guard_rejections.append(float(info.get("guard_rejections", 0)))
+        observation_truncated.append(
+            float(bool(info.get("observation_any_truncated")))
+        )
+        context_compactions.append(float(info.get("context_compactions", 0)))
 
     def mean(values):
         return sum(values) / len(values)
@@ -187,6 +199,84 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
         "trajectory/infrastructure_invalid_rate": mean(infrastructure_invalid),
         "trajectory/reward_unverifiable_rate": mean(reward_unverifiable),
         "trajectory/sampling_invalid_rate": mean(sampling_invalid),
+        "trajectory/shopper_question_mean": mean(shopper_questions),
+        "trajectory/shopper_ask_rate": mean(
+            [float(value > 0) for value in shopper_questions]
+        ),
+        "trajectory/shopper_rejection_mean": mean(shopper_rejections),
+        "trajectory/guard_rejection_mean": mean(guard_rejections),
+        "trajectory/observation_truncated_rate": mean(observation_truncated),
+        "trajectory/context_compaction_mean": mean(context_compactions),
+    }
+
+
+def aggregate_validation_shopping_metrics(shopping_infos):
+    '''Return checkpoint-selection metrics overall and by opening mode.'''
+    if not shopping_infos:
+        return {}
+    grouped = {'overall': list(shopping_infos)}
+    for index, info in enumerate(shopping_infos):
+        if not isinstance(info, Mapping):
+            raise ValueError(f'shopping extra field at index {index} is not an object')
+        mode = str(info.get('interaction_mode') or '')
+        if mode not in {'gap', 'complete'}:
+            raise ValueError(f'invalid validation interaction_mode {mode!r} at index {index}')
+        grouped.setdefault(mode, []).append(info)
+    metrics = {}
+    for mode, values in grouped.items():
+        for name, value in aggregate_shopping_metrics(values).items():
+            metrics[f'validation/{mode}/{name}'] = value
+        metrics[f'validation/{mode}/trajectory/count'] = float(len(values))
+    if 'gap' not in grouped or 'complete' not in grouped:
+        raise ValueError('validation requires both gap and complete modes')
+    metrics['validation/selection/balanced_strict_success_rate'] = (
+        metrics['validation/gap/reward/strict_mean']
+        + metrics['validation/complete/reward/strict_mean']
+    ) / 2.0
+    return metrics
+
+
+def augment_training_monitor_metrics(metrics):
+    '''Add stable dashboard aliases and health flags for native veRL metrics.'''
+    aliases = {
+        'actor/pg_loss': 'optimization/pg_loss',
+        'actor/grad_norm': 'optimization/grad_norm',
+        'actor/lr': 'optimization/learning_rate',
+        'actor/pg_clipfrac': 'optimization/pg_clipfrac',
+        'actor/pg_clipfrac_lower': 'optimization/pg_clipfrac_lower',
+        'actor/ppo_kl': 'optimization/ppo_kl',
+        'actor/entropy': 'optimization/entropy',
+        'critic/advantages/mean': 'optimization/advantage_mean',
+        'critic/advantages/min': 'optimization/advantage_min',
+        'critic/advantages/max': 'optimization/advantage_max',
+        'critic/returns/mean': 'optimization/return_mean',
+        'critic/returns/min': 'optimization/return_min',
+        'critic/returns/max': 'optimization/return_max',
+        'response_length/mean': 'length/response_mean',
+        'response_length/max': 'length/response_max',
+        'response_length/clip_ratio': 'length/response_clip_ratio',
+        'perf/throughput': 'performance/throughput',
+        'perf/time_per_step': 'performance/time_per_step',
+    }
+    monitored = {source: metrics[source] for source in aliases if source in metrics}
+    required = (
+        'actor/pg_loss',
+        'actor/grad_norm',
+        'actor/lr',
+        'actor/pg_clipfrac',
+        'actor/ppo_kl',
+        'critic/advantages/mean',
+        'critic/advantages/min',
+        'critic/advantages/max',
+    )
+    finite = [math.isfinite(float(value)) for value in monitored.values()]
+    return {
+        **{aliases[source]: float(value) for source, value in monitored.items()},
+        'monitor/critical_metric_present_ratio': (
+            sum(key in monitored for key in required) / len(required)
+        ),
+        'monitor/observed_metrics_all_finite': float(all(finite)),
+        'monitor/entropy_available': float('actor/entropy' in monitored),
     }
 
 

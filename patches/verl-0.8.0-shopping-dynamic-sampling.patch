@@ -18,11 +18,23 @@
 @@ -706 +717 @@
 -                reward_extra_infos_dict=reward_extra_infos_dict,
 +                reward_extra_infos_dict=validation_extra_infos,
-@@ -1380,0 +1383,8 @@
+@@ -722 +733,9 @@
+-        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
++        validation_metrics = self._val_metrics_update(
++            data_sources, sample_uids, reward_extra_infos_dict, sample_turns
++        )
++        if sample_shopping:
++            from shopping_grpo.training.grpo.dynamic_sampling import aggregate_validation_shopping_metrics
++            validation_metrics.update(
++                aggregate_validation_shopping_metrics(sample_shopping)
++            )
++        return validation_metrics
+@@ -1380,0 +1383,9 @@
 +        )
 +
 +        from shopping_grpo.training.grpo.dynamic_sampling import (
 +            aggregate_shopping_metrics,
++            augment_training_monitor_metrics,
 +            append_training_diagnostic,
 +            build_rollout_diagnostics,
 +            extract_shopping_group_signals,
@@ -489,8 +501,9 @@
 +                            ),
 +                        }
 +                    )
-@@ -1750 +2175,11 @@
+@@ -1750 +2175,12 @@
 -                logger.log(data=metrics, step=self.global_steps)
++                metrics.update(augment_training_monitor_metrics(metrics))
 +                append_training_diagnostic(
 +                    diagnostics_path,
 +                    "optimizer_step",

@@ -146,6 +146,7 @@ class VerlPatchScriptTest(unittest.TestCase):
             )
             self.assertIn("extract_shopping_group_signals", fit_source)
             self.assertIn("aggregate_shopping_metrics", fit_source)
+            self.assertIn("augment_training_monitor_metrics", fit_source)
             self.assertIn("terminal_utilities=terminal_utilities", fit_source)
             self.assertIn("sampling_invalid=sampling_invalid", fit_source)
             self.assertIn('"drop_reason": group["drop_reason"]', fit_source)
@@ -197,6 +198,10 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn(
                 "self._val_metrics_update(data_sources, sample_uids, "
                 "reward_extra_infos_dict, sample_turns)",
+                validate_source,
+            )
+            self.assertIn(
+                "aggregate_validation_shopping_metrics(sample_shopping)",
                 validate_source,
             )
 

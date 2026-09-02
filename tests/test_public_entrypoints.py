@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -13,6 +14,7 @@ from unittest.mock import patch
 from scripts.train_grpo import (
     _complete_checkpoint_steps,
     _diagnostic_summary,
+    _swanlab_run_id,
     build_command,
     main as grpo_main,
     parse_args,
@@ -34,7 +36,11 @@ class PublicEntrypointTest(unittest.TestCase):
                     {
                         "event": "optimizer_step",
                         "global_step": 25,
-                        "metrics": {"training/optimizer_updated": 1},
+                        "metrics": {
+                            "training/optimizer_updated": 1,
+                            "monitor/observed_metrics_all_finite": 1.0,
+                            "monitor/critical_metric_present_ratio": 1.0,
+                        },
                     }
                 )
                 + "\n",
@@ -47,6 +53,8 @@ class PublicEntrypointTest(unittest.TestCase):
             incomplete.mkdir(parents=True)
             summary = _diagnostic_summary(diagnostics)
             self.assertEqual(summary["optimizer_updates"], 1)
+            self.assertEqual(summary["health_audited_optimizer_steps"], 1)
+            self.assertEqual(summary["non_finite_optimizer_steps"], 0)
             self.assertEqual(summary["max_global_step"], 25)
             self.assertEqual(_complete_checkpoint_steps(output), [25])
 
@@ -162,6 +170,10 @@ class PublicEntrypointTest(unittest.TestCase):
         self.assertEqual(
             environment["SHOPPING_GRPO_DIAGNOSTICS_PATH"],
             str(output.resolve() / "training_diagnostics.jsonl"),
+        )
+        self.assertEqual(
+            environment["SHOPPING_GRPO_VALIDATION_DATA_DIR"],
+            str(output.resolve() / "validation"),
         )
         self.assertEqual(environment["SHOPPING_REWARD_SHAPING_PROFILE"], "none")
         self.assertEqual(environment["GRPO_SEED"], "20260823")
@@ -308,6 +320,25 @@ class PublicEntrypointTest(unittest.TestCase):
         self.assertIn("trainer.experiment_name=shopping-agent-grpo", preflight)
         self.assertIn("trainer.total_training_steps=1", preflight)
 
+    def test_new_swanlab_run_uses_stable_experiment_id(self):
+        args = argparse.Namespace(
+            swanlab_run_id=None,
+            experiment_name="grpo-native-v4-500-test",
+            resume_from_checkpoint=None,
+            dry_run=False,
+        )
+        self.assertEqual(_swanlab_run_id(args), "grpo-native-v4-500-test")
+
+    def test_swanlab_resume_rejects_an_implicit_run_id(self):
+        args = argparse.Namespace(
+            swanlab_run_id=None,
+            experiment_name="grpo-native-v4-500-test",
+            resume_from_checkpoint=Path("global_step_25"),
+            dry_run=False,
+        )
+        with self.assertRaisesRegex(SystemExit, "original run"):
+            _swanlab_run_id(args)
+
     def test_grpo_resume_is_explicit_and_confined_to_output(self):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
@@ -340,6 +371,8 @@ class PublicEntrypointTest(unittest.TestCase):
                 str(output),
                 "--resume-from-checkpoint",
                 str(checkpoint),
+                "--swanlab-run-id",
+                "original-run-id",
                 "--dry-run",
             ]
             with patch.object(sys, "argv", argv):
@@ -359,6 +392,8 @@ class PublicEntrypointTest(unittest.TestCase):
             environment["GRPO_RESUME_FROM_CHECKPOINT"],
             str(checkpoint.resolve()),
         )
+        self.assertEqual(environment["SWANLAB_RUN_ID"], "original-run-id")
+        self.assertEqual(environment["SWANLAB_RESUME"], "must")
 
 
 if __name__ == "__main__":

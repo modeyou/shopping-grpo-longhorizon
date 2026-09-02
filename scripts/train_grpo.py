@@ -54,6 +54,7 @@ def _model_has_weights(path: Path) -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--swanlab-run-id')
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--train-data", type=Path, default=DEFAULT_TRAIN_DATA)
     parser.add_argument("--val-data", type=Path, default=DEFAULT_VAL_DATA)
@@ -140,6 +141,16 @@ def _hydra_overrides(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def _swanlab_run_id(args: argparse.Namespace) -> str:
+    configured = getattr(args, 'swanlab_run_id', None)
+    run_id = str(configured or args.experiment_name).strip()
+    if not 1 <= len(run_id) <= 64 or any(char in run_id for char in '/\\#?%:'):
+        raise SystemExit('SwanLab run ID must be 1-64 characters without / \\ # ? % :')
+    if args.resume_from_checkpoint is not None and not configured and not args.dry_run:
+        raise SystemExit('SwanLab resume requires --swanlab-run-id from the original run')
+    return run_id
+
+
 def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     validate_launcher_owned_ray()
     if args.require_clean_git and not args.dry_run:
@@ -208,8 +219,14 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
         )
 
     environment = dict(os.environ)
+    if args.logger == 'swanlab':
+        environment['SWANLAB_RUN_ID'] = _swanlab_run_id(args)
+        environment['SWANLAB_RESUME'] = (
+            'must' if resume_checkpoint is not None else 'allow'
+        )
     environment.update(
         {
+            'SHOPPING_GRPO_VALIDATION_DATA_DIR': str(output / 'validation'),
             "PYTHONPATH": str(ROOT / "src"),
             # veRL's colocated FSDP workers select devices by local rank. Ray's
             # default per-actor CUDA_VISIBLE_DEVICES rewrite makes every rank see
@@ -439,6 +456,11 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
             ),
             "swanlab_mode": environment.get("SWANLAB_MODE"),
             "swanlab_log_dir": environment.get("SWANLAB_LOG_DIR"),
+            "swanlab_run_id": environment.get("SWANLAB_RUN_ID"),
+            "swanlab_resume": environment.get("SWANLAB_RESUME"),
+            "validation_data_dir": environment.get(
+                "SHOPPING_GRPO_VALIDATION_DATA_DIR"
+            ),
             "gpu_telemetry": str(
                 (Path(environment["GRPO_OUTPUT_DIR"]) / "gpu_telemetry.csv").resolve()
             ),
@@ -605,7 +627,14 @@ def _gpu_peak_summary(path: Path) -> dict:
 
 
 def _diagnostic_summary(path: Path) -> dict:
-    summary = {'events': {}, 'optimizer_updates': 0, 'max_global_step': 0}
+    summary = {
+        'events': {},
+        'optimizer_updates': 0,
+        'health_audited_optimizer_steps': 0,
+        'non_finite_optimizer_steps': 0,
+        'incomplete_critical_metric_steps': 0,
+        'max_global_step': 0,
+    }
     if not path.is_file():
         return summary
     for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
@@ -618,10 +647,17 @@ def _diagnostic_summary(path: Path) -> dict:
         summary['max_global_step'] = max(
             summary['max_global_step'], int(record.get('global_step', 0))
         )
+        metrics = record.get('metrics') or {}
         if event == 'optimizer_step' and int(
-            (record.get('metrics') or {}).get('training/optimizer_updated', 0)
+            metrics.get('training/optimizer_updated', 0)
         ) == 1:
             summary['optimizer_updates'] += 1
+            if 'monitor/observed_metrics_all_finite' in metrics:
+                summary['health_audited_optimizer_steps'] += 1
+                if float(metrics['monitor/observed_metrics_all_finite']) != 1.0:
+                    summary['non_finite_optimizer_steps'] += 1
+                if float(metrics.get('monitor/critical_metric_present_ratio', 0)) != 1.0:
+                    summary['incomplete_critical_metric_steps'] += 1
     return summary
 
 
@@ -694,6 +730,9 @@ def run_supervised(command, environment, output: Path, interval_seconds=30) -> i
     completion_valid = (
         exit_code == 0
         and diagnostics['optimizer_updates'] == 500
+        and diagnostics['health_audited_optimizer_steps'] == 500
+        and diagnostics['non_finite_optimizer_steps'] == 0
+        and diagnostics['incomplete_critical_metric_steps'] == 0
         and checkpoint_steps == expected_checkpoint_steps
     )
     if exit_code == 0 and not completion_valid:

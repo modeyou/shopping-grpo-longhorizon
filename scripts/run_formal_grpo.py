@@ -20,6 +20,7 @@ TOTAL_UPDATES = 500
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--swanlab-run-id')
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--shopper-model', default='deepseek-v4-flash-0731')
@@ -62,6 +63,8 @@ def build_command(args: argparse.Namespace) -> list[str]:
         command.extend(('--shopper-base-url', args.shopper_base_url))
     if args.resume_from_checkpoint is not None:
         command.extend(('--resume-from-checkpoint', str(args.resume_from_checkpoint)))
+    if getattr(args, 'swanlab_run_id', None):
+        command.extend(('--swanlab-run-id', args.swanlab_run_id))
     if args.dry_run:
         command.append('--dry-run')
     elif args.preflight_only:

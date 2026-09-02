@@ -145,16 +145,16 @@ trainer:
   project_name: shopping-multiturn-agentic
 ```
 
-run name 为 `grpo-native-v4-500-s20260823-<timestamp>`，必须包含 GRPO、Reward、总步数和 seed。`SWANLAB_MODE=online`，本地目录为 `<output>/swanlab`。API key 只从 tmux 环境变量读取，不写入命令、日志、run contract 或 Git。veRL `Tracking` 会把每次 `logger.log(data=metrics, step=global_step)` 同时发往 console 和 SwanLab。
+run name 为 `grpo-native-v4-500-s20260823-<timestamp>`，必须包含 GRPO、Reward、总步数和 seed。新训练以 experiment name 作为稳定 SwanLab run ID，并使用 `resume=allow`；断点续训必须显式传入原 run ID，并使用 `resume=must`，否则 launcher 拒绝启动，避免曲线静默分叉。`SWANLAB_MODE=online`，本地目录为 `<output>/swanlab`。API key 只从 tmux 环境变量读取，不写入命令、日志、run contract 或 Git。veRL `Tracking` 会把每次 `logger.log(data=metrics, step=global_step)` 同时发往 console 和 SwanLab。
 
 ### 必须进入 SwanLab 的指标
 
 | 类别 | 关键指标 |
 |---|---|
-| optimizer | global step、policy loss、grad norm、learning rate、PPO KL、clip fraction、entropy |
+| optimizer | global step、policy loss、grad norm、learning rate、PPO KL、clip fraction、advantage min/mean/max、return min/mean/max |
 | Reward v4 | terminal utility min/mean/max、native utility、strict、purchase、match score、evidence coverage、各 Reward 分量 |
 | dynamic sampling | generated/accepted/filtered/constant/all-zero/invalid groups、generation/resample batches、generated trajectories、consecutive skips |
-| trajectory | Done、平均步数、max-steps、overlong、repeat loop/action、model failure、partial purchase |
+| trajectory | Done、平均步数、max-steps、overlong、repeat loop/action、Shopper 提问/拒绝、guard 拒绝、observation 截断、context compaction、model failure、partial purchase |
 | infrastructure | infra-invalid、reward-unverifiable、Shopper/API/parser/guard 错误及原因 |
 | length | prompt/response mean/max、总序列最大值、observation 原始/投影 token、投影截断次数 |
 | performance | rollout、reward、old-log-prob、actor update、checkpoint、validation 耗时及 tokens/s |
@@ -162,13 +162,15 @@ run name 为 `grpo-native-v4-500-s20260823-<timestamp>`，必须包含 GRPO、Re
 
 `training_diagnostics.jsonl` 是逐 rollout 权威审计，至少包含 `generation_batch`、`optimizer_step`、`skipped_update`。SwanLab 只上传标量，不上传 omitted facts、Shopper 私有上下文、API key 或完整敏感轨迹。
 
+veRL 原生键保持不变，同时增加稳定的 `optimization/*`、`length/*`、`performance/*` 别名以及三个健康量：`monitor/critical_metric_present_ratio`、`monitor/observed_metrics_all_finite`、`monitor/entropy_available`。本次 `actor.calculate_entropy=false` 且 entropy coefficient 为 0，为避免额外显存与计算，不为监控重新计算 entropy；因此正常值是 `monitor/entropy_available=0`，这不是指标缺失故障。
+
 SwanLab 系统监控不能替代峰值记录。正式 launcher 每 30 秒把物理 GPU `index,memory.used,memory.total,utilization.gpu` 写入 `<output>/gpu_telemetry.csv`，训练结束生成每卡峰值摘要。
 
 ### 硬停止条件
 
 出现以下任一情况必须停止并保留现场：
 
-- loss、grad norm、advantage、KL 或 entropy 出现 NaN/Inf；
+- 已启用的 loss、grad norm、advantage、return 或 KL 出现 NaN/Inf；
 - update 没有有限非零梯度；
 - CUDA OOM、invalid device ordinal、fused/unpadding shape mismatch；
 - Reward/environment/schema/hash 不符；
@@ -186,6 +188,8 @@ constant-group 比例、max-steps/overlong、response length、entropy 下降、
 - step 0 及每 50 steps 跑同一份完整 200-task/400-row validation。
 - DEV-500 只评测该完整 validation 选出的少量候选。
 - sealed Final-200 在 checkpoint 冻结后只运行一次。
+
+在线 checkpoint 排序的主指标是 `validation/selection/balanced_strict_success_rate`，即 gap 与 complete 两类 `reward/strict_mean` 的等权平均，避免样本行数或模式比例改变排序。必须同时查看 `validation/gap/reward/strict_mean`、`validation/complete/reward/strict_mean`、purchase/done/invalid rate、`validation/gap/trajectory/shopper_ask_rate` 与 `validation/complete/trajectory/shopper_ask_rate`；后者分别反映缺信息时是否提问和信息完整时是否多问。每次验证的逐样本 generation 与 Reward extra info 保存到 `<output>/validation`，因此已经完成的新版本 validation 可以离线重聚合，无需再次调用模型。
 
 保存频率 25 是故障恢复适配，不改变算法。500 steps 正常产生 step 25 至 step 500 共 20 份计划 checkpoint，全部保留。checkpoint 必须包含 model/LoRA、optimizer、scheduler、global step、dataloader 和 RNG；恢复后 global step 必须连续。
 
