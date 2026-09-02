@@ -183,6 +183,98 @@ class RewardGroupSelectionTest(unittest.TestCase):
         self.assertEqual(invalid, [True])
         self.assertEqual(reasons, [("reward_unverifiable",)])
 
+    def test_rejection_pathology_drops_its_whole_group_without_changing_reward_validity(self):
+        infos = []
+        for rejection_count in (0, 3, 0, 0, 0, 0, 0, 0):
+            infos.append(
+                {
+                    "shopper_rejections": rejection_count,
+                    "infrastructure_invalid": False,
+                    "reward_unverifiable": False,
+                    "reward_valid": True,
+                    "reward": {
+                        "terminal_utility": 1.0 if len(infos) % 2 else 0.0,
+                        "purchase_success": bool(len(infos) % 2),
+                        "sampling_invalid": False,
+                    },
+                }
+            )
+        utilities, success, invalid, reasons = extract_shopping_group_signals(infos)
+        indices, stats = select_reward_varying_groups(
+            ["pathology"] * 4 + ["eligible"] * 4,
+            utilities,
+            terminal_utilities=utilities,
+            purchase_success=success,
+            sampling_invalid=invalid,
+            sampling_invalid_reasons=reasons,
+        )
+
+        self.assertEqual(indices, [4, 5, 6, 7])
+        self.assertEqual(reasons[1], ("shopper_rejections_gte_3",))
+        self.assertEqual(stats["sampling_invalid_group_count"], 1)
+        self.assertEqual(stats["infrastructure_invalid_group_count"], 0)
+        self.assertEqual(
+            stats["sampling_invalid_reason_counts"]["shopper_rejections_gte_3"],
+            1,
+        )
+        self.assertTrue(all(info["reward_valid"] for info in infos))
+        self.assertTrue(
+            all(not info["reward"]["sampling_invalid"] for info in infos)
+        )
+
+    def test_validation_metrics_report_pathology_without_filtering_it(self):
+        def info(mode, strict, rejection_count):
+            return {
+                "interaction_mode": mode,
+                "steps": 1,
+                "done": True,
+                "termination_reason": "gold_purchase" if strict else "wrong_purchase",
+                "infrastructure_invalid": False,
+                "reward_unverifiable": False,
+                "shopper_questions": 0,
+                "shopper_rejections": rejection_count,
+                "reward": {
+                    "full": float(strict),
+                    "strict": float(strict),
+                    "native": float(strict),
+                    "semantic": float(strict),
+                    "total": float(strict),
+                    "efficiency": 0.0,
+                    "penalty_overlong": 0.0,
+                    "penalty_unfinished": 0.0,
+                    "penalty_repeat": 0.0,
+                    "repeat_action_rate": 0.0,
+                    "terminal_utility": float(strict),
+                    "purchase_success": float(strict),
+                    "sampling_invalid": False,
+                    "r_type": float(strict),
+                    "r_att": float(strict),
+                    "r_option": float(strict),
+                    "r_price": float(strict),
+                },
+            }
+
+        from shopping_grpo.training.grpo.dynamic_sampling import (
+            aggregate_validation_shopping_metrics,
+        )
+
+        metrics = aggregate_validation_shopping_metrics(
+            [info("gap", True, 3), info("complete", False, 0)]
+        )
+
+        self.assertEqual(metrics["validation/gap/reward/strict_mean"], 1.0)
+        self.assertEqual(metrics["validation/gap/trajectory/count"], 1.0)
+        self.assertEqual(
+            metrics["validation/gap/policy_pathology/trajectory_rate"], 1.0
+        )
+        self.assertEqual(metrics["validation/gap/trajectory/gap_rate"], 1.0)
+        self.assertEqual(
+            metrics["validation/complete/trajectory/complete_rate"], 1.0
+        )
+        self.assertEqual(
+            metrics["validation/selection/balanced_strict_success_rate"], 0.5
+        )
+
     def test_missing_shopping_filter_signal_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "shopping"):
             extract_shopping_group_signals([None])

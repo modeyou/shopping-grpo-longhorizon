@@ -8,6 +8,8 @@ from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from shopping_grpo.training.grpo.optimizer_eligibility import classify_policy_pathology
+
 
 def build_rollout_diagnostics(
     uids: Sequence[Hashable], shopping_infos: Sequence[object]
@@ -95,6 +97,8 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
     partial_purchase = []
     shopper_questions = []
     shopper_rejections = []
+    policy_pathologies = []
+    interaction_modes = []
     guard_rejections = []
     observation_truncated = []
     context_compactions = []
@@ -154,7 +158,11 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
             float(info.get("reward_type") == "partial_alternative_purchase")
         )
         shopper_questions.append(float(info.get("shopper_questions", 0)))
-        shopper_rejections.append(float(info.get("shopper_rejections", 0)))
+        rejection_count = info.get("shopper_rejections", 0)
+        pathology = classify_policy_pathology(rejection_count)
+        shopper_rejections.append(float(rejection_count))
+        policy_pathologies.append(float(pathology["policy_pathology"]))
+        interaction_modes.append(str(info.get("interaction_mode", "other")))
         guard_rejections.append(float(info.get("guard_rejections", 0)))
         observation_truncated.append(
             float(bool(info.get("observation_any_truncated")))
@@ -204,6 +212,33 @@ def aggregate_shopping_metrics(shopping_infos: Sequence[object]) -> dict[str, fl
             [float(value > 0) for value in shopper_questions]
         ),
         "trajectory/shopper_rejection_mean": mean(shopper_rejections),
+        "trajectory/gap_count": float(interaction_modes.count("gap")),
+        "trajectory/gap_rate": mean(
+            [float(mode == "gap") for mode in interaction_modes]
+        ),
+        "trajectory/complete_count": float(interaction_modes.count("complete")),
+        "trajectory/complete_rate": mean(
+            [float(mode == "complete") for mode in interaction_modes]
+        ),
+        "policy_pathology/trajectory_count": sum(policy_pathologies),
+        "policy_pathology/trajectory_rate": mean(policy_pathologies),
+        "policy_pathology/shopper_rejections_total": sum(
+            rejection_count
+            for rejection_count, pathology in zip(
+                shopper_rejections, policy_pathologies, strict=True
+            )
+            if pathology
+        ),
+        "policy_pathology/shopper_rejections_max": max(
+            (
+                rejection_count
+                for rejection_count, pathology in zip(
+                    shopper_rejections, policy_pathologies, strict=True
+                )
+                if pathology
+            ),
+            default=0.0,
+        ),
         "trajectory/guard_rejection_mean": mean(guard_rejections),
         "trajectory/observation_truncated_rate": mean(observation_truncated),
         "trajectory/context_compaction_mean": mean(context_compactions),
@@ -245,7 +280,7 @@ def augment_training_monitor_metrics(metrics):
         'actor/pg_clipfrac': 'optimization/pg_clipfrac',
         'actor/pg_clipfrac_lower': 'optimization/pg_clipfrac_lower',
         'actor/ppo_kl': 'optimization/ppo_kl',
-        'actor/entropy': 'optimization/entropy',
+        'actor/entropy_loss': 'optimization/entropy',
         'critic/advantages/mean': 'optimization/advantage_mean',
         'critic/advantages/min': 'optimization/advantage_min',
         'critic/advantages/max': 'optimization/advantage_max',
@@ -276,7 +311,7 @@ def augment_training_monitor_metrics(metrics):
             sum(key in monitored for key in required) / len(required)
         ),
         'monitor/observed_metrics_all_finite': float(all(finite)),
-        'monitor/entropy_available': float('actor/entropy' in monitored),
+        'monitor/entropy_available': float('actor/entropy_loss' in monitored),
     }
 
 
@@ -317,6 +352,10 @@ def extract_shopping_group_signals(
             reasons.append("reward_unverifiable")
         if bool(info.get("overlong")):
             reasons.append("overlong")
+        rejection_count = info.get("shopper_rejections", 0)
+        pathology = classify_policy_pathology(rejection_count)
+        if pathology["policy_pathology"]:
+            reasons.append(str(pathology["policy_pathology_reason"]))
         reward_sampling_invalid = bool(
             info["reward"].get("sampling_invalid", False)
         )
@@ -509,9 +548,9 @@ def select_reward_varying_groups(
                 }
             )
         },
-        # Compatibility aliases for existing monitoring code.
         "infrastructure_invalid_group_count": sum(
-            group["sampling_invalid"] for group in groups
+            "infrastructure_invalid" in group["sampling_invalid_reasons"]
+            for group in groups
         ),
         "groups": tuple(groups),
     }

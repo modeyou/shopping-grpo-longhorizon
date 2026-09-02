@@ -56,7 +56,103 @@ class PublicEntrypointTest(unittest.TestCase):
             self.assertEqual(summary["health_audited_optimizer_steps"], 1)
             self.assertEqual(summary["non_finite_optimizer_steps"], 0)
             self.assertEqual(summary["max_global_step"], 25)
+            self.assertEqual(summary["optimizer_policy_pathology_trajectories"], 0)
             self.assertEqual(_complete_checkpoint_steps(output), [25])
+
+    def test_completion_audit_counts_raw_pathologies_and_optimizer_leaks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            diagnostics = Path(directory) / "training_diagnostics.jsonl"
+            records = [
+                {
+                    "event": "generation_batch",
+                    "global_step": 1,
+                    "groups": [
+                        {
+                            "uid": "bad",
+                            "kept": False,
+                            "drop_reason": "sampling_invalid",
+                            "sampling_invalid_reasons": [
+                                "shopper_rejections_gte_3"
+                            ],
+                        },
+                        {
+                            "uid": "good",
+                            "kept": True,
+                            "drop_reason": None,
+                            "sampling_invalid_reasons": [],
+                        },
+                    ],
+                    "rollouts": [
+                        {
+                            "uid": "bad",
+                            "interaction_mode": "gap",
+                            "policy_pathology": True,
+                            "policy_pathology_reason": "shopper_rejections_gte_3",
+                            "shopper_rejections": 35,
+                        },
+                        {
+                            "uid": "bad",
+                            "interaction_mode": "gap",
+                            "policy_pathology": False,
+                            "policy_pathology_reason": None,
+                            "shopper_rejections": 0,
+                        },
+                        {
+                            "uid": "good",
+                            "interaction_mode": "complete",
+                            "policy_pathology": False,
+                            "policy_pathology_reason": None,
+                            "shopper_rejections": 0,
+                        },
+                    ],
+                },
+                {
+                    "event": "optimizer_step",
+                    "global_step": 1,
+                    "metrics": {"training/optimizer_updated": 1},
+                    "rollouts": [
+                        {
+                            "uid": "leak",
+                            "interaction_mode": "gap",
+                            "policy_pathology": True,
+                            "policy_pathology_reason": "shopper_rejections_gte_3",
+                            "shopper_rejections": 3,
+                        }
+                    ],
+                },
+            ]
+            diagnostics.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+
+            summary = _diagnostic_summary(diagnostics)
+
+        self.assertEqual(summary["generated_trajectories"], 3)
+        self.assertEqual(summary["generated_groups"], 2)
+        self.assertEqual(
+            summary["generated_group_mode_counts"],
+            {"gap": 1, "complete": 1, "other": 0},
+        )
+        self.assertEqual(
+            summary["optimizer_group_mode_counts"],
+            {"gap": 1, "complete": 0, "other": 0},
+        )
+        self.assertEqual(summary["policy_pathology_trajectories"], 1)
+        self.assertEqual(summary["policy_pathology_groups"], 1)
+        self.assertEqual(
+            summary["policy_pathology_group_mode_counts"],
+            {"gap": 1, "complete": 0, "other": 0},
+        )
+        self.assertEqual(summary["policy_pathology_group_rate"], 0.5)
+        self.assertEqual(summary["policy_pathology_dropped_groups"], 1)
+        self.assertEqual(summary["policy_pathology_groups_not_dropped"], 0)
+        self.assertEqual(
+            summary["policy_pathology_shopper_rejections_total"], 35
+        )
+        self.assertEqual(summary["policy_pathology_shopper_rejections_max"], 35)
+        self.assertEqual(summary["optimizer_policy_pathology_trajectories"], 1)
+        self.assertEqual(summary["policy_pathology_diagnostic_mismatches"], 0)
 
     def test_latest_checkpoint_requires_tracker_and_nonempty_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -188,6 +284,15 @@ class PublicEntrypointTest(unittest.TestCase):
             model.mkdir()
             (model / "config.json").write_text("{}", encoding="utf-8")
             (model / "model.safetensors").write_bytes(b"weights")
+            (model / "merge_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "adapter": "sft-checkpoint-sweep/checkpoint-200",
+                        "base_model": "Qwen3.5-2B",
+                    }
+                ),
+                encoding="utf-8",
+            )
             files = {}
             for name in (
                 "train.parquet",
@@ -254,10 +359,29 @@ class PublicEntrypointTest(unittest.TestCase):
             contract["runtime_contract"]["environment_concurrency_per_worker"], 2
         )
         self.assertEqual(contract["runtime_contract"]["expected_shopsim_slots"], 20)
+        self.assertEqual(
+            contract["runtime_contract"]["optimizer_eligibility"],
+            {
+                "shopper_rejection_exclusion_threshold": 3,
+                "shopper_rejection_exclusion_reason": "shopper_rejections_gte_3",
+                "scope": "training_only_whole_prompt_group",
+                "changes_reward": False,
+                "changes_environment_validity": False,
+            },
+        )
         self.assertIn("sha256", contract["inputs"]["train_data"])
         self.assertIn("sha256", contract["inputs"]["data_manifest"])
-        self.assertEqual(len(contract["inputs"]["model_artifacts"]), 1)
-        self.assertIn("sha256", contract["inputs"]["model_artifacts"][0])
+        self.assertEqual(len(contract["inputs"]["model_artifacts"]), 2)
+        self.assertEqual(
+            {
+                Path(artifact["path"]).name
+                for artifact in contract["inputs"]["model_artifacts"]
+            },
+            {"model.safetensors", "merge_manifest.json"},
+        )
+        self.assertTrue(
+            all("sha256" in artifact for artifact in contract["inputs"]["model_artifacts"])
+        )
         self.assertNotIn("must-not-be-written", json.dumps(contract))
 
     def test_grpo_preflight_only_never_launches_training(self):

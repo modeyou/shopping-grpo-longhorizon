@@ -27,6 +27,7 @@ from shopping_grpo.training.grpo.adapter.runtime import (
 )
 from shopping_grpo.training.grpo.adapter.session import ShopSimulatorSession
 from shopping_grpo.training.grpo.adapter.shopper import clarified_constraints_block
+from shopping_grpo.training.grpo.optimizer_eligibility import classify_policy_pathology
 
 
 class ShoppingToolAgentLoop(ToolAgentLoop):
@@ -370,13 +371,16 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
                 if self.reward_mode == "constraint_aware"
                 else terminal_reward(state, mode=self.reward_mode)
             )
+            shopper_rejections = int(state.get("shopper_rejection_count", 0))
+            pathology = classify_policy_pathology(shopper_rejections)
             output.extra_fields["shopping"] = {
                 "task_id": task_id,
                 "harness_version": state["harness_version"],
                 "steps": len(state["steps"]),
                 "interaction_mode": state.get("interaction_mode", "single"),
                 "shopper_questions": int(state.get("shopper_question_count", 0)),
-                "shopper_rejections": int(state.get("shopper_rejection_count", 0)),
+                "shopper_rejections": shopper_rejections,
+                **pathology,
                 "shopper_dialogue": list(state.get("shopper_questions") or []),
                 "actions": [
                     {"tool": step["tool"], "parameters": step["parameters"]}

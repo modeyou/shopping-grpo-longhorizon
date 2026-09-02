@@ -89,6 +89,7 @@ class GrpoAblationTest(unittest.TestCase):
             "save_freq: 25",
             "test_freq: 50",
             "logger: [console, swanlab]",
+            "project_name: shopping-multiturn-grpo-sft200",
             "n_gpus_per_node: 4",
         ):
             self.assertIn(line, config)
@@ -347,15 +348,17 @@ class GrpoAblationTest(unittest.TestCase):
         source = {
             "actor/pg_loss": 0.2, "actor/grad_norm": 0.5, "actor/lr": 1e-6,
             "actor/pg_clipfrac": 0.1, "actor/pg_clipfrac_lower": 0.0,
-            "actor/ppo_kl": 0.01, "critic/advantages/mean": 0.0,
+            "actor/ppo_kl": 0.01, "actor/entropy_loss": 0.07,
+            "critic/advantages/mean": 0.0,
             "critic/advantages/min": -1.0, "critic/advantages/max": 1.0,
         }
         metrics = augment_training_monitor_metrics(source)
         self.assertEqual(metrics["optimization/pg_loss"], 0.2)
         self.assertEqual(metrics["optimization/grad_norm"], 0.5)
+        self.assertEqual(metrics["optimization/entropy"], 0.07)
         self.assertEqual(metrics["monitor/critical_metric_present_ratio"], 1.0)
         self.assertEqual(metrics["monitor/observed_metrics_all_finite"], 1.0)
-        self.assertEqual(metrics["monitor/entropy_available"], 0.0)
+        self.assertEqual(metrics["monitor/entropy_available"], 1.0)
 
 
 if __name__ == "__main__":

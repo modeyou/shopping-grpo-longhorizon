@@ -87,6 +87,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
                         }
                     ],
                     "guard_rejection_reason_counts": {"asin_not_visible": 2},
+                    "shopper_rejection_count": 3,
                 }
             )
             return AgentLoopOutput(
@@ -138,6 +139,18 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
         self.assertEqual(
             output.extra_fields["shopping"]["guard_rejection_reasons"],
             {"asin_not_visible": 2},
+        )
+        self.assertTrue(output.extra_fields["shopping"]["policy_pathology"])
+        self.assertEqual(
+            output.extra_fields["shopping"]["policy_pathology_reason"],
+            "shopper_rejections_gte_3",
+        )
+        self.assertTrue(output.extra_fields["shopping"]["reward_valid"])
+        self.assertFalse(
+            output.extra_fields["shopping"]["infrastructure_invalid"]
+        )
+        self.assertFalse(
+            output.extra_fields["shopping"]["reward"]["sampling_invalid"]
         )
         self.assertTrue(created[0].released)
 

@@ -220,6 +220,10 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
             extract_shopping_group_signals,
             select_reward_varying_groups,
         )
+        from shopping_grpo.training.grpo.optimizer_eligibility import (
+            SHOPPER_REJECTION_EXCLUSION_REASON,
+            SHOPPER_REJECTION_EXCLUSION_THRESHOLD,
+        )
     except ImportError as exc:
         raise SystemExit(f"shopping dynamic sampling helper is unavailable: {exc}") from exc
     utility, success, invalid, reasons = extract_shopping_group_signals(
@@ -245,6 +249,44 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
     )
     if indices != [0, 1, 2, 3]:
         raise SystemExit("shopping dynamic sampling helper failed its import-time sanity check")
+
+    pathology_infos = [
+        {
+            "shopper_rejections": 3 if index == 1 else 0,
+            "infrastructure_invalid": False,
+            "reward": {
+                "terminal_utility": float(index % 2),
+                "purchase_success": bool(index % 2),
+                "sampling_invalid": False,
+            },
+        }
+        for index in range(8)
+    ]
+    utility, success, invalid, reasons = extract_shopping_group_signals(
+        pathology_infos
+    )
+    indices, pathology_stats = select_reward_varying_groups(
+        ["pathology"] * 4 + ["eligible"] * 4,
+        utility,
+        terminal_utilities=utility,
+        purchase_success=success,
+        sampling_invalid=invalid,
+        sampling_invalid_reasons=reasons,
+    )
+    if indices != [4, 5, 6, 7]:
+        raise SystemExit(
+            "shopping rejection pathology preflight did not drop the whole uid group"
+        )
+    if (
+        pathology_stats["sampling_invalid_reason_counts"].get(
+            SHOPPER_REJECTION_EXCLUSION_REASON
+        )
+        != 1
+        or pathology_stats["infrastructure_invalid_group_count"] != 0
+    ):
+        raise SystemExit(
+            "shopping rejection pathology preflight corrupted exclusion diagnostics"
+        )
 
     if dynamic_config.get("metric") != "seq_reward":
         raise SystemExit("shopping_dynamic_sampling.metric must be seq_reward")
@@ -273,6 +315,12 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
                     dynamic_config.max_consecutive_skipped_updates
                 ),
                 "reward_tolerance": reward_tolerance,
+                "shopper_rejection_exclusion_threshold": (
+                    SHOPPER_REJECTION_EXCLUSION_THRESHOLD
+                ),
+                "shopper_rejection_exclusion_reason": (
+                    SHOPPER_REJECTION_EXCLUSION_REASON
+                ),
                 "ray_trainer": str(ray_trainer),
                 "marker": PATCH_MARKER,
                 "sha256": actual_patch_sha256,
@@ -357,9 +405,10 @@ def validate_swanlab_tracking(config):
     if not log_dir:
         raise SystemExit("Reward v4 GRPO requires SWANLAB_LOG_DIR")
     resolved_log_dir = Path(log_dir).resolve()
-    if str(config.trainer.get("project_name")) != "shopping-multiturn-agentic":
+    if str(config.trainer.get("project_name")) != "shopping-multiturn-grpo-sft200":
         raise SystemExit(
-            "Reward v4 GRPO SwanLab project must be shopping-multiturn-agentic"
+            "SFT-200 Reward v4 GRPO SwanLab project must be "
+            "shopping-multiturn-grpo-sft200"
         )
     print(
         "SwanLab online preflight passed: "

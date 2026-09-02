@@ -1,4 +1,4 @@
-'''Frozen contracts for the single formal native Reward-v4 GRPO run.'''
+'''Frozen contracts for the SFT-200 restart native Reward-v4 GRPO run.'''
 
 from argparse import Namespace
 from pathlib import Path
@@ -32,6 +32,7 @@ def test_formal_launcher_freezes_one_500_update_native_run(tmp_path):
         'trainer.n_gpus_per_node=4', 'trainer.total_training_steps=500',
         'trainer.save_freq=25', 'trainer.test_freq=50',
         'trainer.val_before_train=true',
+        'trainer.project_name=shopping-multiturn-grpo-sft200',
         'actor_rollout_ref.model.use_remove_padding=true',
         'actor_rollout_ref.model.use_fused_kernels=true',
         'actor_rollout_ref.model.use_liger=true',
@@ -44,6 +45,16 @@ def test_formal_launcher_freezes_one_500_update_native_run(tmp_path):
     rendered = ' '.join(command)
     assert 'bounded-v1' not in rendered
     assert 'shopping_scheduler' not in rendered
+
+
+def test_formal_launcher_default_name_identifies_sft200_restart(tmp_path):
+    args = arguments(tmp_path)
+    args.experiment_name = None
+
+    command = build_command(args)
+    experiment_name = command[command.index('--experiment-name') + 1]
+
+    assert experiment_name.startswith('grpo-sft200-native-v4-500-s20260823-')
 
 
 def test_formal_resume_keeps_500_step_target(tmp_path):

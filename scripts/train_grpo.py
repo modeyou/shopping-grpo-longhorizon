@@ -383,6 +383,10 @@ def _patch_inventory() -> list[dict]:
 def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
     """Persist a secret-free, machine-verifiable GRPO launch contract."""
     from shopping_grpo.training.grpo.compat import parse_visible_cuda_devices
+    from shopping_grpo.training.grpo.optimizer_eligibility import (
+        SHOPPER_REJECTION_EXCLUSION_REASON,
+        SHOPPER_REJECTION_EXCLUSION_THRESHOLD,
+    )
 
     git_commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"],
@@ -466,6 +470,17 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
             ),
             "planned_checkpoint_steps": list(range(25, 501, 25)),
             "validation_steps": [0, *range(50, 501, 50)],
+            "optimizer_eligibility": {
+                "shopper_rejection_exclusion_threshold": (
+                    SHOPPER_REJECTION_EXCLUSION_THRESHOLD
+                ),
+                "shopper_rejection_exclusion_reason": (
+                    SHOPPER_REJECTION_EXCLUSION_REASON
+                ),
+                "scope": "training_only_whole_prompt_group",
+                "changes_reward": False,
+                "changes_environment_validity": False,
+            },
         },
         "inputs": {
             name: {
@@ -627,6 +642,11 @@ def _gpu_peak_summary(path: Path) -> dict:
 
 
 def _diagnostic_summary(path: Path) -> dict:
+    from shopping_grpo.training.grpo.optimizer_eligibility import (
+        SHOPPER_REJECTION_EXCLUSION_REASON,
+        classify_policy_pathology,
+    )
+
     summary = {
         'events': {},
         'optimizer_updates': 0,
@@ -634,6 +654,24 @@ def _diagnostic_summary(path: Path) -> dict:
         'non_finite_optimizer_steps': 0,
         'incomplete_critical_metric_steps': 0,
         'max_global_step': 0,
+        'generated_trajectories': 0,
+        'generated_groups': 0,
+        'generated_group_mode_counts': {'gap': 0, 'complete': 0, 'other': 0},
+        'optimizer_group_mode_counts': {'gap': 0, 'complete': 0, 'other': 0},
+        'policy_pathology_trajectories': 0,
+        'policy_pathology_groups': 0,
+        'policy_pathology_group_mode_counts': {
+            'gap': 0,
+            'complete': 0,
+            'other': 0,
+        },
+        'policy_pathology_group_rate': 0.0,
+        'policy_pathology_dropped_groups': 0,
+        'policy_pathology_groups_not_dropped': 0,
+        'policy_pathology_shopper_rejections_total': 0,
+        'policy_pathology_shopper_rejections_max': 0,
+        'policy_pathology_diagnostic_mismatches': 0,
+        'optimizer_policy_pathology_trajectories': 0,
     }
     if not path.is_file():
         return summary
@@ -648,16 +686,111 @@ def _diagnostic_summary(path: Path) -> dict:
             summary['max_global_step'], int(record.get('global_step', 0))
         )
         metrics = record.get('metrics') or {}
+        rollouts = record.get('rollouts') or []
+        if event == 'generation_batch':
+            groups = record.get('groups') or []
+            summary['generated_trajectories'] += len(rollouts)
+            summary['generated_groups'] += len(groups)
+            pathology_uids = set()
+            modes_by_uid = {}
+            for rollout in rollouts:
+                if not isinstance(rollout, dict):
+                    continue
+                uid = str(rollout.get('uid'))
+                mode = str(rollout.get('interaction_mode', 'other'))
+                normalized_mode = mode if mode in {'gap', 'complete'} else 'other'
+                previous_mode = modes_by_uid.setdefault(uid, normalized_mode)
+                if previous_mode != normalized_mode:
+                    summary['policy_pathology_diagnostic_mismatches'] += 1
+                try:
+                    pathology = classify_policy_pathology(
+                        rollout.get('shopper_rejections')
+                    )
+                except ValueError:
+                    summary['policy_pathology_diagnostic_mismatches'] += 1
+                    continue
+                if (
+                    rollout.get('policy_pathology')
+                    is not pathology['policy_pathology']
+                    or rollout.get('policy_pathology_reason')
+                    != pathology['policy_pathology_reason']
+                ):
+                    summary['policy_pathology_diagnostic_mismatches'] += 1
+                if not pathology['policy_pathology']:
+                    continue
+                summary['policy_pathology_trajectories'] += 1
+                pathology_uids.add(uid)
+                rejection_count = int(rollout.get('shopper_rejections', 0))
+                summary['policy_pathology_shopper_rejections_total'] += (
+                    rejection_count
+                )
+                summary['policy_pathology_shopper_rejections_max'] = max(
+                    summary['policy_pathology_shopper_rejections_max'],
+                    rejection_count,
+                )
+            summary['policy_pathology_groups'] += len(pathology_uids)
+            group_by_uid = {
+                str(group.get('uid')): group
+                for group in groups
+                if isinstance(group, dict)
+            }
+            for uid in group_by_uid:
+                mode = modes_by_uid.get(uid, 'other')
+                summary['generated_group_mode_counts'][mode] += 1
+            for uid in pathology_uids:
+                mode = modes_by_uid.get(uid, 'other')
+                summary['policy_pathology_group_mode_counts'][mode] += 1
+                group = group_by_uid.get(uid)
+                dropped = bool(
+                    group
+                    and group.get('drop_reason') == 'sampling_invalid'
+                    and not bool(group.get('kept'))
+                    and SHOPPER_REJECTION_EXCLUSION_REASON
+                    in (group.get('sampling_invalid_reasons') or [])
+                )
+                if dropped:
+                    summary['policy_pathology_dropped_groups'] += 1
+                else:
+                    summary['policy_pathology_groups_not_dropped'] += 1
         if event == 'optimizer_step' and int(
             metrics.get('training/optimizer_updated', 0)
         ) == 1:
             summary['optimizer_updates'] += 1
+            optimizer_modes_by_uid = {}
+            for rollout in rollouts:
+                if not isinstance(rollout, dict):
+                    continue
+                uid = str(rollout.get('uid'))
+                mode = str(rollout.get('interaction_mode', 'other'))
+                normalized_mode = mode if mode in {'gap', 'complete'} else 'other'
+                previous_mode = optimizer_modes_by_uid.setdefault(
+                    uid, normalized_mode
+                )
+                if previous_mode != normalized_mode:
+                    summary['policy_pathology_diagnostic_mismatches'] += 1
+                try:
+                    pathology = classify_policy_pathology(
+                        rollout.get('shopper_rejections')
+                    )
+                except ValueError:
+                    summary['policy_pathology_diagnostic_mismatches'] += 1
+                    continue
+                summary['optimizer_policy_pathology_trajectories'] += int(
+                    pathology['policy_pathology']
+                )
+            for mode in optimizer_modes_by_uid.values():
+                summary['optimizer_group_mode_counts'][mode] += 1
             if 'monitor/observed_metrics_all_finite' in metrics:
                 summary['health_audited_optimizer_steps'] += 1
                 if float(metrics['monitor/observed_metrics_all_finite']) != 1.0:
                     summary['non_finite_optimizer_steps'] += 1
                 if float(metrics.get('monitor/critical_metric_present_ratio', 0)) != 1.0:
                     summary['incomplete_critical_metric_steps'] += 1
+    summary['policy_pathology_group_rate'] = (
+        summary['policy_pathology_groups'] / summary['generated_groups']
+        if summary['generated_groups']
+        else 0.0
+    )
     return summary
 
 
@@ -733,6 +866,9 @@ def run_supervised(command, environment, output: Path, interval_seconds=30) -> i
         and diagnostics['health_audited_optimizer_steps'] == 500
         and diagnostics['non_finite_optimizer_steps'] == 0
         and diagnostics['incomplete_critical_metric_steps'] == 0
+        and diagnostics['optimizer_policy_pathology_trajectories'] == 0
+        and diagnostics['policy_pathology_groups_not_dropped'] == 0
+        and diagnostics['policy_pathology_diagnostic_mismatches'] == 0
         and checkpoint_steps == expected_checkpoint_steps
     )
     if exit_code == 0 and not completion_valid:

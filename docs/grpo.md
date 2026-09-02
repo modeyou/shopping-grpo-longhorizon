@@ -1,5 +1,7 @@
 # GRPO 正式长训练方案
 
+> 历史方案说明：本文记录以 SFT checkpoint-325 为起点的旧正式 run。新的 SFT checkpoint-200 重启方案及实现验收以 `docs/grpo-sft200-restart-improvement-plan.md` 为准；旧 run 的配置与结论不得被回写覆盖。
+
 数据身份规则见 `docs/data-layout.md`。本文定义当前多轮购物项目唯一支持的强化学习阶段：ShopSimulator Environment v2.1、Reward v4、observation v2、tool schema v2。sealed Final-200 不得用于 reward、checkpoint 或超参数选择。
 
 ## 已冻结决策

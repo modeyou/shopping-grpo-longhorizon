@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Launch the single frozen 500-update native Reward-v4 GRPO run.'''
+'''Launch the SFT-200 restart 500-update native Reward-v4 GRPO run.'''
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TRAIN = ROOT / 'data/grpo/formal-v2/multiturn-train.parquet'
 VALIDATION = ROOT / 'data/grpo/formal-v2/multiturn-validation.parquet'
 MANIFEST = ROOT / 'data/grpo/formal-v2/manifest.json'
-PROJECT = 'shopping-multiturn-agentic'
+PROJECT = 'shopping-multiturn-grpo-sft200'
 TOTAL_UPDATES = 500
 
 
@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
 def build_command(args: argparse.Namespace) -> list[str]:
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     experiment_name = (
-        args.experiment_name or f'grpo-native-v4-500-s{args.seed}-{stamp}'
+        args.experiment_name or f'grpo-sft200-native-v4-500-s{args.seed}-{stamp}'
     )
     command = [
         sys.executable,

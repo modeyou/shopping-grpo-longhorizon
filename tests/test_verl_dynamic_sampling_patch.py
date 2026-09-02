@@ -147,6 +147,10 @@ class VerlPatchScriptTest(unittest.TestCase):
             self.assertIn("extract_shopping_group_signals", fit_source)
             self.assertIn("aggregate_shopping_metrics", fit_source)
             self.assertIn("augment_training_monitor_metrics", fit_source)
+            self.assertLess(
+                fit_source.index("augment_training_monitor_metrics(metrics)"),
+                fit_source.index("logger.log(data=metrics, step=current_step)"),
+            )
             self.assertIn("terminal_utilities=terminal_utilities", fit_source)
             self.assertIn("sampling_invalid=sampling_invalid", fit_source)
             self.assertIn('"drop_reason": group["drop_reason"]', fit_source)
@@ -204,6 +208,8 @@ class VerlPatchScriptTest(unittest.TestCase):
                 "aggregate_validation_shopping_metrics(sample_shopping)",
                 validate_source,
             )
+            self.assertNotIn("extract_shopping_group_signals", validate_source)
+            self.assertNotIn("select_reward_varying_groups", validate_source)
 
     def test_select_and_concat_keep_all_trajectory_fields_aligned(self):
         def make_batch(offset: int, uid_prefix: str) -> DataProto:
