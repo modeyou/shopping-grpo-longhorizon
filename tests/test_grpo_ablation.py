@@ -71,6 +71,27 @@ class GrpoAblationTest(unittest.TestCase):
         decoded_seed = "${oc.decode:${oc.env:GRPO_SEED,20260823}}"
         self.assertEqual(config.count(decoded_seed), 2)
 
+    def test_grpo_yaml_freezes_formal_native_500_contract(self):
+        config = (
+            Path(__file__).resolve().parents[1] / "configs" / "grpo.yaml"
+        ).read_text(encoding="utf-8")
+        for line in (
+            "use_remove_padding: true",
+            "use_fused_kernels: true",
+            "use_liger: true",
+            "impl_backend: torch",
+            "lr_warmup_steps: -1",
+            "lr_warmup_steps_ratio: 0.03",
+            "lr_scheduler_type: constant",
+            "total_training_steps: 500",
+            "save_freq: 25",
+            "test_freq: 50",
+            "logger: [console, swanlab]",
+            "n_gpus_per_node: 4",
+        ):
+            self.assertIn(line, config)
+        self.assertNotIn("shopping_scheduler:", config)
+
     def test_ppo_mini_and_micro_batches_define_gradient_accumulation(self):
         self.assertEqual(ppo_gradient_accumulation_steps(4, 2), 2)
         with self.assertRaisesRegex(ValueError, "divisible"):
@@ -209,7 +230,7 @@ class GrpoAblationTest(unittest.TestCase):
             },
             clear=False,
         ):
-            with self.assertRaisesRegex(SystemExit, "cannot be combined"):
+            with self.assertRaisesRegex(SystemExit, "only native Reward v4"):
                 validate_reward_shaping_profile()
 
     def test_disabled_length_shaping_is_a_no_op(self):

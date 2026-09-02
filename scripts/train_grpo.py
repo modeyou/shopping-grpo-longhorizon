@@ -6,10 +6,14 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+from importlib.metadata import PackageNotFoundError, version
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from shopping_grpo.training.grpo.data_manifest import validate_grpo_data_manifest
@@ -65,9 +69,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--logger",
         choices=("console", "swanlab"),
-        default="console",
+        default="swanlab",
     )
     parser.add_argument("--experiment-name", default="shopping-agent-grpo")
+    parser.add_argument("--require-clean-git", action="store_true")
     parser.add_argument(
         "--seed",
         type=int,
@@ -75,16 +80,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--reward-profile",
-        choices=("none", "bounded-v1"),
-        default=os.environ.get("SHOPPING_REWARD_SHAPING_PROFILE", "none"),
-        help="training-only reward profile; Reward v4 itself is never changed",
+        choices=("none",),
+        default="none",
+        help="native Reward v4; shaping profiles are not supported",
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument(
         "--data-manifest",
         type=Path,
         default=DEFAULT_DATA_MANIFEST,
-        help="已验收的 Reward v4 GRPO 数据 manifest",
+        help="accepted formal Reward-v4 GRPO data manifest",
     )
     execution = parser.add_mutually_exclusive_group()
     execution.add_argument(
@@ -137,6 +142,13 @@ def _hydra_overrides(args: argparse.Namespace) -> list[str]:
 
 def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     validate_launcher_owned_ray()
+    if args.require_clean_git and not args.dry_run:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=ROOT,
+        )
+        if status:
+            raise SystemExit("formal GRPO requires a clean Git worktree")
     model = _validated_path(args.model, "model directory")
     if not model.is_dir() or not (model / "config.json").is_file():
         raise SystemExit(f"model directory is missing config.json: {model}")
@@ -182,7 +194,11 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
             raise SystemExit(f"output must be a directory: {output}")
         if any(output.iterdir()) and resume_checkpoint is None:
             raise SystemExit(f"output directory must be new or empty: {output}")
-    if args.logger == "swanlab" and not os.environ.get("SWANLAB_API_KEY"):
+    if (
+        args.logger == "swanlab"
+        and not os.environ.get("SWANLAB_API_KEY")
+        and not args.dry_run
+    ):
         raise SystemExit("--logger swanlab requires SWANLAB_API_KEY")
     shopper_api_key = os.environ.get("SHOPPER_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if (not args.shopper_base_url or not shopper_api_key) and not args.dry_run:
@@ -220,6 +236,7 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
             "SHOPPING_TOOL_CONFIG": str(DEFAULT_TOOL_CONFIG),
             "GRPO_CONFIG_NAME": config.stem,
             "GRPO_RESUME_FROM_CHECKPOINT": str(resume_checkpoint or ""),
+            "SHOPPING_GRPO_ENV_ROLE": "formal-grpo-v1",
         }
     )
     if args.logger == "swanlab":
@@ -276,6 +293,74 @@ def _model_artifact_paths(model: Path) -> list[Path]:
     return paths
 
 
+def _runtime_inventory(environment: dict[str, str]) -> dict:
+    packages = {}
+    for name in (
+        'torch', 'transformers', 'verl', 'vllm', 'ray',
+        'liger_kernel', 'swanlab', 'numpy', 'tensordict',
+    ):
+        try:
+            packages[name] = version(name)
+        except PackageNotFoundError:
+            packages[name] = None
+    try:
+        driver = subprocess.run(
+            ['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+        driver_versions = sorted(set(driver.stdout.split())) if driver.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        driver_versions = []
+    return {
+        'python': sys.version,
+        'python_executable': sys.executable,
+        'python_prefix': sys.prefix,
+        'packages': packages,
+        'nvidia_driver_versions': driver_versions,
+    }
+
+
+def _patch_inventory() -> list[dict]:
+    import verl
+
+    verl_root = Path(verl.__file__).resolve().parent
+    specifications = (
+        (
+            'dynamic-sampling-v4',
+            verl_root / 'trainer/ppo/ray_trainer.py',
+            'SHOPPING_GRPO_DYNAMIC_SAMPLING_PATCH_V4',
+            '.shopping-grpo-dynamic-sampling.orig',
+        ),
+        (
+            'fused-ppo-input-gradient-v1',
+            verl_root / 'utils/experimental/torch_functional.py',
+            'SHOPPING_GRPO_FUSED_PPO_NEEDS_INPUT_GRAD_PATCH_V1',
+            '.shopping-grpo-fused-grad.orig',
+        ),
+    )
+    inventory = []
+    for name, target, marker, backup_suffix in specifications:
+        backup = Path(str(target) + backup_suffix)
+        source = target.read_text(encoding='utf-8')
+        inventory.append(
+            {
+                'name': name,
+                'target': str(target),
+                'patched_sha256': _sha256_file(target),
+                'marker': marker,
+                'marker_count': source.count(marker),
+                'original_backup': str(backup),
+                'original_sha256': _sha256_file(backup) if backup.is_file() else None,
+            }
+        )
+    return inventory
+
+
 def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
     """Persist a secret-free, machine-verifiable GRPO launch contract."""
     from shopping_grpo.training.grpo.compat import parse_visible_cuda_devices
@@ -323,6 +408,8 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
             "dirty": bool(git_status),
             "diff_sha256": hashlib.sha256(git_diff).hexdigest(),
         },
+        "runtime_inventory": _runtime_inventory(environment),
+        "patches": _patch_inventory(),
         "launch": audit,
         "runtime_contract": {
             "environment_version": environment["SHOPPING_ENVIRONMENT_VERSION"],
@@ -338,6 +425,16 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
             )
             == "1",
             "ray_launcher_owned": not bool(environment.get("RAY_ADDRESS", "").strip()),
+            "python_executable": sys.executable,
+            "python_prefix": sys.prefix,
+            "environment_role": environment.get("SHOPPING_GRPO_ENV_ROLE"),
+            "swanlab_mode": environment.get("SWANLAB_MODE"),
+            "swanlab_log_dir": environment.get("SWANLAB_LOG_DIR"),
+            "gpu_telemetry": str(
+                (Path(environment["GRPO_OUTPUT_DIR"]) / "gpu_telemetry.csv").resolve()
+            ),
+            "planned_checkpoint_steps": list(range(25, 501, 25)),
+            "validation_steps": [0, *range(50, 501, 50)],
         },
         "inputs": {
             name: {
@@ -368,6 +465,251 @@ def write_run_contract(audit: dict, environment: dict[str, str]) -> Path:
         encoding="utf-8",
     )
     return destination
+
+
+def _atomic_json(path: Path, payload: dict) -> None:
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
+        encoding='utf-8',
+    )
+    temporary.replace(path)
+
+
+def refresh_latest_checkpoint(output: Path) -> dict | None:
+    '''Publish a pointer only when veRL's tracker and checkpoint agree.'''
+    tracker = output / 'latest_checkpointed_iteration.txt'
+    if not tracker.is_file():
+        return None
+    raw_step = tracker.read_text(encoding='utf-8').strip()
+    if not re.fullmatch(r'[0-9]+', raw_step):
+        return None
+    step = int(raw_step)
+    checkpoint = output / f'global_step_{step}'
+    actor = checkpoint / 'actor'
+    if (
+        not checkpoint.is_dir()
+        or not actor.is_dir()
+        or not any(path.is_file() for path in actor.rglob('*'))
+    ):
+        return None
+    payload = {
+        'schema_version': 'shopping-grpo-latest-checkpoint-v1',
+        'step': step,
+        'path': str(checkpoint.resolve()),
+        'tracker': str(tracker.resolve()),
+        'observed_at': datetime.now(timezone.utc).isoformat(),
+    }
+    _atomic_json(output / 'latest_checkpoint.json', payload)
+    return payload
+
+
+def sample_gpu_telemetry(output: Path, environment: dict[str, str]) -> None:
+    '''Append one physical-GPU sample without logging secrets.'''
+    query = (
+        'index,uuid,memory.used,memory.total,utilization.gpu,'
+        'temperature.gpu,power.draw'
+    )
+    result = subprocess.run(
+        [
+            'nvidia-smi',
+            f'--query-gpu={query}',
+            '--format=csv,noheader,nounits',
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(f'nvidia-smi telemetry failed: {result.stderr.strip()}')
+    path = output / 'gpu_telemetry.csv'
+    if not path.exists():
+        path.write_text(
+            'observed_at,index,uuid,memory_used_mib,memory_total_mib,'
+            'utilization_gpu_pct,temperature_c,power_draw_w\n',
+            encoding='utf-8',
+        )
+    observed_at = datetime.now(timezone.utc).isoformat()
+    with path.open('a', encoding='utf-8') as handle:
+        for row in result.stdout.splitlines():
+            if row.strip():
+                handle.write(f'{observed_at},{row}\n')
+
+
+def _tee_process_output(process, log_path: Path) -> None:
+    with log_path.open('a', encoding='utf-8') as log:
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            log.write(line)
+            log.flush()
+
+
+def _first_failure_marker(log_path: Path) -> str | None:
+    markers = (
+        'Traceback (most recent call last)', 'CUDA out of memory',
+        'RuntimeError:', 'Error executing job', 'RayTaskError',
+    )
+    if not log_path.is_file():
+        return None
+    for line in log_path.read_text(encoding='utf-8', errors='replace').splitlines():
+        if any(marker in line for marker in markers):
+            return line.strip()
+    return None
+
+
+def _swanlab_urls(log_path: Path) -> list[str]:
+    if not log_path.is_file():
+        return []
+    source = log_path.read_text(encoding='utf-8', errors='replace')
+    return sorted(set(re.findall(r'https://swanlab\.cn/[^\s\]\)]+', source)))
+
+
+def _gpu_peak_summary(path: Path) -> dict:
+    peaks = {}
+    if not path.is_file():
+        return peaks
+    lines = path.read_text(encoding='utf-8').splitlines()[1:]
+    for line in lines:
+        columns = [value.strip() for value in line.split(',')]
+        if len(columns) != 8:
+            continue
+        index = columns[1]
+        try:
+            numeric = [float(value) for value in columns[3:]]
+        except ValueError:
+            continue
+        current = peaks.setdefault(
+            index,
+            {'memory_used_mib': 0.0, 'memory_total_mib': numeric[1],
+             'utilization_gpu_pct': 0.0, 'temperature_c': 0.0, 'power_draw_w': 0.0},
+        )
+        for key, value in zip(
+            ('memory_used_mib', 'memory_total_mib', 'utilization_gpu_pct', 'temperature_c', 'power_draw_w'),
+            numeric,
+        ):
+            current[key] = max(current[key], value)
+    return peaks
+
+
+def _diagnostic_summary(path: Path) -> dict:
+    summary = {'events': {}, 'optimizer_updates': 0, 'max_global_step': 0}
+    if not path.is_file():
+        return summary
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event = str(record.get('event', 'unknown'))
+        summary['events'][event] = summary['events'].get(event, 0) + 1
+        summary['max_global_step'] = max(
+            summary['max_global_step'], int(record.get('global_step', 0))
+        )
+        if event == 'optimizer_step' and int(
+            (record.get('metrics') or {}).get('training/optimizer_updated', 0)
+        ) == 1:
+            summary['optimizer_updates'] += 1
+    return summary
+
+
+def _complete_checkpoint_steps(output: Path) -> list[int]:
+    steps = []
+    for checkpoint in output.glob('global_step_*'):
+        match = re.fullmatch(r'global_step_([0-9]+)', checkpoint.name)
+        actor = checkpoint / 'actor'
+        if (
+            match
+            and actor.is_dir()
+            and any(path.is_file() for path in actor.rglob('*'))
+        ):
+            steps.append(int(match.group(1)))
+    return sorted(steps)
+
+
+def _raise_keyboard_interrupt(_signum, _frame):
+    raise KeyboardInterrupt
+
+
+def run_supervised(command, environment, output: Path, interval_seconds=30) -> int:
+    '''Run veRL while retaining GPU telemetry and the latest complete checkpoint.'''
+    training_log = output / 'training.log'
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    output_thread = threading.Thread(
+        target=_tee_process_output,
+        args=(process, training_log),
+        daemon=True,
+    )
+    output_thread.start()
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    started_at = datetime.now(timezone.utc)
+    telemetry_error = None
+    interrupted = False
+    try:
+        while process.poll() is None:
+            try:
+                sample_gpu_telemetry(output, environment)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                telemetry_error = f'{type(exc).__name__}: {exc}'
+            refresh_latest_checkpoint(output)
+            try:
+                process.wait(timeout=interval_seconds)
+            except subprocess.TimeoutExpired:
+                pass
+    except KeyboardInterrupt:
+        interrupted = True
+        process.terminate()
+        process.wait()
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+    exit_code = 130 if interrupted else int(process.returncode)
+    output_thread.join(timeout=30)
+    latest = refresh_latest_checkpoint(output)
+    telemetry_path = output / 'gpu_telemetry.csv'
+    diagnostics_path = output / 'training_diagnostics.jsonl'
+    diagnostics = _diagnostic_summary(diagnostics_path)
+    checkpoint_steps = _complete_checkpoint_steps(output)
+    expected_checkpoint_steps = list(range(25, 501, 25))
+    completion_valid = (
+        exit_code == 0
+        and diagnostics['optimizer_updates'] == 500
+        and checkpoint_steps == expected_checkpoint_steps
+    )
+    if exit_code == 0 and not completion_valid:
+        exit_code = 4
+    summary = {
+        'schema_version': 'shopping-grpo-run-summary-v1',
+        'started_at': started_at.isoformat(),
+        'finished_at': datetime.now(timezone.utc).isoformat(),
+        'exit_code': exit_code,
+        'status': 'completed' if completion_valid else ('interrupted' if interrupted else 'failed'),
+        'completion_valid': completion_valid,
+        'diagnostics': diagnostics,
+        'complete_checkpoint_steps': checkpoint_steps,
+        'expected_checkpoint_steps': expected_checkpoint_steps,
+        'latest_complete_checkpoint': latest,
+        'gpu_telemetry': str(telemetry_path.resolve()),
+        'gpu_peaks': _gpu_peak_summary(telemetry_path),
+        'training_log': str(training_log.resolve()),
+        'swanlab_urls': _swanlab_urls(training_log),
+        'first_failure_marker': _first_failure_marker(training_log),
+        'telemetry_error': telemetry_error,
+    }
+    suffix = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    _atomic_json(output / f'run_summary.{suffix}.json', summary)
+    return exit_code
 
 
 def main() -> None:
@@ -407,7 +749,9 @@ def main() -> None:
         return
     contract_path = write_run_contract(audit, environment)
     print(f"GRPO run contract written: {contract_path}")
-    raise SystemExit(subprocess.call(command, cwd=ROOT, env=environment))
+    raise SystemExit(
+        run_supervised(command, environment, Path(environment['GRPO_OUTPUT_DIR']))
+    )
 
 
 if __name__ == "__main__":

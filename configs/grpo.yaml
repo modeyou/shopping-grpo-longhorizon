@@ -28,6 +28,8 @@ actor_rollout_ref:
     use_remove_padding: true
     use_fused_kernels: true
     use_liger: true
+    fused_kernel_options:
+      impl_backend: torch
     lora_rank: 16
     lora_alpha: 32
     target_modules: all-linear
@@ -52,11 +54,9 @@ actor_rollout_ref:
     kl_loss_type: low_var_kl
     optim:
       lr: 1.0e-6
-      lr_warmup_steps: 10
-      lr_warmup_steps_ratio: 0.0
-      lr_scheduler_type: cosine
-      min_lr_ratio: 0.1
-      num_cycles: 0.5
+      lr_warmup_steps: -1
+      lr_warmup_steps_ratio: 0.03
+      lr_scheduler_type: constant
     fsdp_config:
       optimizer_offload: true
       param_offload: true
@@ -119,11 +119,6 @@ shopping_dynamic_sampling:
   max_consecutive_skipped_updates: 10
   reward_tolerance: 1.0e-8
 
-# Formal A/B runs stop at a decision gate (initially step 50), while the
-# optimizer schedule stays identical to an uninterrupted 500-step run.
-shopping_scheduler:
-  total_training_steps: 500
-
 reward_model:
   enable: false
 
@@ -135,12 +130,12 @@ ray_kwargs:
 trainer:
   total_epochs: 50
   total_training_steps: 500
-  save_freq: 50
+  save_freq: 25
   test_freq: 50
   val_before_train: true
-  logger: [console]
+  logger: [console, swanlab]
   project_name: shopping-multiturn-agentic
   experiment_name: shopping-agent-grpo
   default_local_dir: ${oc.env:GRPO_OUTPUT_DIR}
-  n_gpus_per_node: 1
+  n_gpus_per_node: 4
   nnodes: 1

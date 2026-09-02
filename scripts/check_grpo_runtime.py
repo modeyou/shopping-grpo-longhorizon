@@ -8,6 +8,7 @@ import json
 import math
 import os
 import py_compile
+import shutil
 import sys
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
@@ -197,26 +198,12 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
         raise SystemExit(f"cannot locate installed RayPPOTrainer source: {ray_trainer}")
     try:
         from scripts.apply_verl_dynamic_sampling_patch import EXPECTED_PATCHED_SHA256
-        from scripts.apply_verl_scheduler_horizon_patch import (
-            PATCH_MARKER as SCHEDULER_PATCH_MARKER,
-            verify_patched as verify_scheduler_patch,
-        )
     except ImportError:  # Direct execution from the scripts directory.
         from apply_verl_dynamic_sampling_patch import EXPECTED_PATCHED_SHA256
-        from apply_verl_scheduler_horizon_patch import (
-            PATCH_MARKER as SCHEDULER_PATCH_MARKER,
-            verify_patched as verify_scheduler_patch,
-        )
 
     actual_patch_sha256 = hashlib.sha256(ray_trainer.read_bytes()).hexdigest()
     ray_trainer_source = ray_trainer.read_text(encoding="utf-8")
-    scheduler_patch_enabled = SCHEDULER_PATCH_MARKER in ray_trainer_source
-    if scheduler_patch_enabled:
-        try:
-            verify_scheduler_patch(ray_trainer)
-        except (OSError, RuntimeError, py_compile.PyCompileError) as exc:
-            raise SystemExit(f"invalid scheduler-horizon patch: {exc}") from exc
-    elif actual_patch_sha256 != EXPECTED_PATCHED_SHA256:
+    if actual_patch_sha256 != EXPECTED_PATCHED_SHA256:
         raise SystemExit(
             "shopping dynamic-sampling patch hash mismatch: "
             f"expected {EXPECTED_PATCHED_SHA256}, got {actual_patch_sha256}; "
@@ -289,87 +276,39 @@ def validate_dynamic_sampling(config, verl_source: Path, installed):
                 "ray_trainer": str(ray_trainer),
                 "marker": PATCH_MARKER,
                 "sha256": actual_patch_sha256,
-                "scheduler_horizon_patch": scheduler_patch_enabled,
             },
             sort_keys=True,
         )
     )
 
 
-def validate_scheduler_horizon(config, verl_source: Path):
-    """Bind a staged stopping point to one reproducible long-horizon schedule."""
-    scheduler = config.get("shopping_scheduler", {})
-    horizon = int(scheduler.get("total_training_steps", 0))
-    stage_end = int(config.trainer.total_training_steps)
+def validate_formal_training_contract(config):
+    """Freeze the one supported 500-update native GRPO recipe."""
     optim = config.actor_rollout_ref.actor.optim
     model = config.actor_rollout_ref.model
-    ray_trainer = verl_source.parent / "trainer" / "ppo" / "ray_trainer.py"
-    try:
-        from scripts.apply_verl_scheduler_horizon_patch import PATCH_MARKER as marker
-    except ImportError:  # Direct execution from the scripts directory.
-        from apply_verl_scheduler_horizon_patch import PATCH_MARKER as marker
-
-    if not ray_trainer.is_file() or marker not in ray_trainer.read_text(encoding="utf-8"):
-        raise SystemExit(
-            "formal GRPO scheduler horizon requires "
-            "scripts/apply_verl_scheduler_horizon_patch.py"
-        )
-
-    if horizon <= 0 or stage_end <= 0 or stage_end > horizon:
-        raise SystemExit(
-            "formal GRPO requires 0 < trainer.total_training_steps <= "
-            "shopping_scheduler.total_training_steps"
-        )
-    expected = {
-        "lr": 1.0e-6,
-        "lr_warmup_steps": 10,
-        "lr_warmup_steps_ratio": 0.0,
-        "lr_scheduler_type": "cosine",
-        "min_lr_ratio": 0.1,
-        "num_cycles": 0.5,
+    checks = {
+        "total_training_steps": int(config.trainer.total_training_steps) == 500,
+        "save_freq": int(config.trainer.save_freq) == 25,
+        "test_freq": int(config.trainer.test_freq) == 50,
+        "val_before_train": bool(config.trainer.val_before_train),
+        "lr": math.isclose(float(optim.lr), 1.0e-6, rel_tol=0, abs_tol=1e-12),
+        "warmup_steps_delegated": int(optim.lr_warmup_steps) == -1,
+        "warmup_ratio": math.isclose(float(optim.lr_warmup_steps_ratio), 0.03),
+        "scheduler": str(optim.lr_scheduler_type) == "constant",
+        "use_remove_padding": bool(model.use_remove_padding),
+        "use_liger": bool(model.use_liger),
+        "use_fused_kernels": bool(model.use_fused_kernels),
+        "fused_impl_backend": str(model.fused_kernel_options.impl_backend) == "torch",
+        "dataloader_num_workers": int(config.data.dataloader_num_workers) == 0,
+        "train_batch_size": int(config.data.train_batch_size) == 2,
+        "validation_rows_per_batch": int(config.data.val_batch_size) == 2,
+        "rollout_n": int(config.actor_rollout_ref.rollout.n) == 4,
+        "native_reward": not bool(config.algorithm.use_kl_in_reward),
     }
-    actual = {
-        "lr": float(optim.lr),
-        "lr_warmup_steps": int(optim.lr_warmup_steps),
-        "lr_warmup_steps_ratio": float(optim.lr_warmup_steps_ratio),
-        "lr_scheduler_type": str(optim.lr_scheduler_type),
-        "min_lr_ratio": float(optim.min_lr_ratio),
-        "num_cycles": float(optim.num_cycles),
-    }
-    for key, expected_value in expected.items():
-        actual_value = actual[key]
-        if isinstance(expected_value, float):
-            matches = math.isclose(actual_value, expected_value, rel_tol=0, abs_tol=1e-12)
-        else:
-            matches = actual_value == expected_value
-        if not matches:
-            raise SystemExit(
-                f"formal GRPO scheduler mismatch: {key} must be "
-                f"{expected_value!r}, got {actual_value!r}"
-            )
-    if not bool(model.use_remove_padding):
-        raise SystemExit("formal GRPO requires model.use_remove_padding=true")
-    if not bool(model.use_liger) or not bool(model.use_fused_kernels):
-        raise SystemExit(
-            "formal GRPO requires model.use_liger=true and use_fused_kernels=true"
-        )
-    if int(config.data.dataloader_num_workers) != 0:
-        raise SystemExit("formal GRPO requires data.dataloader_num_workers=0")
-    print(
-        "GRPO scheduler horizon preflight passed: "
-        + json.dumps(
-            {
-                **actual,
-                "stage_total_training_steps": stage_end,
-                "scheduler_total_training_steps": horizon,
-                "use_liger": True,
-                "use_fused_kernels": True,
-                "use_remove_padding": True,
-                "dataloader_num_workers": 0,
-            },
-            sort_keys=True,
-        )
-    )
+    failed = sorted(name for name, accepted in checks.items() if not accepted)
+    if failed:
+        raise SystemExit("formal GRPO contract mismatch: " + ", ".join(failed))
+    print("formal 500-update GRPO contract preflight passed: " + json.dumps(checks, sort_keys=True))
 
 
 def validate_swanlab_tracking(config):
@@ -422,6 +361,8 @@ def validate_reward_shaping_profile():
         config = reward_shaping_config(profile)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    if profile != "none":
+        raise SystemExit("formal GRPO supports only native Reward v4 profile=none")
     legacy_length_enabled = (
         os.environ.get("SHOPPING_LENGTH_SHAPING_ENABLE", "false").lower()
         == "true"
@@ -434,6 +375,166 @@ def validate_reward_shaping_profile():
         "GRPO reward profile preflight passed: "
         + json.dumps(config, sort_keys=True)
     )
+
+
+def validate_fused_ppo_gradient_patch(torch, verl_source: Path):
+    """Verify the backport and reproduce the former non-contiguous grad drop."""
+    try:
+        from scripts.apply_verl_fused_ppo_grad_patch import expected_patched_sha256
+    except ImportError:  # Direct execution from the scripts directory.
+        from apply_verl_fused_ppo_grad_patch import expected_patched_sha256
+    from shopping_grpo.training.grpo.fused_ppo_grad_patch import PATCH_MARKER as marker
+
+    target = verl_source.parent / "utils/experimental/torch_functional.py"
+    if not target.is_file():
+        raise SystemExit(f"GRPO fused-PPO source is missing: {target}")
+    actual = hashlib.sha256(target.read_bytes()).hexdigest()
+    try:
+        expected = expected_patched_sha256(target)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if actual != expected or target.read_text(encoding="utf-8").count(marker) != 1:
+        raise SystemExit(
+            "GRPO fused-PPO gradient patch mismatch; "
+            "run scripts/apply_verl_fused_ppo_grad_patch.py first"
+        )
+    from verl.utils.experimental import torch_functional as fused
+
+    base = torch.randn(2, 3, 5, dtype=torch.float32, requires_grad=True)
+    hidden_states = base.transpose(0, 1)
+    if hidden_states.is_contiguous():
+        raise SystemExit("fused-PPO gradient probe must be non-contiguous")
+    vocab_weights = torch.randn(11, 5, dtype=torch.float32)
+    input_ids = torch.randint(0, 11, hidden_states.shape[:2])
+    flash_available = fused._FLASH_ATTN_CROSS_ENTROPY_AVAILABLE
+    fused._FLASH_ATTN_CROSS_ENTROPY_AVAILABLE = False
+    try:
+        log_probs, _ = fused.FusedLinearForPPO(chunk_size=4)(
+            hidden_states, vocab_weights, input_ids
+        )
+        (-log_probs.mean()).backward()
+    finally:
+        fused._FLASH_ATTN_CROSS_ENTROPY_AVAILABLE = flash_available
+    if base.grad is None or not torch.isfinite(base.grad).all():
+        raise SystemExit("fused-PPO gradient probe produced no finite input gradient")
+    gradient_abs_sum = float(base.grad.abs().sum().item())
+    if gradient_abs_sum <= 0:
+        raise SystemExit("fused-PPO gradient probe produced an all-zero gradient")
+    print(
+        "GRPO fused-PPO input-gradient preflight passed: "
+        + json.dumps({"gradient_abs_sum": gradient_abs_sum, "sha256": actual}, sort_keys=True)
+    )
+
+
+def validate_liger_integration(config, verl_source: Path):
+    """Require veRL's supported Liger-plus-fused-output-head integration."""
+    try:
+        installed = version("liger_kernel")
+    except PackageNotFoundError as exc:
+        raise SystemExit("formal GRPO requires liger-kernel>=0.8.2") from exc
+    numeric = tuple(int(part) for part in installed.split("+", 1)[0].split(".")[:3])
+    if numeric < (0, 8, 2):
+        raise SystemExit(f"formal GRPO requires liger-kernel>=0.8.2, got {installed}")
+    candidates = (
+        verl_source.parent / "workers/fsdp_workers.py",
+        verl_source.parent / "workers/engine/fsdp/fsdp_workers.py",
+        verl_source.parent / "workers/engine/fsdp/transformer_impl.py",
+    )
+    sources = [path.read_text(encoding="utf-8") for path in candidates if path.is_file()]
+    if not sources or not any(
+        "use_liger" in source
+        and "fused_linear_cross_entropy=False" in source
+        and "apply_monkey_patch" in source
+        for source in sources
+    ):
+        raise SystemExit(
+            "installed veRL does not separate Liger kernels from its fused PPO output head"
+        )
+    model = config.actor_rollout_ref.model
+    if not (
+        bool(model.use_liger)
+        and bool(model.use_fused_kernels)
+        and bool(model.use_remove_padding)
+        and str(model.fused_kernel_options.impl_backend) == "torch"
+    ):
+        raise SystemExit("formal GRPO fused/Liger/remove-padding contract is incomplete")
+    print(
+        "GRPO Liger/fused/remove-padding integration preflight passed: "
+        + json.dumps({"liger_kernel": installed, "fused_impl_backend": "torch"}, sort_keys=True)
+    )
+
+
+def validate_independent_grpo_environment(verl_source: Path):
+    """Reject a runtime carrying BPO-only environment state or patch markers."""
+    if os.environ.get("SHOPPING_GRPO_ENV_ROLE") != "formal-grpo-v1":
+        raise SystemExit("formal GRPO requires SHOPPING_GRPO_ENV_ROLE=formal-grpo-v1")
+    forbidden_environment = sorted(
+        name for name in os.environ if name.startswith("SHOPPING_BPO_")
+    )
+    if forbidden_environment:
+        raise SystemExit("formal GRPO environment contains BPO variables: " + ", ".join(forbidden_environment))
+    contaminated = []
+    for target in verl_source.parent.rglob("*.py"):
+        source = target.read_text(encoding="utf-8")
+        if "SHOPPING_BPO_" in source or "CARL_BPO" in source:
+            contaminated.append(str(target))
+    if contaminated:
+        raise SystemExit(
+            "BPO-only patch marker found in GRPO environment: "
+            + ", ".join(contaminated)
+        )
+    print(
+        "independent GRPO environment preflight passed: "
+        + json.dumps({"python": sys.executable, "prefix": sys.prefix}, sort_keys=True)
+    )
+
+
+def validate_checkpoint_disk_budget():
+    """Reserve a conservative 20-checkpoint budget before loading the model."""
+    model_root = Path(os.environ["GRPO_MODEL_PATH"])
+    output = Path(os.environ["GRPO_OUTPUT_DIR"])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    model_bytes = sum(path.stat().st_size for path in model_root.rglob("*") if path.is_file())
+    checkpoint_count = 20
+    required_bytes = model_bytes * 3 * checkpoint_count + 20 * 1024**3
+    free_bytes = shutil.disk_usage(output.parent).free
+    if free_bytes < required_bytes:
+        raise SystemExit(
+            f"insufficient disk for 20 retained checkpoints: required={required_bytes}, free={free_bytes}"
+        )
+    print(
+        "GRPO checkpoint disk-budget preflight passed: "
+        + json.dumps(
+            {"checkpoint_count": checkpoint_count, "free_bytes": free_bytes, "required_bytes": required_bytes},
+            sort_keys=True,
+        )
+    )
+
+
+def validate_no_external_grpo_ray_processes():
+    """Reject live stale clusters while ignoring this preflight's parent launcher."""
+    import psutil
+
+    allowed = {os.getpid()}
+    parent = psutil.Process(os.getpid()).parent()
+    while parent is not None:
+        allowed.add(parent.pid)
+        parent = parent.parent()
+    markers = (
+        "verl.trainer.main_ppo", "raylet", "gcs_server",
+        "ray::TaskRunner", "ray::WorkerDict",
+    )
+    active = []
+    for process in psutil.process_iter(("pid", "name", "cmdline", "status")):
+        if process.info["pid"] in allowed or process.info["status"] == psutil.STATUS_ZOMBIE:
+            continue
+        command = " ".join(process.info.get("cmdline") or ())
+        identity = f"{process.info.get('name') or ''} {command}"
+        if any(marker in identity for marker in markers):
+            active.append({"pid": process.info["pid"], "command": command})
+    if active:
+        raise SystemExit("active external GRPO/Ray processes found: " + json.dumps(active, sort_keys=True))
+    print("no external GRPO/Ray process preflight passed")
 
 
 def validate_visible_gpu_headroom(torch, expected_devices: int, minimum_free_gib=20.0):
@@ -669,6 +770,9 @@ def main():
         ) from exc
 
     verl_source = Path(verl.__file__).resolve()
+    validate_independent_grpo_environment(verl_source)
+    validate_no_external_grpo_ray_processes()
+    validate_checkpoint_disk_budget()
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable in the GRPO environment")
     gpu_audit = validate_visible_gpu_headroom(
@@ -687,8 +791,10 @@ def main():
     if "swanlab" not in Tracking.supported_backend:
         raise SystemExit("veRL 0.8 SwanLab tracking backend is unavailable")
     validate_dynamic_sampling(config, verl_source, installed)
-    validate_scheduler_horizon(config, verl_source)
+    validate_formal_training_contract(config)
     validate_swanlab_tracking(config)
+    validate_fused_ppo_gradient_patch(torch, verl_source)
+    validate_liger_integration(config, verl_source)
     install_torch_padding_fallback()
     install_sparse_cuda_mapping()
     if (

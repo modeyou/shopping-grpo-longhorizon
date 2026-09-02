@@ -1,335 +1,269 @@
-# GRPO 强化学习方案
+# GRPO 正式长训练方案
 
-数据目录身份与禁止混用规则见 `docs/data-layout.md`。
+数据身份规则见 `docs/data-layout.md`。本文定义当前多轮购物项目唯一支持的强化学习阶段：ShopSimulator Environment v2.1、Reward v4、observation v2、tool schema v2。sealed Final-200 不得用于 reward、checkpoint 或超参数选择。
 
-本文定义当前多轮购物项目唯一支持的强化学习阶段。运行时合同固定为 ShopSimulator Environment v2.1、Reward v4、observation v2 和 tool schema v2。最终正式测试集始终封存，不能用于 reward 设计、checkpoint 选择或超参数选择。
+## 已冻结决策
+
+本轮不再进行 BPO、Reward A/B、bounded shaping、OPSD 或 off-policy replay。正式训练只有一条路线：
+
+> 从 SFT checkpoint-325 merged model 出发，使用原作者 `upstream/main` 的 GRPO 算法和原生 `shopsimulator-reward-v4`，连续执行 500 个真实 optimizer updates。
+
+用户选择不另做 1-step optimizer smoke。正式训练前仍必须执行不更新参数的确定性 preflight；第一个正式 update 同时承担运行时验收。preflight 失败时不得靠降低 batch、关闭 fused kernel 或跳过合同校验绕过。
+
+原作者仓库在本地 remote 中名为 `upstream`，算法基准是：
+
+- <https://github.com/YYHDBL/shopping-grpo-longhorizon/blob/main/configs/grpo.yaml>
+- <https://github.com/YYHDBL/shopping-grpo-longhorizon/blob/main/docs/grpo.md>
 
 ## 目标与起点
 
-GRPO 从 SFT checkpoint-325 开始。它在冻结 DEV-500 三条件评测上的结果为：
+checkpoint-325 的 DEV-500 三条件 strict success 为：Gap+Ask 69.0%、Gap-NoAsk 52.8%、Complete+Ask 72.2%，合计 970/1500（64.67%）；Done 1490/1500，Reward-valid 1486/1500。RL 的首要目标是提高正确商品购买和 strict gold success，不是继续把主要精力放在工具格式上。
 
-| 条件 | Strict success |
+模型选择优先级：
+
+1. 三条件 strict gold success、总 strict success 和最差条件。
+2. 原生 Reward v4 终局效用、purchase、Done、Reward-valid。
+3. Gap 提问增益、grounding；Complete 重复或无信息提问。
+4. guard、上下文、基础设施、采样有效率和效率。
+
+## 算法合同：复现上游 GRPO
+
+除 Reward、初始模型、正式数据和硬件适配外，优化目标保持原作者配置：
+
+| 设置 | 冻结值 |
 |---|---:|
-| Gap + Ask | 69.0% |
-| Gap - Ask | 52.8% |
-| Complete + Ask | 72.2% |
-| 合计 | 970/1500（64.67%） |
-
-Done 为 1490/1500、Reward-valid 为 1486/1500、guard rejection 为 32。由此可见，SFT 已基本解决工具协议崩溃；RL 的第一目标是提高正确商品购买率和 Reward v4 strict gold success，而不是继续把主要精力放在工具调用格式上。
-
-指标优先级如下：
-
-1. Gap+Ask、Gap-NoAsk、Complete+Ask 三条件 strict gold success 和总 strict success。
-2. 原生 Reward v4 平均终局效用、purchase success、Done、Reward-valid。
-3. Gap+Ask 相对 Gap-NoAsk 的增益，以及提问是否 grounded。
-4. Complete 的重复提问、第二次无信息提问、问题上限和提问后无购物动作。
-5. guard、上下文溢出、基础设施错误和效率指标。
-
-Complete 第一次无信息确认不是硬失败，也不能压倒一次正确购买。项目需要减少机械确认，但不能以复现 checkpoint-406 的零问崩溃为代价。
-
-## 实现边界与输入合同
-
-veRL 固定使用 0.8.0，本仓库不复制 veRL 源码。项目代码只维护 AgentLoop/ShopSimulator adapter、有限兼容补丁和有界动态采样。环境补丁必须通过 SHA-256 与 marker 预检，未知 veRL 安装直接拒绝。
-
-GRPO 输入必须满足：
-
-- 初始策略是选定的 SFT checkpoint-325 合并模型，不能使用 final-2epoch 代替。
-- train 与 validation 按 task ID 隔离，并与开发集、sealed 正式评测集零重叠。
-- 环境固定为 Environment v2.1，Reward 固定为 v4。
-- ask_shopper 使用独立的 OpenAI-compatible Shopper endpoint，不占用 35 个购物动作预算。
-- 每条 rollout 有隔离的 Shopper history，澄清回答只通过公开 observation 投影进入 Actor 上下文。
-
-正式 GRPO 的规范目录为 `data/grpo/formal-v2`。原参考项目的 Reward v3 文件已隔离到 `data/reference/grpo-v1`，不得作为本项目正式 GRPO 输入。旧 `data/multiturn/tasks/grpo_train.jsonl` 只作为 5,000 个 task ID 的候选池，固定 SHA-256 为 `c5aecc973fb15bd6e37b90c7fa0c4c292573f3fe14aff5d1f27ce9eb3c446c5b`。旧 `grpo_validation.jsonl` 与当前 DEV-500 重叠 395/500，因此不进入正式流程。
-
-### 正式 GRPO 数据冻结协议
-
-当前协议固定如下：
-
-- 从旧 5,000-task reservoir 重新排除正式 SFT train/validation、冻结 DEV-500 和 sealed Final-200。
-- seed 固定为 `20260823`，先按 `sha256(seed:task_id)` 升序排列，再使用与 DEV-500 相同的 Reward v4 gold-purchase 审计逐项过滤不可达任务。
-- 从审计通过的有序任务中取前 200 个作为 validation，随后 1,000 个作为 train；其余 Reward v4 可达任务记录为 unused，不可达任务单独写入 `reward-audit.jsonl`。
-- 每个 task 生成一个经过审计的 gap opening；complete opening 从同一个 ShopSimulator 私有目标确定性派生。
-- train 因此包含 1,000 gap + 1,000 complete，共 2,000 条 prompt；validation 包含 200 gap + 200 complete，共 400 条 prompt。
-- 任务选择、排除集、opening、Environment v2.1 / Reward v4 manifest、Parquet 和全部 SHA-256 都写入 `data/grpo/formal-v2`。
-- `train_grpo.py` 会强制验证 `shopping-multiturn-grpo-dataset-v2`、`status=accepted`、Reward v4、reachability audit、路径、哈希、行数和 task-disjoint 审计；不满足时拒绝启动。
-
-第一步审计 reservoir 并冻结 active task，不调用 LLM，也不访问运行中的 ShopSimulator API：
-
-~~~bash
-export PYTHONPATH=./src
-GRPO_PYTHON="${GRPO_PYTHON:-$(command -v python)}"
-
-"$GRPO_PYTHON" scripts/select_multiturn_grpo_tasks.py \
-  --reservoir data/multiturn/tasks/grpo_train.jsonl \
-  --expected-reservoir-sha256 c5aecc973fb15bd6e37b90c7fa0c4c292573f3fe14aff5d1f27ce9eb3c446c5b \
-  --products environments/ShopSimulator/shop_env/data/fine_items_eval_train_all.json.gz \
-  --environment-manifest data/environment-v4.json \
-  --exclude sft-train=data/sft/formal-v2/train.jsonl \
-  --exclude sft-validation=data/sft/formal-v2/validation.jsonl \
-  --exclude dev500=data/multiturn/evaluation-dev-v2/tasks.jsonl \
-  --exclude final200=data/evaluation/tasks.jsonl \
-  --seed 20260823 \
-  --train-count 1000 \
-  --validation-count 200 \
-  --output-dir data/grpo/formal-v2/selection
-~~~
-
-selector 会写出 selection schema v2、完整 `reward-audit.jsonl`、拒绝原因计数，以及商品数据的压缩/解压哈希。所有 JSON/JSONL artifact 固定使用 UTF-8 + LF，确保 Windows/Linux 逐字节一致。2026-08-23 的真实 5,000-task 审计得到 3,916 个 Reward v4 可达任务、1,084 个不可达任务；预期 train task SHA-256 为 `c8dedc11f4bc0f22e6b7776d80f9e9b17c82447c6389d1b6e1837d68803f3826`，validation task SHA-256 为 `85df9a00cdf4c8b56514eb8ce621266bb84f2cd52fede471ac8c7500e0deeb66`，reward audit SHA-256 为 `b75882737c67bbd3eb148627c7ea2d6928445862027da4b8f6bf2eacb920f575`。正式服务器运行必须独立复现这些计数与哈希后才能继续。
-
-随后分别用 `generate_multiturn_tasks.py` 为 `train-tasks.jsonl` 和 `validation-tasks.jsonl` 生成冻结 gap openings。为保持与 DEV-500 一致，opening generator 固定使用 `qwen3.8-27b`、temperature 0、thinking 关闭，以及仓库当前 `OPENING_PROMPT_HASH`（DEV-500 为 `9fac425b31f44721e95d9bc1bb1a5d42da79ee305cbd5356001368de8ed0769b`）。再用 `freeze_multiturn_openings.py` 确定性派生 complete openings。最后仅通过以下命令发布正式 Parquet 与 accepted manifest：
-
-~~~bash
-"$GRPO_PYTHON" scripts/finalize_multiturn_grpo_dataset.py \
-  --selection-manifest data/grpo/formal-v2/selection/selection-manifest.json \
-  --train-gap-openings data/grpo/formal-v2/selection/train-gap-openings.jsonl \
-  --train-complete-openings data/grpo/formal-v2/openings/train/complete_openings.jsonl \
-  --validation-gap-openings data/grpo/formal-v2/selection/validation-gap-openings.jsonl \
-  --validation-complete-openings data/grpo/formal-v2/openings/validation/complete_openings.jsonl \
-  --environment-manifest data/environment-v4.json \
-  --output-dir data/grpo/formal-v2
-~~~
-
-正式数据已经发布并由仓库验证器接受。唯一训练入口为 `data/grpo/formal-v2/manifest.json`，其中绑定：
-
-- train：1,000 tasks / 2,000 rows，Parquet SHA-256 `38f41370264277c76c106f5970a7d0560f745ad77dcfee6bfc108fa9c1720f41`；
-- validation：200 tasks / 400 rows，Parquet SHA-256 `575fe9b20ae6c24259144b05ad130fd032d260d171a68c95294566521fc7cae4`；
-- opening generator：`qwen3.8-27b`、temperature 0、thinking 关闭、prompt SHA-256 `9fac425b31f44721e95d9bc1bb1a5d42da79ee305cbd5356001368de8ed0769b`；
-- Reward v4 reachability：3,916/5,000 可达，正式选择的 1,200 个任务全部可达；
-- SFT train/validation、DEV-500 与 sealed Final-200 overlap 均为 0。
-
-这些命令定义来源与验收合同；task selection 与 Reward v4 可达性审计都是本地确定性操作。GRPO 训练期的 `ask_shopper` 仍使用独立 DeepSeek API，不能与 opening generator 混为同一模型来源。正式数据已经完成，但本节不表示已经启动训练。
-
-## 默认优化配置
-
-除 A/B 的 reward profile 外，下面参数保持完全一致：
-
-| 设置 | 值 |
-|---|---:|
-| 算法 | GRPO |
-| 每 prompt rollout 数 | 4 |
+| advantage estimator | `grpo` |
+| train batch / rollout n | 2 / 4 |
 | temperature / top-p | 0.7 / 0.9 |
-| train / validation batch | 2 / 2 |
-| 学习率 | 1e-6 |
-| warmup | 10 optimizer steps |
-| scheduler | cosine，500-step 固定 horizon，最低学习率 1e-7 |
-| data / PPO mini-batch seed | 20260823 / 20260823 |
+| PPO mini-batch / micro-batch per GPU | 2 / 1 |
+| gradient accumulation | 2 |
+| advantage std normalization | 关闭 |
+| loss aggregation | `token-mean` |
+| PPO clip low / high | 0.20 / 0.20 |
+| KL in reward / KL loss | 关闭 / 关闭 |
+| entropy coefficient | 0；保留 entropy 监控 |
 | LoRA rank / alpha | 16 / 32 |
-| memory kernels | fused kernels + Liger + remove-padding |
-| 最大模型长度 | 24,576 |
-| KL reward / KL loss | 关闭 / 关闭 |
-| entropy | 只记录，不直接加奖励 |
-| 动态采样最多生成批次 | 3 |
-| 连续跳过更新上限 | 10 |
+| learning rate | `1e-6` |
+| warmup | 3%，即 15 optimizer steps |
+| scheduler | veRL 原生 `constant`；warmup 后保持 `1e-6` |
+| prompt / response / total 上限 | 4,096 / 20,480 / 24,576 tokens |
+| optimizer updates | 500 |
+| data / PPO seed | 20260823 / 20260823 |
 
-正式 A/B 把“本阶段停止位置”和“学习率调度总长度”分开：第一阶段都在 step 50 停止，但 optimizer scheduler 始终按 500 steps 计算。这样 step 50 是同一条长期训练曲线上的决策 checkpoint，而不是已经衰减到末端的短实验。veRL 0.8 原生会把两者绑定，因此正式运行必须先应用仓库的 scheduler-horizon 补丁；预检会验证补丁、10-step warmup、cosine、500-step horizon、Liger、SDPA、remove-padding 和零 DataLoader 子进程。
+必须移除此前 A/B 引入的 10-step warmup、cosine decay、最低学习率 1e-7 和 scheduler-horizon patch。恢复训练必须恢复 model、optimizer、scheduler、global step、dataloader 和 RNG，不能重新 warmup。
 
-动态采样只保留同一 prompt 内训练效用存在差异的组。全常数组可以跳过；真实基础设施或 Reward 不可验证轨迹会使对应组无效。模型失败不是基础设施失败：A 中为 0，B 中为 -0.75。
+### 动态采样
 
-每次训练都在输出目录写入 training_diagnostics.jsonl。generation_batch 记录公开动作、终局、原生/训练奖励、guard 与组选择；optimizer_step 记录 entropy、PPO KL、clip fraction、响应长度和有效组比例；skipped_update 记录没有推进 optimizer 的零信号尝试。
+- 每步严格需要 2 个有效 prompt groups，每组 4 条 rollout。
+- `terminal_utility` 必须存在真实差异；全常数组不产生 advantage。
+- 最多生成 3 个候选 batch，不允许降级成单 group 或缩小 batch。
+- infra/Reward 不可验证轨迹必须排除；正常未完成、买错和策略失败仍按 Reward v4 训练。
+- 连续 10 次无法形成完整更新时停止，skipped update 不推进 global step。
 
+500 updates 至少对应 1,000 个有效 groups 和 4,000 条有效 rollout，不含被丢弃或追加生成的轨迹。
 
-## 两个受控实验
+## Reward 与数据合同
 
-这里的“第一轮”和“第二轮”表示两个从同一 SFT checkpoint 独立启动的实验，不是 epoch，也不是先后续训关系。
+唯一训练标量是 Reward v4 `terminal_utility`，不增加提问、重复动作、unfinished、guard、长度 shaping，也不改成 step-level reward。模型失败是有效训练结果；环境租约、API、parser、Reward schema 等基础设施无效结果必须排除。
 
-### A：原生 Reward v4
+唯一训练 manifest 是 `data/grpo/formal-v2/manifest.json`：
 
-- 初始模型：同一个 checkpoint-325。
-- reward profile：none。
-- 模型自身未完成、非法动作上限和提前结束作为有效的 0 分失败样本参与组内比较。
-- 环境/API 失败和 Reward 不可验证轨迹仍排除。
-- A1 smoke 已完成一次 optimizer update；正式 A 从原始 checkpoint-325 独立运行到 step 50。
-- 保存 step 25 和 step 50；step 50 运行冻结 validation。
+| artifact | tasks / rows | SHA-256 |
+|---|---:|---|
+| `multiturn-train.parquet` | 1,000 / 2,000 | `38f41370264277c76c106f5970a7d0560f745ad77dcfee6bfc108fa9c1720f41` |
+| `multiturn-validation.parquet` | 200 / 400 | `575fe9b20ae6c24259144b05ad130fd032d260d171a68c95294566521fc7cae4` |
 
-### B：bounded-v1
+两份数据均为每个 task 的 gap/complete 各一行；全部任务通过 Reward v4 reachability，并与 SFT、DEV-500、Final-200 零重叠。opening 固定为 qwen3.8-27b、temperature 0、thinking 关闭、prompt hash `9fac425b31f44721e95d9bc1bb1a5d42da79ee305cbd5356001368de8ed0769b`。
 
-- 从同一个 checkpoint-325 重新开始，不能接 A 的 checkpoint。
-- 除 reward profile 外，数据、seed、rollout 参数、优化器参数和验证协议与 A 相同。
-- Reward v4 的 reward_version、reward_type、reward_valid 和原生终局效用不变。
-- 模型自身未完成失败记为 -0.75。
-- 第一次提问不罚；第二次及以后每次 0.02。
-- Shopper 拒绝每次 0.03，guard rejection 每次 0.005，重复动作每次 0.01。
-- 有效终局的行为成本总上限为 0.10，不能盖过 Reward v4 的商品决策信号。
-- B1 smoke 已完成一次 optimizer update；正式 B 同样从原始 checkpoint-325 独立运行到 step 50，并保存 step 25/50。
+在线 validation 始终使用完整冻结集：200 tasks，每个 task 保留 gap/complete 两行，共 400 rows。step 0 和之后每 50 个真实 optimizer updates 使用完全相同的 task IDs、Parquet、采样参数和 Reward 合同；不再创建 50-task 子集，也不在训练中切换验证数据。
 
-代码同时记录 native_terminal_utility 与实际 terminal_utility/total。前者用于回答“环境原生表现是否提升”，后者才是优化器和动态采样使用的训练信号。任何报告都必须同时展示两者，不能把 shaped reward 当作 Reward v4 原生结果。
+## veRL 显存与算子适配
 
-### 选择与延长
+原作者使用单张 96 GiB GPU；本项目使用四张 24 GiB RTX 4090，冻结以下运行时适配：
 
-A/B 在 step 50 使用同一冻结开发子集配对比较。优先按总 strict、三条件最差项、原生平均效用和基础设施有效性选择；shaped reward 只能作为训练诊断，不能作为最终选择指标。
+正式 GRPO 必须使用独立 Python 环境（建议 `/home/gjx/.venvs/shopping-grpo-grpo`），不得复用已经安装 BPO entropy、snapshot、branch 或 advantage patch 的环境。环境建立后固定依赖版本并写出完整 inventory；此后只安装本文列出的 GRPO/common 补丁。
 
-胜者从自己的 step-50 checkpoint 恢复 optimizer 与 scheduler 状态，继续到 150–200 step，并在 100、150、200 做里程碑验证。不能重新 warmup，也不能把 step 50 当作新的 scheduler step 0。只有当 200 附近仍稳定上升且 KL、熵、长度、无效组率没有恶化，才考虑延长到 300；500 只是固定调度 horizon，不等于预先承诺一定执行 500 次更新。
+| 设置 | 冻结值 |
+|---|---:|
+| `use_fused_kernels` | `true` |
+| `fused_kernel_options.impl_backend` | `torch` |
+| `use_remove_padding` | `true` |
+| `use_liger` | `true` |
+| `liger-kernel` | `>=0.8.2`，版本写入 run contract |
+| attention | `sdpa` |
+| vLLM memory / max sequences | 0.45 / 8 |
+| DataLoader workers | 0 |
+| FSDP optimizer / reference param offload | 开启 |
 
-## Reward 边界
+三个开关必须通过 veRL 模型配置生效，项目入口不得再次直接 monkey-patch Hugging Face 模型：
 
-Reward v4 是环境合同，不修改为 step-level reward。训练期 bounded shaping 只提供有限的 credit assignment，不能改变 gold_purchase 的严格成功定义。
+1. Liger 只接管 RMSNorm、SwiGLU、RoPE 等模型内部算子，必须关闭它自己的 `fused_linear_cross_entropy`。
+2. veRL fused PPO output head 分块计算选中 token 的 log-prob，避免完整 `sequence × vocabulary` logits 常驻显存。
+3. remove-padding 使 actor forward、log-prob、response mask 与 fused output 的 no-padding 布局一致。
 
-不采用逐步奖励的原因是：
+`fused=true + remove-padding=false` 不受支持，会使 no-padding log-probs 与 padding 恢复元数据不一致。历史 veRL issue 曾报告 Liger 与 fused 同开异常；当前官方实现已经分离模型内部 kernel 和 PPO output head，并明确声明二者兼容，见 <https://github.com/verl-project/verl/blob/main/docs/perf/perf_tuning.rst>。因此不能只看 YAML 开关，必须验证实际调用路径。
 
-- 搜索、点击和提问是否正确依赖后续商品与终局，单步启发式容易奖励错误路径。
-- 当前核心目标是正确购买，而不是更短或更像模板的轨迹。
-- 强行为惩罚可能让模型学会不提问或提前停止。
+### veRL 0.8.0 fused backward 回移植
 
-未来如需 step-level 信号，只能以不改变终局排序的 potential-based 或严格有界辅助项做独立消融，并继续报告原生 Reward v4。
+固定 veRL 0.8.0 的 `FusedLinearForPPOFunction.backward` 有独立的静默梯度风险：custom forward 对非连续 hidden states 执行 `flatten` 可能产生副本，backward 若检查副本的 `requires_grad`，会漏掉原输入梯度。
 
-## 五面板评测如何使用
+必须将 BPO 环境已验证的修复抽取为 GRPO/common patch，以 `ctx.needs_input_grad` 决定 hidden-state 和 vocabulary-weight 梯度。补丁严格绑定 veRL 版本、原文件 SHA-256、唯一 marker 和可恢复备份，不得携带 BPO advantage、entropy、snapshot 或 branch patch。
 
-完整评测框架的五个面板分别回答不同问题：
+正式 preflight 不产生 optimizer update，但必须：
 
-| 面板 | 内容 | 用途 |
-|---|---|---|
-| A Reward and terminal | Reward v4、终局、strict/purchase、效用 | 主要模型选择 |
-| B Requirement rubric | 冻结 rubric 下各需求满足情况 | 判断买对了哪些约束、错在哪里 |
-| C Trajectory quality | Judge 对计划、证据、恢复、终止的评估 | 分析长程策略质量 |
-| D Clarification | 是否提问、grounding、次数、时机与无效提问 | 分析多轮澄清价值 |
-| E Deterministic | guard、上下文、步骤、错误和基础设施 | 排除协议与运行故障 |
+- 用非连续 hidden states 跑真实 `FusedLinearForPPO` forward/backward；
+- 断言输入梯度存在、finite 且绝对值和大于 0；
+- 校验 Qwen3.5 torch fused forward、position IDs、remove-padding offsets、response mask；
+- 校验 Liger fused CE 没有覆盖 veRL PPO output head；
+- 校验最终 Hydra config 的 fused/Liger/remove-padding 均为 true。
 
-Rubric 不是另一个 reward。它把任务要求冻结成可核对维度；Judge 根据公开轨迹和 rubric 评估不能由 Reward v4 单个标量解释的过程质量。Judge 结果用于诊断和论文分析，不直接参与 GRPO 优化，也不替代 strict success。
+用户选择不做 optimizer smoke，所以 preflight 不能证明真实 24K rollout 一定成功。正式训练第一个 update 是线上硬验收；出现 OOM、shape mismatch、零梯度、NaN/Inf 或 patch 不匹配时立即停止，不能在同一输出目录修改配置后续跑。
 
-使用节奏：
+## GPU 与 Ray 合同
 
-- 1-step smoke：只检查 Reward/terminal 与 deterministic 合同。
-- step 10：跑便宜的 A、D、E 面板和 reward 审计，发现明显方向错误。
-- step 25/50：运行同一冻结开发子集；step 50 对 A/B 运行完整五面板。
-- 胜者 100/150/200：完整五面板；以配对任务差异分析退化和提升。
-- 最终模型选择完成后：只执行一次 sealed 正式评测，并运行完整五面板。
+当可用物理 GPU 为 `0,2,3,4` 时：
 
-因此，之前的快速 DEV sweep 没有每次调用 rubric/judge 是有意的成本控制，不代表这两个面板无用。
-
-## BPO 决策门
-
-当前只完成 GRPO，不在本阶段承诺完整 BPO。GRPO 运行期间可以在独立分支研究 BPO，但不得改变 A/B 的冻结协议。
-
-到 step 50 后再决定：
-
-- 如果同一 prompt 内存在稳定的成功/失败轨迹对，而绝对 reward 标度或组归一化限制明显，再考虑完整 BPO。
-- 如果主要问题仍是探索不到成功轨迹，BPO 没有足够偏好对，优先改 rollout 探索和数据覆盖。
-- 如果 bounded-v1 已显著提高 strict 且没有行为退化，不为“方法更新”额外增加框架风险。
-
-## 复现要求
-
-每个运行必须绑定：
-
-- Git commit 和工作区状态。
-- checkpoint-325 的模型/adapter 哈希。
-- train、validation parquet 与环境 manifest 哈希。
-- Reward profile 和全部系数。
-- seed、rollout n、采样参数、batch、学习率、LoRA、最大长度。
-- Shopper model、endpoint 标识与 API 可用性；不得记录密钥。
-- run_contract.json、training_diagnostics.jsonl、训练日志、checkpoint 列表和验证输出。
-
-正式比较要求 A/B 使用相同 task IDs、相同 opening、相同 data/PPO seed 和相同评测参数。异步 GPU rollout 不承诺 bitwise 完全确定，因此必须使用配对任务与重复审计判断差异。任何基础设施无效率异常的运行不能参与模型优劣结论。
-
-## 正式 A/B 入口
-
-当前服务器的 GPU 1 被其他服务占用。正式 GRPO 必须显式保留物理卡
-`0,2,3,4`，不要写成进程内的逻辑编号 `0,1,2,3`，也不要手工启动 Ray：
-
-~~~bash
+```bash
 export CUDA_VISIBLE_DEVICES=0,2,3,4
 export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 unset RAY_ADDRESS
-~~~
+```
 
-运行时 hook 会把 Ray 分配的物理 ID 映射为 CUDA 掩码内的逻辑 ordinal：
-`0→0、2→1、3→2、4→3`。正式 preflight 会拒绝未显式设置的掩码、重复或非四卡
-掩码、Ray 自动重写掩码、可见卡数量不符，以及任一可见卡空闲显存低于 20 GiB
-的启动。这样既不会误占物理 GPU 1，也不会把物理 GPU 4 错当成不存在的
-进程内 `cuda:4`。
+Ray 由训练入口创建，不手工启动。worker hook 将物理 ID 映射为 mask 内逻辑 ordinal：`0,2,3,4 -> 0,1,2,3`。preflight 要求四张可见卡、无重复 ID、每张至少 20 GiB 空闲，并拒绝残留 GRPO/Ray 集群。
 
-先在项目 Python 环境中安装两个经过固定源校验的 veRL 补丁。第二个补丁可逆地恢复第一个补丁并校验其 SHA-256，因此未知或被手改的 veRL 文件会被拒绝：
+GPU 编号属于启动时事实，不永久假定 GPU 1 一定被占用。资源变化时重新审计，不能误杀任务范围外的进程。
 
-~~~bash
-"$GRPO_PYTHON" scripts/apply_verl_dynamic_sampling_patch.py
-"$GRPO_PYTHON" scripts/apply_verl_scheduler_horizon_patch.py
-"$GRPO_PYTHON" scripts/apply_verl_scheduler_horizon_patch.py --check
-~~~
+## SwanLab 正式监控
 
-以下变量只存在于当前 shell/tmux，不写入仓库；API key 不会写入 run contract：
+正式训练强制使用：
 
-~~~bash
+```yaml
+trainer:
+  logger: [console, swanlab]
+  project_name: shopping-multiturn-agentic
+```
+
+run name 为 `grpo-native-v4-500-s20260823-<timestamp>`，必须包含 GRPO、Reward、总步数和 seed。`SWANLAB_MODE=online`，本地目录为 `<output>/swanlab`。API key 只从 tmux 环境变量读取，不写入命令、日志、run contract 或 Git。veRL `Tracking` 会把每次 `logger.log(data=metrics, step=global_step)` 同时发往 console 和 SwanLab。
+
+### 必须进入 SwanLab 的指标
+
+| 类别 | 关键指标 |
+|---|---|
+| optimizer | global step、policy loss、grad norm、learning rate、PPO KL、clip fraction、entropy |
+| Reward v4 | terminal utility min/mean/max、native utility、strict、purchase、match score、evidence coverage、各 Reward 分量 |
+| dynamic sampling | generated/accepted/filtered/constant/all-zero/invalid groups、generation/resample batches、generated trajectories、consecutive skips |
+| trajectory | Done、平均步数、max-steps、overlong、repeat loop/action、model failure、partial purchase |
+| infrastructure | infra-invalid、reward-unverifiable、Shopper/API/parser/guard 错误及原因 |
+| length | prompt/response mean/max、总序列最大值、observation 原始/投影 token、投影截断次数 |
+| performance | rollout、reward、old-log-prob、actor update、checkpoint、validation 耗时及 tokens/s |
+| hardware | 各物理 GPU used/total/peak、utilization、CPU RAM、Ray object store |
+
+`training_diagnostics.jsonl` 是逐 rollout 权威审计，至少包含 `generation_batch`、`optimizer_step`、`skipped_update`。SwanLab 只上传标量，不上传 omitted facts、Shopper 私有上下文、API key 或完整敏感轨迹。
+
+SwanLab 系统监控不能替代峰值记录。正式 launcher 每 30 秒把物理 GPU `index,memory.used,memory.total,utilization.gpu` 写入 `<output>/gpu_telemetry.csv`，训练结束生成每卡峰值摘要。
+
+### 硬停止条件
+
+出现以下任一情况必须停止并保留现场：
+
+- loss、grad norm、advantage、KL 或 entropy 出现 NaN/Inf；
+- update 没有有限非零梯度；
+- CUDA OOM、invalid device ordinal、fused/unpadding shape mismatch；
+- Reward/environment/schema/hash 不符；
+- sampling-invalid trajectory 进入训练 group；
+- 连续 10 次 skipped update；
+- 连接既有 Ray 集群或可见 GPU 集合改变；
+- global step、checkpoint、SwanLab step 不一致。
+
+constant-group 比例、max-steps/overlong、response length、entropy 下降、KL/clip fraction 突增、API 重试和 validation 退化只告警，先调查而不自动当作模型失败。
+
+## Checkpoint、validation 与模型选择
+
+- `val_before_train=true`，记录 step-0 在线 validation。
+- 每 25 optimizer steps 保存 checkpoint，全部保留。
+- step 0 及每 50 steps 跑同一份完整 200-task/400-row validation。
+- DEV-500 只评测该完整 validation 选出的少量候选。
+- sealed Final-200 在 checkpoint 冻结后只运行一次。
+
+保存频率 25 是故障恢复适配，不改变算法。500 steps 正常产生 step 25 至 step 500 共 20 份计划 checkpoint，全部保留。checkpoint 必须包含 model/LoRA、optimizer、scheduler、global step、dataloader 和 RNG；恢复后 global step 必须连续。
+
+启动 preflight 必须按一份实际 checkpoint 的保守估算检查磁盘容量，并额外预留日志、validation、SwanLab 和临时写入空间；空间不足以保留20份完整 checkpoint 时拒绝启动，训练中不自动删除旧 checkpoint。
+
+失败或强制退出时不得清理、覆盖或复用该运行目录。launcher 必须保留最后一个已经完整提交的 checkpoint、`run_contract.json`、训练日志、`training_diagnostics.jsonl`、SwanLab 本地目录和 GPU telemetry，并写出失败摘要。`SIGINT`/`SIGTERM` 应先请求训练进程有序停止；但 `SIGKILL`、整机掉电、CUDA 硬死或进程处于不可中断内核状态时不可能可靠保存内存中的当前 update，因此合同只保证最近一次已完成的 25-step checkpoint，最坏损失 24 个尚未保存的 optimizer updates。半写入或验收失败的 checkpoint 不得作为恢复点，`latest_checkpoint.json` 只指向最近一份通过完整性校验的 checkpoint。
+
+## 复现与未来 off-policy 数据
+
+run contract 必须记录 Git/工作区、模型与 adapter hash、全部 Parquet/manifest hash、环境/Reward/tool/parser 版本、算法/kernel/batch/seed/GPU/Ray/Shopper/SwanLab 配置，以及 Python、CUDA、driver、PyTorch、Transformers、veRL、vLLM、Liger 和 SwanLab 版本。还要记录补丁目标、原始/补丁 SHA-256、marker、GPU telemetry、20份计划 checkpoint 和 validation 清单。SwanLab 服务端 URL 只有初始化 run 后才产生，因此从训练日志提取到完成/失败摘要；最后完整 checkpoint 同样由运行期摘要和 `latest_checkpoint.json` 记录。
+
+为未来独立 off-policy/replay 保存公开 prompt/token IDs、公开 trajectory、response mask、生成 checkpoint/global step、采样参数、behavior old log-prob、Reward v4 分量和环境版本；这些记录不改变本次 on-policy GRPO。
+
+## 实施顺序
+
+1. 用单一 native-v4 500-step launcher 替换 A/B、bounded-v1 和 cosine scheduler 正式入口。
+2. 抽取通用 fused-PPO gradient patch，加入 veRL/Liger/remove-padding preflight 与测试。
+3. 绑定完整 200-task/400-row validation，验证 step 0/50/.../500 使用同一份 Parquet。
+4. 接入 SwanLab、训练诊断、GPU telemetry、checkpoint 完整性指针和完成/失败摘要。
+5. 只做 dry-run/preflight，核对最终命令和 run contract，不产生 update。
+6. 在服务器全新输出目录直接启动 500-step 正式训练。
+
+未经用户单独授权，不启动训练、不合并模型，也不运行 sealed Final-200。
+
+## 正式入口与执行顺序
+
+代码只保留一个正式入口：`scripts/run_formal_grpo.py`。旧 A/B launcher、bounded-v1 正式入口和 scheduler-horizon patch 已删除。正式入口固定 native Reward v4、500 updates、完整 Validation-200、SwanLab 以及每 25 步 checkpoint；命令行不能把它降级成另一条算法路线。
+
+正式入口同时强制 clean Git worktree；必须先提交并推送本次代码与正式数据 manifest，不能用未记录的工作区差异启动长训练。
+
+在独立 GRPO Python 环境中先安装项目依赖，再安装并验证两个 GRPO 补丁：
+
+```bash
 export PYTHONPATH=./src
-export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
-export GRPO_MODEL="$PWD/outputs/models/sft-checkpoint-sweep-dev200-v1/checkpoint-325"
+GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo-grpo/bin/python
+
+"$GRPO_PYTHON" scripts/apply_verl_dynamic_sampling_patch.py
+"$GRPO_PYTHON" scripts/apply_verl_dynamic_sampling_patch.py --check
+"$GRPO_PYTHON" scripts/apply_verl_fused_ppo_grad_patch.py
+"$GRPO_PYTHON" scripts/apply_verl_fused_ppo_grad_patch.py --check
+```
+
+不得在该环境安装 BPO entropy、snapshot、branch、advantage 或 BPO 聚合补丁。
+
+启动前在同一个 tmux 中配置资源和密钥：
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,2,3,4
+export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
+unset RAY_ADDRESS
+
 export SHOPPER_MODEL=deepseek-v4-flash-0731
-export SHOPPER_BASE_URL='你的 OpenAI-compatible endpoint'
-export SHOPPER_API_KEY='你的密钥'
-export SWANLAB_API_KEY='你的 SwanLab 密钥'
-~~~
+export SHOPPER_BASE_URL=<OpenAI-compatible-Shopper-endpoint>
+read -rsp 'SHOPPER_API_KEY: ' SHOPPER_API_KEY; echo
+export SHOPPER_API_KEY
+read -rsp 'SWANLAB_API_KEY: ' SWANLAB_API_KEY; echo
+export SWANLAB_API_KEY
+```
 
-A/B 必须使用两个全新且不同的输出目录。先分别预检，不会加载模型或启动训练：
+先做不更新参数的完整 preflight；通过后对同一空输出目录启动正式训练：
 
-~~~bash
-"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
-  --arm a \
-  --model "$GRPO_MODEL" \
-  --output outputs/models/grpo-a-native-v4-step50 \
+```bash
+RUN_TAG=$(date +%Y%m%d-%H%M%S)
+GRPO_OUT="$PWD/outputs/models/grpo-native-v4-500-s20260823-$RUN_TAG"
+GRPO_LAUNCH_LOG="$PWD/outputs/grpo/logs/grpo-native-v4-500-s20260823-$RUN_TAG.log"
+mkdir -p "$(dirname "$GRPO_LAUNCH_LOG")"
+
+"$GRPO_PYTHON" scripts/run_formal_grpo.py \
+  --model outputs/models/sft-checkpoint-sweep-dev200-v1/checkpoint-325 \
+  --output "$GRPO_OUT" \
+  --shopper-model "$SHOPPER_MODEL" \
+  --shopper-base-url "$SHOPPER_BASE_URL" \
   --preflight-only
 
-"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
-  --arm b \
-  --model "$GRPO_MODEL" \
-  --output outputs/models/grpo-b-bounded-v1-step50 \
-  --preflight-only
-~~~
+nohup "$GRPO_PYTHON" scripts/run_formal_grpo.py \
+  --model outputs/models/sft-checkpoint-sweep-dev200-v1/checkpoint-325 \
+  --output "$GRPO_OUT" \
+  --shopper-model "$SHOPPER_MODEL" \
+  --shopper-base-url "$SHOPPER_BASE_URL" \
+  > "$GRPO_LAUNCH_LOG" 2>&1 < /dev/null &
+```
 
-确认预检输出同时包含 `scheduler_total_training_steps=500` 与 `stage_total_training_steps=50` 后，一次只启动一个 arm：
-
-~~~bash
-"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
-  --arm a \
-  --model "$GRPO_MODEL" \
-  --output outputs/models/grpo-a-native-v4-step50
-
-# A 完成并释放 Ray/GPU 后，才启动 B。
-"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
-  --arm b \
-  --model "$GRPO_MODEL" \
-  --output outputs/models/grpo-b-bounded-v1-step50
-~~~
-
-入口固定使用 4 张 GPU、formal-v2 数据、seed 20260823、SwanLab project `shopping-multiturn-agentic`、step 25/50 checkpoint、step 50 validation。A/B 唯一的训练语义差异是 `reward-profile=none` 与 `bounded-v1`；输出路径和 run name 只用于身份隔离。
-
-选出胜者后，使用同一 arm、同一输出目录和其中的 step-50 checkpoint 显式恢复，并把阶段终点改为 200；入口会拒绝跨输出目录 checkpoint，也不会覆盖初始 `run_contract.json`：
-
-~~~bash
-"$GRPO_PYTHON" scripts/run_formal_grpo_ab.py \
-  --arm a \
-  --model "$GRPO_MODEL" \
-  --output outputs/models/grpo-a-native-v4-step50 \
-  --resume-from-checkpoint outputs/models/grpo-a-native-v4-step50/global_step_50 \
-  --stage-end 200
-~~~
-
-上例的 `--arm a` 只是格式示例；若 B 胜出，必须同时替换 arm、输出目录和 checkpoint。恢复启动会另写 `run_contract.resume-global_step_50.json`，并由 veRL 加载 model、optimizer、scheduler 和 dataloader 状态。
-
-## 通用调试入口
-
-先检查解析结果：
-
-~~~bash
-export GRPO_PYTHON="$(command -v python)"
-bash scripts/grpo.sh --reward-profile none --dry-run
-~~~
-
-只做完整预检：
-
-~~~bash
-bash scripts/grpo.sh --reward-profile none --preflight-only
-~~~
-
-A 使用：
-
-~~~bash
-bash scripts/grpo.sh --reward-profile none
-~~~
-
-B 使用：
-
-~~~bash
-bash scripts/grpo.sh --reward-profile bounded-v1
-~~~
-
-高级 veRL 覆盖参数仍放在双横线之后。启动脚本会把 reward profile 写入公开审计输出，每条 trajectory 也会记录 shaping_profile、native_terminal_utility、实际训练效用和各惩罚分量。
-
-未经用户单独授权，不启动训练、不合并模型，也不运行最终 200-task 评测。
+训练父进程同时写出 `training.log`、`gpu_telemetry.csv`、`run_contract.json`、`training_diagnostics.jsonl`、`latest_checkpoint.json` 和带 UTC 时间戳的 `run_summary.*.json`。`latest_checkpoint.json` 只有在 veRL tracker 已提交且对应 `global_step_N/actor` 含实际文件时才更新。

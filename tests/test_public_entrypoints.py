@@ -11,9 +11,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.train_grpo import (
+    _complete_checkpoint_steps,
+    _diagnostic_summary,
     build_command,
     main as grpo_main,
     parse_args,
+    refresh_latest_checkpoint,
     validate_launcher_owned_ray,
     write_run_contract,
 )
@@ -22,6 +25,50 @@ from shopping_grpo.smoke import run_cpu_smoke
 
 
 class PublicEntrypointTest(unittest.TestCase):
+    def test_completion_audit_counts_only_committed_updates_and_checkpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            diagnostics = output / "training_diagnostics.jsonl"
+            diagnostics.write_text(
+                json.dumps(
+                    {
+                        "event": "optimizer_step",
+                        "global_step": 25,
+                        "metrics": {"training/optimizer_updated": 1},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            actor = output / "global_step_25" / "actor"
+            actor.mkdir(parents=True)
+            (actor / "state.bin").write_bytes(b"state")
+            incomplete = output / "global_step_50" / "actor"
+            incomplete.mkdir(parents=True)
+            summary = _diagnostic_summary(diagnostics)
+            self.assertEqual(summary["optimizer_updates"], 1)
+            self.assertEqual(summary["max_global_step"], 25)
+            self.assertEqual(_complete_checkpoint_steps(output), [25])
+
+    def test_latest_checkpoint_requires_tracker_and_nonempty_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "latest_checkpointed_iteration.txt").write_text(
+                "25\n", encoding="utf-8"
+            )
+            checkpoint = output / "global_step_25"
+            checkpoint.mkdir()
+            self.assertIsNone(refresh_latest_checkpoint(output))
+            actor = checkpoint / "actor"
+            actor.mkdir()
+            (actor / "state.bin").write_bytes(b"state")
+            latest = refresh_latest_checkpoint(output)
+            self.assertEqual(latest["step"], 25)
+            recorded = json.loads(
+                (output / "latest_checkpoint.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(recorded["path"], str(checkpoint.resolve()))
+
     def test_grpo_rejects_external_ray_address(self):
         validate_launcher_owned_ray({})
         with self.assertRaisesRegex(SystemExit, "launcher-owned local Ray"):
@@ -154,7 +201,7 @@ class PublicEntrypointTest(unittest.TestCase):
                 "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
                 "SHOP_REWARD_VERSION": "shopsimulator-reward-v4",
                 "GRPO_SEED": "20260823",
-                "SHOPPING_REWARD_SHAPING_PROFILE": "bounded-v1",
+                "SHOPPING_REWARD_SHAPING_PROFILE": "none",
                 "SHOPPER_MODEL": "shopper",
                 "SHOPPER_BASE_URL": "https://shopper.example.test/v1",
                 "SHOPPER_API_KEY": "must-not-be-written",
@@ -164,12 +211,12 @@ class PublicEntrypointTest(unittest.TestCase):
             audit = {
                 "command": ["python", "-m", "verl.trainer.main_ppo"],
                 "config": str(files["grpo.yaml"]),
-                "reward_profile": "bounded-v1",
+                "reward_profile": "none",
             }
             with patch(
                 "scripts.train_grpo.subprocess.check_output",
                 side_effect=["abc123\n", b"?? local-artifact", b"local diff"],
-            ):
+            ), patch("scripts.train_grpo._patch_inventory", return_value=[]):
                 destination = write_run_contract(audit, environment)
 
             contract = json.loads(destination.read_text(encoding="utf-8"))
@@ -178,7 +225,7 @@ class PublicEntrypointTest(unittest.TestCase):
         self.assertTrue(contract["git"]["dirty"])
         self.assertEqual(
             contract["runtime_contract"]["reward_profile"],
-            "bounded-v1",
+            "none",
         )
         self.assertEqual(
             contract["runtime_contract"]["cuda_physical_to_logical"],
@@ -230,7 +277,10 @@ class PublicEntrypointTest(unittest.TestCase):
             ]
             with (
                 patch.object(sys, "argv", argv),
-                patch.dict(os.environ, {"SHOPPER_API_KEY": "secret"}),
+                patch.dict(
+                    os.environ,
+                    {"SHOPPER_API_KEY": "secret", "SWANLAB_API_KEY": "swan-secret"},
+                ),
                 patch("scripts.train_grpo.subprocess.call", return_value=0) as call,
                 patch(
                     "scripts.train_grpo.validate_grpo_data_manifest",
@@ -246,7 +296,7 @@ class PublicEntrypointTest(unittest.TestCase):
             Path(preflight[1]).resolve(),
             root / "scripts/check_grpo_runtime.py",
         )
-        self.assertIn("trainer.logger=[console]", preflight)
+        self.assertIn("trainer.logger=[console,swanlab]", preflight)
         self.assertIn("trainer.experiment_name=shopping-agent-grpo", preflight)
         self.assertIn("trainer.total_training_steps=1", preflight)
 

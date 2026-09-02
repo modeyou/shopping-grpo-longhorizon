@@ -1,4 +1,4 @@
-"""Pure reward-group selection used by the bounded veRL sampling patch."""
+"""Pure Reward-v4 group selection used by the veRL dynamic-sampling patch."""
 
 from __future__ import annotations
 
