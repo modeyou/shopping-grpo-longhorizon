@@ -182,4 +182,31 @@ checkpoint-406 的 Complete 退化主要来自零问组：251 个零问任务只
 
 GRPO 阶段不应把第一次 Complete 提问设为足以压倒终局成功的硬惩罚。更稳妥的优先级是：Reward v4 strict 终局质量为主；第二次无信息提问、完全或近似重复问题、`shopper_question_limit` 和提问后无购物动作承担更强约束；第一次无信息确认只承担较轻的效率成本。这样才能在减少默认确认的同时，避免复现 checkpoint-406 的零问崩溃。
 
-未经用户单独授权，不执行 checkpoint-325 合并、不启动 GRPO，也不使用最终 200-task 评测集。
+## BPO v1 正式训练与 DEV-500 结果
+
+BPO v1 从 SFT checkpoint-325 开始，完成 200/200 optimizer steps、400 棵有效树和 1,600 个
+sibling returns；总计生成 6,928 条 rollout、1,478,990 个回复 token 和 30,255 次环境交互，
+4×RTX 4090 wall time 为 8:57:06。训练、checkpoint、Reward v4 与动态采样均通过正式审计。
+
+冻结 DEV-500 三条件结果为：
+
+| 模型 | Gap+Ask | Gap-NoAsk | Complete+Ask | 三条件 strict | Gap gain | Complete 多余提问 | Mean reward | Done | Reward valid | Guards |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| BPO v1 step-200 | 69.0% | 52.6% | 72.0% | 968/1500（64.5%） | +16.4pp | 92.2% | 0.5983 | 1487/1500 | 1483/1500 | 49 |
+| SFT checkpoint-325 | 69.0% | 52.8% | 72.2% | 970/1500（64.7%） | +16.2pp | 93.8% | 0.6010 | 1490/1500 | 1486/1500 | 32 |
+
+BPO 相对 SFT 有 18 个 strict gains 和 20 个 losses，净少 2/1500；exact McNemar 检验
+`p=0.8714`。G+ 没有变化，G− 和 C+ 各少 1 个 strict。它把 Complete 多余提问减少 8/500，
+但 mean Reward、Done、Reward-valid 和 Guard 均未改善，因此不能声称 RL 超过 SFT。
+
+该负结果推动了 CARL-BPO 的 completion-aligned return、Root/Local 双层信用、目标对比优先级和结构化
+Local 阶段设计。CARL-BPO v1 当前仓库证据只覆盖训练 validation 与 step-260 诊断，没有完整 DEV-500
+三条件结果；v2.1 正在运行，完成前不写入正式结果表。详细证据见
+[BPO 正式结果](bpo-formal-results.md)、[配对诊断](bpo-training-handoff.md)和
+[CARL-BPO 设计与运行记录](carl-bpo.md)。
+
+## 当前项目发布口径
+
+DEV-500 已参与 checkpoint 和方案选择，所以当前 README 和简历将它称为冻结开发基准，而不是未见测试集。
+Base/SFT/BPO v1 的结果已经足以构成当前可复核项目版本；CARL-BPO v2.1、独立 Final-200、置信区间和
+全量 Rubric/Judge 作为后续增强，不反向改变上述已验证结论。

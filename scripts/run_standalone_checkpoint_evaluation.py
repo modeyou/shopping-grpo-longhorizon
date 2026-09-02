@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Evaluate one exported RL checkpoint on frozen multi-turn development assets."""
+"""Evaluate one exported model on frozen multi-turn development or final assets."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -89,6 +90,59 @@ def validate_source_checkpoint(source: Path) -> dict:
     }
 
 
+def validate_final_assets(assets: Path) -> tuple[int, str]:
+    def normalized_sha(path: Path) -> str:
+        payload = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        return hashlib.sha256(payload).hexdigest()
+
+    manifest_path = assets / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"final asset manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != "shopping-multiturn-final-subset-v1":
+        raise ValueError("unsupported final asset manifest")
+    if manifest.get("evaluation_role") != "final":
+        raise ValueError("final assets must declare evaluation_role=final")
+    if manifest.get("final_evaluation_used") is not True:
+        raise ValueError("final assets must declare final_evaluation_used=true")
+    if manifest.get("reward_contract") != "shopsimulator-reward-v4":
+        raise ValueError("final evaluation must use Reward v4 assets")
+    if int(manifest.get("task_count") or 0) != 200:
+        raise ValueError("the frozen final evaluation must contain 200 tasks")
+
+    task_sets = {}
+    for name in ("tasks", "gap_openings", "complete_openings"):
+        path = assets / f"{name}.jsonl"
+        rows = read_jsonl(path)
+        task_ids = [int(row["task_id"]) for row in rows]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError(f"duplicate task_id in {path}")
+        if normalized_sha(path) != manifest["subset_sha256"][name]:
+            raise ValueError(f"final asset SHA256 mismatch: {path}")
+        task_sets[name] = set(task_ids)
+    if not (
+        task_sets["tasks"]
+        == task_sets["gap_openings"]
+        == task_sets["complete_openings"]
+    ):
+        raise ValueError("final task/opening sets do not match")
+
+    conditions_path = assets / "conditions.jsonl"
+    if normalized_sha(conditions_path) != manifest["subset_sha256"]["conditions"]:
+        raise ValueError(f"final asset SHA256 mismatch: {conditions_path}")
+    condition_rows = read_jsonl(conditions_path)
+    expected_conditions = set(CONDITIONS)
+    by_task = {task_id: set() for task_id in task_sets["tasks"]}
+    for row in condition_rows:
+        task_id = int(row["task_id"])
+        if task_id not in by_task:
+            raise ValueError(f"condition references unknown final task: {task_id}")
+        by_task[task_id].add(str(row["condition"]))
+    if any(values != expected_conditions for values in by_task.values()):
+        raise ValueError("each final task must have the frozen G+/G-/C+ conditions")
+    return len(task_sets["tasks"]), normalized_sha(manifest_path)
+
+
 def validate_shopsimulator(base_url: str, task_id: int) -> None:
     from shopping_grpo.environment.client import ShopAgentEnv
 
@@ -108,7 +162,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--model-name", required=True)
-    parser.add_argument("--source-checkpoint", type=Path, required=True)
+    parser.add_argument("--source-checkpoint", type=Path)
+    parser.add_argument(
+        "--evaluation-role", choices=("dev", "final"), default="dev"
+    )
     parser.add_argument("--assets", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--actor-log-root", type=Path, required=True)
@@ -124,6 +181,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-timeout", type=int, default=900)
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume partial shards only when the saved run plan is identical.",
+    )
     return parser.parse_args()
 
 
@@ -137,13 +199,24 @@ def main() -> None:
         raise SystemExit("GPU indices must be unique")
 
     model = args.model.resolve()
-    source_checkpoint = args.source_checkpoint.resolve()
+    source_checkpoint = (
+        args.source_checkpoint.resolve() if args.source_checkpoint else None
+    )
     assets = args.assets.resolve()
     output_root = args.output_root.resolve()
     actor_log_root = args.actor_log_root.resolve()
     model_audit = validate_exported_model(model)
-    source_audit = validate_source_checkpoint(source_checkpoint)
-    expected_tasks, asset_manifest_sha = validate_assets(assets)
+    if args.evaluation_role == "dev" and source_checkpoint is None:
+        raise SystemExit("--source-checkpoint is required for a dev RL evaluation")
+    source_audit = (
+        validate_source_checkpoint(source_checkpoint)
+        if source_checkpoint is not None
+        else None
+    )
+    if args.evaluation_role == "final":
+        expected_tasks, asset_manifest_sha = validate_final_assets(assets)
+    else:
+        expected_tasks, asset_manifest_sha = validate_assets(assets)
     if not args.vllm_bin.resolve().is_file():
         raise SystemExit(f"vLLM executable is missing: {args.vllm_bin}")
 
@@ -152,11 +225,6 @@ def main() -> None:
     ]
     if occupied:
         raise SystemExit(f"Actor ports are already occupied: {occupied}")
-    if output_root.exists() and any(output_root.iterdir()):
-        raise SystemExit(f"evaluation output must be new or empty: {output_root}")
-    if actor_log_root.exists() and any(actor_log_root.iterdir()):
-        raise SystemExit(f"actor log root must be new or empty: {actor_log_root}")
-
     required_environment = (
         "SHOPSIM_BASE_URL",
         "SHOPPER_BASE_URL",
@@ -168,7 +236,12 @@ def main() -> None:
         raise SystemExit(f"required environment is missing: {missing}")
 
     plan = {
-        "schema_version": "shopping-standalone-checkpoint-evaluation-v1",
+        "schema_version": (
+            "shopping-final-model-evaluation-v1"
+            if args.evaluation_role == "final"
+            else "shopping-standalone-checkpoint-evaluation-v1"
+        ),
+        "evaluation_role": args.evaluation_role,
         "model": str(model),
         "model_name": args.model_name,
         "model_audit": model_audit,
@@ -179,7 +252,7 @@ def main() -> None:
         "asset_manifest_sha256": asset_manifest_sha,
         "actor_ports": args.actor_ports,
         "gpu_indices": args.gpu_indices,
-        "final_evaluation_used": False,
+        "final_evaluation_used": args.evaluation_role == "final",
     }
     print(json.dumps(plan, ensure_ascii=False, indent=2), flush=True)
     if not args.dry_run:
@@ -195,9 +268,42 @@ def main() -> None:
     if args.preflight_only:
         print("STANDALONE CHECKPOINT EVALUATION PREFLIGHT PASSED")
         return
+    if args.dry_run:
+        for gpu, port in zip(args.gpu_indices, args.actor_ports, strict=True):
+            command = build_actor_command(
+                vllm_bin=args.vllm_bin.resolve(),
+                model=model,
+                model_name=args.model_name,
+                host=args.actor_host,
+                port=port,
+                max_model_len=args.max_model_len,
+                max_num_seqs=args.max_num_seqs,
+                gpu_memory_utilization=args.gpu_memory_utilization,
+            )
+            print(f"CUDA_VISIBLE_DEVICES={gpu} " + " ".join(command), flush=True)
+        print("STANDALONE CHECKPOINT EVALUATION DRY RUN PASSED")
+        return
 
+    output_nonempty = output_root.exists() and any(output_root.iterdir())
+    logs_nonempty = actor_log_root.exists() and any(actor_log_root.iterdir())
+    if (output_nonempty or logs_nonempty) and not args.resume:
+        raise SystemExit(
+            "evaluation output/logs must be new or empty; pass --resume for an identical partial run"
+        )
     output_root.mkdir(parents=True, exist_ok=True)
     actor_log_root.mkdir(parents=True, exist_ok=True)
+    plan_path = output_root / "evaluation_plan.json"
+    if args.resume:
+        if not plan_path.is_file():
+            raise SystemExit(f"resume plan is missing: {plan_path}")
+        existing_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if existing_plan != plan:
+            raise SystemExit("resume plan does not match the current model/assets/config")
+    else:
+        plan_path.write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     processes = []
     log_handles = []
     try:
@@ -217,10 +323,7 @@ def main() -> None:
                 max_num_seqs=args.max_num_seqs,
                 gpu_memory_utilization=args.gpu_memory_utilization,
             )
-            if args.dry_run:
-                print(" ".join(command), flush=True)
-                continue
-            log_handle = log_path.open("wb")
+            log_handle = log_path.open("ab" if args.resume else "xb")
             log_handles.append(log_handle)
             environment = os.environ.copy()
             environment["CUDA_VISIBLE_DEVICES"] = str(gpu)
@@ -246,9 +349,6 @@ def main() -> None:
                 flush=True,
             )
 
-        if args.dry_run:
-            print("STANDALONE CHECKPOINT EVALUATION DRY RUN PASSED")
-            return
         environment = os.environ.copy()
         environment.update(
             {

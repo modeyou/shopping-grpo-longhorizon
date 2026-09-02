@@ -12,21 +12,22 @@ Rubric/Judge 和在线 Shopper 方面的设计结论，作为后续实现与复�
 - **已确定方向**：项目采用该方向，但仍需完成实现或运行验证。
 - **待确认提案**：尚未修改正式运行契约，实施前必须显式确认和版本化。
 
-截至 2026-08-21：
+截至 2026-08-31：
 
 | 项目 | 状态 | 说明 |
 |---|---|---|
 | 基座 Actor | 已确定方向 | `Qwen3.5-2B` |
-| 当前环境 Reward | 当前已实现 | `shopsimulator-reward-v3` |
-| Reward v4 | 当前已实现候选 | 与 v3 并行，含原子约束、价格语义和双算入口；尚未成为默认协议 |
+| 当前环境 Reward | 当前正式协议 | `shopsimulator-reward-v4` |
+| Reward v3 | 历史参考 | 原参考项目与 Teacher 原始采集 provenance，不进入当前正式比较 |
 | 教师/Baseline/Evaluation 在线 Shopper | 当前已实现 | rollout harness 管理独立 LLM Shopper |
-| veRL GRPO 在线 Shopper | 待实现 | 当前 AgentLoop 尚未完成 Shopper 客户端与私有目标接入 |
+| veRL/RL 在线 Shopper | 当前已实现 | AgentLoop 管理 Shopper 客户端、私有目标与审计字段 |
 | Rubric LLM | 已确定方向 | 本地 `Qwen3.8-27B`，需冻结权重和 prompt |
 | 主 Judge | 已确定方向 | `deepseek-v4-flash-0731`，异常样本可升级到 Pro |
-| 五面板评测 v2 | 当前已实现 | 含澄清面板、G+/G−/C+ 配对与版本化入口；尚未运行正式模型评测 |
+| 最小可信评测 | 当前已实现 | Reward v4、G+/G−/C+、固定分母和 task-level 配对 |
+| 完整五面板评测 | 代码已实现 | Rubric/Judge 仍需在 DEV 校准后运行正式结果 |
 
-仓库当前契约仍是 Environment v2.1 + Reward v3。Reward v4 必须作为新版本实现，不能静默
-改变 v3，也不能把用不同 Reward 得到的结果混为同一条实验曲线。
+仓库当前多轮契约是 Environment v2.1 + Reward v4。Reward v3 只保留历史可复现性；不能把两种
+Reward 得到的结果混为同一条实验曲线。当前权威评测边界见[多轮购物 Agent 评测协议](multiturn-evaluation.md)。
 
 ## 2. 整体工作流与三方职责
 
@@ -66,7 +67,7 @@ SFT 是保存轨迹上的离线训练，本身不调用 Shopper。GRPO 和正式
 当前清洗后的开发集位于：
 
 ```text
-data/multiturn/evaluation-dev-v1/
+data/multiturn/evaluation-dev-v2/
 ```
 
 ### 3.2 正式测试集的作用
@@ -82,7 +83,7 @@ data/multiturn/evaluation-dev-v1/
 当前清洗后的正式任务位于：
 
 ```text
-data/multiturn/evaluation-v1/
+data/multiturn/evaluation-v2/
 ```
 
 正式测试与 SFT、GRPO、开发集必须保持 task-ID 零重叠。完整数据隔离和替补规则见
@@ -185,9 +186,9 @@ G+ 与 G- 的成功率差和逐题迁移衡量澄清的实际收益；C+ 衡量�
 
 详细冻结协议见[多轮正式评测协议](multiturn-evaluation.md)。
 
-## 5. Reward v3：当前正式版本
+## 5. Reward v3：历史参考版本
 
-Reward v3 是确定性的终局 Reward，不调用另一个 LLM 判断购买结果。当前主要规则为：
+Reward v3 是原参考项目的确定性终局 Reward，不调用另一个 LLM 判断购买结果。历史主要规则为：
 
 | 结果 | Reward |
 |---|---:|
@@ -202,7 +203,7 @@ Reward v3 是确定性的终局 Reward，不调用另一个 LLM 判断购买结�
 | `reward_unverifiable` | `0.00`，但 `reward_valid=false` |
 
 硬门槛主要是类目和预算。品牌、型号、核心功能、关键选项分别使用 0.35、0.25、0.25、0.15
-的固定权重。Reward v3 适合作为现有数据验收、GRPO 和评测的共同终局标准，但有以下局限：
+的固定权重。Reward v3 曾作为原项目数据验收、GRPO 和评测的共同终局标准，但有以下局限：
 
 - 价格解析词形覆盖不足；
 - “230 元左右”被粗略处理为硬上限，不能表达接近程度；
@@ -210,13 +211,13 @@ Reward v3 是确定性的终局 Reward，不调用另一个 LLM 判断购买结�
 - 某些无法解析的 option 或变体价格存在回退逻辑；
 - 只评价终局，不能单独证明提问是否必要或答案是否被使用。
 
-完整现行定义见 [Reward v3](reward-v3.md)。
+完整历史定义见 [Reward v3](reward-v3.md)。
 
-## 6. Reward v4：已实现的候选版本
+## 6. Reward v4：当前正式版本
 
-Reward v4 的目标是提高终局判定的可靠性和可诊断性，而不是把 LLM Judge 或 PRM 塞进环境。
-实现细节和切换门槛见 [Reward v4](reward-v4.md)。完成 v3/v4 双算与 bad-case 抽查前，默认
-运行契约仍是 v3。
+Reward v4 提高终局判定的可靠性和可诊断性，而不把 LLM Judge 或 PRM 塞进环境。v3/v4 双算、
+bad-case 抽查和 v2 任务重新冻结已经完成；当前正式 SFT、RL 和评测均使用 v4。实现与迁移记录见
+[Reward v4](reward-v4.md)。
 
 ### 6.1 约束原子化
 
@@ -506,9 +507,9 @@ Base、SFT、GRPO 在正式评测中必须面对完全相同的冻结 Shopper �
 - Base/SFT/GRPO 正式评测：统一使用同一套 DeepSeek + Answer Bank Shopper；
 - 小规模纯 DeepSeek 回答消融：检查 Answer Bank 是否改变结论。
 
-## 10. GRPO 在线 Shopper 的提前实现计划
+## 10. GRPO 在线 Shopper 的历史实现计划
 
-这部分不依赖 SFT 数据采集完成，可以先在开发集实现：
+以下清单记录已经落地的实现路径，用于审计 Shopper 私有信息边界：
 
 1. veRL AgentLoop 识别 `ask_shopper`；
 2. 从环境私有通道读取 `shopper_context`，但不泄漏给 Actor；
@@ -521,19 +522,15 @@ Base、SFT、GRPO 在正式评测中必须面对完全相同的冻结 Shopper �
 9. 完成单元测试、单任务在线闭环和异常注入测试；
 10. 使用 Qwen3.5-2B 做四卡、一个 task、一个 GRPO update 的资源冒烟。
 
-只有这个闭环通过后，才适合启动正式多轮 GRPO。
+当前多轮 RL 闭环已经通过上述边界；后续改动仍应重复对应契约测试。
 
 ## 11. 推荐执行顺序
 
-1. 保持 Reward v3 为默认契约，先运行 Reward v3/v4 双算并评审 gained/lost bad cases；
-2. 实现 GRPO 在线 Shopper Contract 和私有审计；
-3. 生成或补齐 Qwen Answer Bank，并做 Qwen/DeepSeek 事实级 A/B；
-4. 完成 Qwen3.5-2B 开发集 Base 评测；
-5. 完成单卡 BF16 LoRA + Liger SFT 冒烟；
-6. 完成四卡 GRPO 1-update 冒烟；
-7. 在开发集校准 Rubric 和 DeepSeek Judge；
-8. 冻结 V4 是否启用、Shopper、prompt、模型 hash 和全部评测 manifest；
-9. 运行正式 Base/SFT/GRPO 配对评测。
+1. 当前 release 使用已完成的 DEV-500 Base/SFT/BPO v1 结果，并明确标注为冻结开发基准；
+2. 等待 CARL-BPO v2.1 完成后，按同一 DEV-500 三条件协议追加结果；
+3. 冻结唯一 checkpoint 并一次性运行未见 Final-200；
+4. 如时间和预算允许，在 DEV 校准 Rubric/Judge 后追加完整五面板评测；
+5. 不用后续增强反向改写已经发布的 Base/SFT/BPO v1 结果。
 
 相关详细文档：
 

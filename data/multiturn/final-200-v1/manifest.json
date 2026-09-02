@@ -1,0 +1,39 @@
+{
+  "condition_count": 600,
+  "conditions": [
+    "complete-ask-enabled",
+    "gap-ask-disabled",
+    "gap-ask-enabled"
+  ],
+  "evaluation_role": "final",
+  "final_evaluation_used": true,
+  "reward_contract": "shopsimulator-reward-v4",
+  "schema_version": "shopping-multiturn-final-subset-v1",
+  "selected_task_ids_sha256": "f7f646f50c215f816fd9fc48a26e02110624b1ad17d18a9490634cfc46e99829",
+  "selection": {
+    "policy": "sha256-rank-without-replacement-v1",
+    "preserve_source_order": true,
+    "result_blind": true,
+    "seed": "shopping-final-200-v1",
+    "source_task_count": 500
+  },
+  "source": {
+    "directory": "data/multiturn/evaluation-v2",
+    "files_sha256": {
+      "complete_openings.jsonl": "e25658930d115a44769de339b792200948b4d15499136865b524a8e3f503fa39",
+      "conditions.jsonl": "6e7324296db65c4feec7b6c49d16b998a91cca4f680c1388bb102af864c124e0",
+      "gap_openings.jsonl": "0f717d75ae2af5a60cb300f9702bb9dcfde028fe732ca811dde055d3f2a7dcbb",
+      "reward_audit.jsonl": "96a675473cf241183e81686cfcbf4f3383d3cf1281fab056a25e6f898b063056",
+      "tasks.jsonl": "69e33231363e8dfadd83757cacd425373c7935b30f4392b2354d37b104ccf1de"
+    },
+    "hash_normalization": "CRLF/CR-to-LF-v1"
+  },
+  "subset_sha256": {
+    "complete_openings": "5acd0788255f6b8ee4fe8f757f20f16dfe675aa402435898de1ce5fb7c78f109",
+    "conditions": "5cda59afeb0050131d6e9c66f26a187093fa5dda0c2dc4244cd349507ccc8f08",
+    "gap_openings": "fd65618c11a8b1cd2616e1efd11ba510f291124c5bc2e32567a4fe4efba4780e",
+    "reward_audit": "621c0ee1004f477581a01829ffa0ea127e35bd3d9e7077ddc625f03b3b6dad10",
+    "tasks": "f7f646f50c215f816fd9fc48a26e02110624b1ad17d18a9490634cfc46e99829"
+  },
+  "task_count": 200
+}

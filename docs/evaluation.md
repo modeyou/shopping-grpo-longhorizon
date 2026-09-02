@@ -1,6 +1,10 @@
 # Evaluation：从一条 Benchmark Test 到最终比较
 
-当前正式分母为 [Final-200 Clean](evaluation-dataset.md)。旧的
+> **历史参考项目文档。** 本文描述 Reward v3 + Final-200 Clean 的单轮评测，不是当前多轮项目的
+> 正式协议。当前 Environment v2.1 + Reward v4 + Final-200 的最小可信评测与完整评测见
+> [多轮购物 Agent 评测协议](multiturn-evaluation.md)。两套结果不得合并分母或排名。
+
+原参考项目的正式分母为 [Final-200 Clean](evaluation-dataset.md)。旧的
 [Final-200 Benchmark Dashboard](evaluation-dashboard.html) 仅保留为历史归档。
 
 本项目的正式评估不是“让一个模型看结果后打一个总分”，而是由代码硬检查、
@@ -347,7 +351,7 @@ Reward 与 Rubric 冲突时两者都保留。例如 Reward 判为 gold，但 Rub
 - Observation 截断和上下文使用；
 - infrastructure-invalid 数量及 task IDs。
 
-汇总时始终以 183 为固定分母。最后按 `task_id` 对 Baseline、SFT、GRPO 做配对比较，
+汇总时始终以 200 为固定分母。最后按 `task_id` 对 Baseline、SFT、GRPO 做配对比较，
 统计成功状态迁移、Reward type 迁移、hard violation 差值、五维分数差值、步数、
 Guard 和重复动作变化；仍然不生成一个综合总分。
 

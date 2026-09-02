@@ -21,7 +21,7 @@ Shopper”是下一阶段待实现功能，不应写成当前能力。实现后�
 ```text
 冻结的模糊请求 ──公开──> Actor
                          │
-                         ├─ 商店工具 ──> ShopSimulator ──> 页面观察、选项、Reward v3
+                         ├─ 商店工具 ──> ShopSimulator ──> 页面观察、选项、Reward v4
                          │
                          └─ ask_shopper
                                 │
@@ -33,7 +33,7 @@ ShopSimulator 私有完整目标 ──> LLM Shopper ──自然语言回答─
 | 组件 | 持有什么 | 负责什么 | 不负责什么 |
 |---|---|---|---|
 | Actor | 公开请求、页面观察、Shopper 已公开的回答 | 判断是否需要问；搜索、浏览、选择并购买 | 不能看到完整 gold goal；不能让 Shopper 替它查商品目录 |
-| ShopSimulator 环境 | 商品状态、完整任务目标、goal options、Reward v3 | reset/step、页面反馈、购买判定；通过私有字段把目标交给 Shopper | 不调用 LLM，不直接撰写澄清回答 |
+| ShopSimulator 环境 | 商品状态、完整任务目标、goal options、Reward v4 | reset/step、页面反馈、购买判定；通过私有字段把目标交给 Shopper | 不调用 LLM，不直接撰写澄清回答 |
 | LLM Shopper | 环境私下提供的完整目标和历史问答 | 只按目标回答偏好、约束、兼容性、用途或预算；未知则说未知 | 不搜索商品、不报告未指定商品的材质/价格等目录事实、不替 Actor 决策 |
 
 因此“Shopper 是环境的一部分”是协议层面的说法；工程实现上，它是 rollout harness 管理的独立
@@ -139,32 +139,17 @@ SFT 转换只保留公开对话和工具轨迹，移除教师私有 reasoning、
 结构化 opening 生成建议关闭 thinking，避免 reasoning 用尽单回合预算后留下空 `content`；购物 Actor
 仍可保留 thinking，以维持长程候选分析能力。
 
-## 5. Reward v3 是否需要修改
+## 5. 当前 Reward v4 边界
 
-当前结论是：**SFT 采集和正式评测不修改 Reward v3**。
+当前多轮 SFT、RL 和正式评测统一使用未附加“提问即加分”的 Reward v4。Reward v4 回答“最终买到的
+商品是否满足环境私有完整目标”，并通过原子约束、规格与实际 variant price 提高判定可靠性。
+`ask_shopper` 不改变商店状态；缺口真实性、回答溯源和是否应当提问由类型级验收与 G+/G−/C+ 指标
+负责。把“问了问题”直接加入终局 Reward 会产生无条件提问捷径。
 
-Reward v3 回答的是“最终买到的商品是否满足环境私有完整目标”，它适合作为三类数据共同的终局硬门和
-跨版本可比的正式评测标准。`ask_shopper` 不改变商店状态；缺口真实性、回答溯源和是否应当提问已经由
-类型级验收与独立指标负责。把“问了问题”直接加进 Reward v3 会产生无条件提问的捷径，并破坏和原项目
-结果的可比性。
-
-多轮 GRPO 接通之后，可以实验一个**训练侧独立 shaping 信号**，但不能修改或重命名环境 Reward v3：
-
-```text
-R_train = R_v3_terminal + λg · R_grounded_clarification - λu · P_unnecessary_ask
-```
-
-其中 bonus 只能用于有冻结缺口、来源哈希一致且 `used_facts` 命中缺口的提问；完整请求上的提问可作为
-unnecessary ask。权重必须小、封顶，并分别记录 `R_v3_terminal` 和 shaping 分量。是否启用要通过以下
-消融决定，而不是现在预设：
-
-1. SFT 后策略仅用原生 Reward v3 做多轮 GRPO；
-2. 同配置加入小幅 clarification shaping；
-3. 在同一 held-out 开场上比较 gold success、grounded-ask、unnecessary-ask 和 ask-enabled 相对
-   ask-disabled 的成功增益。
-
-如果原生 Reward v3 已能让 gold success 和有效澄清同步上升，就不增加 shaping；只有出现明确的信用
-分配不足时才加入。正式 Evaluation 始终只报告未修改的 Reward v3，并把澄清指标分栏报告。
+任何训练侧 clarification shaping 都必须使用独立名称、单独记录并做消融，不能静默修改
+`shopsimulator-reward-v4`。正式 Evaluation 始终报告原生 Reward v4，并把澄清指标分栏报告。完整
+定义见 [Reward v4](reward-v4.md)，当前评测协议见
+[多轮购物 Agent 评测协议](multiturn-evaluation.md)。
 
 ## 6. 当前结论
 
@@ -174,7 +159,7 @@ unnecessary ask。权重必须小、封顶，并分别记录 `R_v3_terminal` 和
 - 三类数据均需共同 gold gate 和各自的类型级验收；它们不应在 raw 阶段混为一种策略。
 - Qwen3.8-27B 可用于低成本扩量，但应先完成小规模 A/B 和类型级统计，再按任务多样性扩张。
 - 澄清的因果有效性最终由 ask-enabled / ask-disabled 配对评测回答，而不是由 SFT 接收规则替代。
-- Reward v3 保持为稳定终局标准；若以后需要澄清信用分配，只在训练侧以可消融、可分解的小幅 shaping
+- Reward v4 是当前稳定终局标准；若以后需要澄清信用分配，只在训练侧以可消融、可分解的小幅 shaping
   实验处理。
 
 

@@ -1,5 +1,8 @@
 # 评测集更新与轨迹审计记录
 
+> **历史参考项目记录。** 本文件只维护 Reward v3 单轮 Final-200 Clean，不记录当前 Reward v4
+> 多轮 Final-200。当前协议见 [多轮购物 Agent 评测协议](multiturn-evaluation.md)。
+
 本文件是评测资产的追加式记录。每次更新都应记录日期、任务数和哈希、变更 task ID、
 证据、对历史结果的影响，以及是否重新运行了 rollout。完整原始轨迹是本地
 `outputs/evaluation/` 产物，不提交到 Git；这里保存可复核的汇总和 bad-case 结论。

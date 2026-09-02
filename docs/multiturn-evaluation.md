@@ -1,362 +1,353 @@
-# 多轮澄清正式评测协议
+# 多轮购物 Agent 评测协议
 
-本文定义以 `Qwen3.5-2B` 为基座的多轮澄清项目如何做开发评测、训练前基座评测和最终
-Base/SFT/GRPO 配对比较。协议继承参考项目的 Reward v3 与四面板轨迹评测，并增加独立的
-澄清面板，但不会把原来
-的单轮 `Final-200 Clean` 结果误当作多轮澄清能力。
+本文是当前多轮项目的权威评测说明。当前运行契约固定为
+**ShopSimulator Environment v2.1 + Reward v4**。原参考项目的 Reward v3、Final-200 Clean 和
+四面板报告只作为历史单轮基准，不能与
+本文结果合并排名。
 
-## 1. 结论与边界
+评测分为两层：
 
-- 基座模型固定为 `Qwen3.5-2B`。Qwen3.8-27B 当前只承担 Teacher、opening generator
-  和 LLM Shopper，不是本轮待训练 Actor。
-- 必须在多轮 SFT 和 GRPO 之前完成基座评测；否则无法判断训练是否真正改善了澄清与购物。
-- 原项目 `data/evaluation/tasks.jsonl` 的 Final-200 Clean 继续作为单轮外部可比基准。
-- 新项目内 `data/multiturn/tasks/evaluation.jsonl` 是多轮候选池，目前只完成 task-ID
-  隔离，还不能直接称为正式测试集。
-- Reward v3 保持不变，只评价最终环境结果；澄清行为作为独立面板报告，不写回或覆盖
-  Reward v3。
-- Reward v4 已作为并行候选实现；在完成 v3/v4 gold replay、bad-case 抽查和任务重新冻结前，
-  本协议仍以 v3 为当前正式口径，不能混合两版结果。
-- Rubric 整理器固定为本地 `Qwen3.8-27B`；主 Judge 固定为
-  `deepseek-v4-flash-0731`。二者都必须使用冻结 schema、prompt 和模型 revision。
+- **当前最小可信评测**：在冻结 DEV-500 上完成的确定性 release benchmark，也是投递简历、项目答辩
+  和快速复现的默认版本。由于该集合参与过 checkpoint/方案选择，它不是未见盲测；
+- **后续完整评测**：在独立 Final-200 上重跑最小评测，并增加冻结 Rubric、可选轨迹 Judge、统计检验
+  和系统化 bad-case 诊断。它增强泛化证据与解释力，但不阻塞当前项目展示。
 
-## 2. 继承参考项目的哪些设计
+项目同时回答两个同等重要的问题：
 
-参考项目的正式评测把结果分开报告，不计算一个不可解释的综合总分：
+1. RL 是否在 SFT 基础上提高了满足完整需求的最终购买成功率？
+2. 模型是否学会在信息缺失时有效澄清，并在信息完整时控制多余提问？
 
-1. Environment Reward v3 与终局；
-2. 逐任务需求 Rubric；
-3. 完整轨迹质量；
-4. 确定性行为、合法性、上下文与基础设施。
+不把所有指标加成一个不可解释的总分。
 
-多轮项目完整继承以下原则：
+## 1. 当前冻结资产
 
-- 固定任务分母，缺失和基础设施错误不能从分母中消失；
-- Base、SFT、GRPO 使用相同任务、Actor prompt、工具协议、上下文和推理参数；
-- 每个 Actor、每个条件、每个 task 只做一次确定性 rollout，不把多次尝试包装成
-  Pass@1；
-- Rubric 在模型之间冻结共享；
-- Judge 不能看到 Reward、gold ASIN、Actor 未见的 raw observation 或其他 Actor 的结果；
-- Reward 与 Rubric 冲突时并列保留，不允许一方覆盖另一方；
-- 模型比较按 task ID 做配对迁移分析，而不只比较两个总体百分比。
+| 用途 | 目录 | 任务数 | Reward | 状态 |
+|---|---|---:|---|---|
+| 当前 release benchmark | `data/multiturn/evaluation-dev-v2/` | 500 | Reward v4 | 已用于模型选择；统一报告当前结果 |
+| 后续独立 Final | `data/multiturn/final-200-v1/` | 200 | Reward v4 | 已从 Final-500 结果盲抽并冻结，当前不运行 |
+| 历史单轮回归 | `data/evaluation/tasks.jsonl` | 200 | Reward v3 | 只作参考项目归档 |
 
-## 3. Reward v3 在多轮项目中的职责
+正式 Final-200 的关键哈希为：
 
-Reward v3 使用环境私有的完整目标评价最终购买结果：
+| 资产 | SHA-256 |
+|---|---|
+| `manifest.json` | `f9a3970c9bc59374ac23741a4a4519dca44832cc55414ce55944bb1fd446551e` |
+| `tasks.jsonl` | `f7f646f50c215f816fd9fc48a26e02110624b1ad17d18a9490634cfc46e99829` |
+| `gap_openings.jsonl` | `fd65618c11a8b1cd2616e1efd11ba510f291124c5bc2e32567a4fe4efba4780e` |
+| `complete_openings.jsonl` | `5acd0788255f6b8ee4fe8f757f20f16dfe675aa402435898de1ce5fb7c78f109` |
+| `conditions.jsonl` | `5cda59afeb0050131d6e9c66f26a187093fa5dda0c2dc4244cd349507ccc8f08` |
 
-- `gold_purchase=1.0`：购买目标 ASIN，并满足可验证要求；
-- `valid_alternative_purchase=0.55`：购买不同 ASIN，但满足全部激活要求；
-- 其余结果区分部分替代、错误购买、合理放弃、过早放弃、循环、步数耗尽和不可验证。
+这些是 manifest 记录的规范 LF 字节哈希；Windows checkout 若自动转换为 CRLF，直接对工作区文件执行
+`Get-FileHash` 会不同，运行审计应使用仓库现有的规范化哈希逻辑。
 
-这正适合多轮任务：Actor 只看到不完整 opening，但终局仍按完整用户目标判定。Reward v3
-不需要知道 Actor 是否提问，也不应因为出现 `ask_shopper` 就加分。否则完整请求上会产生
-无条件提问的捷径。
+冻结资产已验证：每个 task 都有 gap 和 complete opening；G+ 与 G− 引用同一份 gap opening；
+`source_goal_hash` 全部一致；每题恰好对应三个评测条件。
 
-需要保留的局限是：Reward v3 只能说明最终结果，不能单独回答以下问题：
+当前正式 SFT、GRPO train/validation、DEV-500、Reward v4 Final-200 和旧 Reward v3 Final-200 的 task ID
+两两隔离。后续训练 manifest 仍应显式列出这些集合，不能只依赖上游划分隐式保证。
 
-- 问题是否必要、具体且与 opening 缺口相关；
-- Shopper 回答是否真正补充了缺失事实；
-- Actor 是否在后续搜索和决策中使用了答案；
-- 如果禁止提问，同一 Actor 是否会失败。
+## 2. 当前被比较的模型
 
-这些问题由独立的澄清面板和 ask-enabled/ask-disabled 配对评测回答。
+当前 release 报告比较三个已有完整 DEV-500 结果的阶段：
 
-## 4. 正式测试集进入条件
+1. **Base**：冻结 revision 的 `Qwen3.5-2B`；
+2. **SFT**：开发集选择的 `checkpoint-325`；
+3. **BPO v1**：从 SFT checkpoint-325 开始、完成 200 个 optimizer steps 的历史 RL 运行。
 
-当前新项目任务池已经在任何 LLM 调用之前确定性冻结：
+CARL-BPO v1 当前只有训练 validation 和 step-260 诊断，没有仓库内可复核的 DEV-500 三条件结果；
+CARL-BPO v2.1 仍在运行。二者完成后可追加一行，但不能在结果不存在时把 BPO v1 数字改名为
+CARL-BPO。后续运行独立 Final-200 前，必须先冻结唯一 checkpoint。
 
-```text
-evaluation:       500
-sft_candidates: 3,000
-grpo_validation:  500
-grpo_train:     5,000
-```
+每个模型必须共享：
 
-但 task-ID 隔离不是完整的 benchmark 清洗。正式评测之前，必须对 500 个 evaluation
-候选逐题执行与 Final-200 Clean 相同等级的静态或 gold replay 审计：
+- task、opening 和条件映射；
+- Actor system prompt、工具 schema 和 Action Guard；
+- ShopSimulator、商品数据和 Reward v4；
+- Shopper 模型、prompt、参数与最多提问次数；
+- temperature、top-p、最大步数、上下文和 observation budgets；
+- 汇总代码和固定分母规则。
 
-- gold ASIN 和正确规格真实可购买；
-- required option 唯一映射到环境规格轴；
-- 最终 variant price 可解析；
-- Query 中出现预算时，Reward requirement compiler 实际解析出对应价格约束；
-- 按 gold 规格购买能得到 Reward v3 `gold_purchase`、`reward_valid=true`；
-- source goal、商品数据、环境版本和 Reward 版本 hash 一致；
-- 任务与所有 SFT、GRPO、历史 benchmark 和开发评测 task ID 零重叠。
+## 3. 三个配对条件
 
-不合格任务只能按冻结顺序从 `reserve` 池确定性补入，并留下 replacement manifest；不能根据
-Qwen3.5-2B、SFT 或 GRPO 的表现挑题。最终分母保持 500。
+| 简称 | 条件 | Actor 可见输入 | `ask_shopper` | 回答的问题 |
+|---|---|---|---|---|
+| G+ | `gap-ask-enabled` | 缺少关键事实的 opening | 可用 | 缺信息时能否主动澄清并完成购买？ |
+| G− | `gap-ask-disabled` | 与 G+ 完全相同的 opening | 不可用 | 澄清通道带来了多少实际收益？ |
+| C+ | `complete-ask-enabled` | 完整请求 | 可用 | 正常购物能力如何，是否无条件提问？ |
 
-当前 `evaluation-v1` 确定性审计已经得到：
+G+ 和 C+ 是两个同等重要的部署场景；G− 是配对诊断对照，不是第三种同权重部署场景。因此：
 
-| 项目 | 数量 |
-|---|---:|
-| 原始候选 | 500 |
-| Reward v3 gold 可达 | 306 |
-| 被拒绝并替换 | 194 |
-| 为取得 194 个合格补题而扫描的 frozen reserve 候选 | 307 |
-| 清洗后固定分母 | 500 |
+- 分别报告 G+、G−、C+，不只给一个平均值；
+- 不把 G− 按三分之一权重加入“总体模型能力”；
+- 若模型选择需要单一排序值，只允许在 DEV 上使用
+  `(G+ strict success + C+ strict success) / 2` 作为选择索引，并明确它不是最终评测总分；
+- G+−G− 必须同时报告两个绝对成功率；有逐题轨迹时再报告 task-level gains/losses，防止把 G− 退化
+  误读成澄清进步。
 
-原始候选的主要拒绝原因是 `explicit_price_not_compiled=150`，其次包括 gold 购买不
-可达、variant price 不可解和 option requirement 不可解。该结果说明“随机冻结且 task-ID
-隔离”不足以构成可解释的 Reward benchmark。正式清洗产物位于：
+每个 Actor、task、condition 只运行一次 temperature=0 的确定性 rollout，不报告 Pass@k。
+
+## 4. Reward v4 与严格成功
+
+Reward v4 是当前训练和评测共同使用的确定性终局标准。它把完整需求编译为 category、brand、model、
+core function、option 和 price 原子，区分 hard、required 和 soft，并使用实际选择的 variant 与可验证价格
+判定购买结果。
+
+最核心指标定义为：
 
 ```text
-data/multiturn/evaluation-v1/tasks.jsonl
-data/multiturn/evaluation-v1/reward_audit.jsonl
-data/multiturn/evaluation-v1/metadata.json
+strict_success =
+  reward_version = "shopsimulator-reward-v4"
+  AND trajectory status = "done"
+  AND trajectory/terminal done = true
+  AND terminal over = true
+  AND reward_valid = true
+  AND purchase_success = true
+  AND reward_type = "gold_purchase"
+  AND termination_reason = "gold_purchase"
 ```
 
-随后为每道题生成一次 gap opening：
+同时报告：
 
-- 使用冻结的 Qwen3.8-27B、opening prompt 和确定性参数；
-- 必须有非空 `omitted_dimensions`、逐字可溯源的 `omitted_facts` 和 `source_goal_hash`；
-- opening 不得泄漏或改写被省略事实；
-- 生成失败不能静默缩小分母，应按同一确定性 replacement 规则处理；
-- opening 生成后冻结，Base、SFT、GRPO 和所有评测条件共享。
+- `purchase_success`：`gold_purchase` 或 `valid_alternative_purchase`；
+- `done_rate` 和 termination reason；
+- `reward_valid_rate`；
+- mean final Reward v4；
+- reward type 分布；
+- infrastructure-invalid 数量和 task IDs。
 
-## 5. 开发评测与正式评测分开
+固定分母内的缺失、API 失败、环境失败和无效 Reward 不能静默删除。Reward v4 不因调用
+`ask_shopper` 自动加分；澄清能力由配对条件和澄清指标单独判断。
 
-### 5.1 开发评测
+## 5. 最小可信评测
 
-使用 `data/multiturn/tasks/grpo_validation.jsonl` 及其独立 frozen openings，用于：
+### 5.1 什么时候采用
 
-- 验证 Qwen3.5-2B 服务、tool parser、Shopper 和 collector 闭环；
-- 决定 `max_tokens`、context budget 等运行参数；
-- 检查多轮 SFT checkpoint 和 GRPO checkpoint；
-- 做 bad-case 分析和 prompt/代码修复。
+这是当前项目默认必须完成的版本。它不调用 Rubric LLM 或轨迹 Judge，依靠环境终局、冻结 Shopper
+审计和代码指标回答两个核心问题。它适用于：
 
-它可以被反复查看，因此不能作为最终无偏测试结果。
+- DEV-500 上统一比较 Base/SFT/BPO，并追加后续 CARL-BPO；
+- 当前 GitHub release、简历、README 和答辩；
+- 短期项目交付；
+- 在完整 Judge 评测尚未运行时提供可信结论。
 
-开发集也已经按相同 Reward 可达性规则清洗为固定 500 题，其中原始候选 310 题保留、
-190 题从排除正式测试集后的 frozen reserve 补入：
+### 5.2 必须报告的指标
 
-```text
-data/multiturn/evaluation-dev-v1/tasks.jsonl
-data/multiturn/evaluation-dev-v1/reward_audit.jsonl
-data/multiturn/evaluation-dev-v1/metadata.json
-```
+#### A. 最终购买结果
 
-### 5.2 正式评测
+每个模型分别报告：
 
-使用清洗并冻结后的 500 题 evaluation benchmark。正式任务不得用于：
+- G+ strict success；
+- C+ strict success；
+- G− strict success；
+- 三条件 purchase success、Reward-valid、Done 和 mean Reward v4；
+- reward type 与 termination reason 分布。
 
-- 数据配比、prompt、Reward 或超参数选择；
-- SFT/GRPO checkpoint 选择；
-- 针对 task 的 bad-case 修复；
-- Shopper 或 Judge prompt 校准。
+G+ 和 C+ 是并列主结果。G− 只用于解释澄清通道，不参与三条件等权总分。
 
-可以在训练前生成并封存 Base rollout，但如果训练过程会依据 Base 的逐题正式结果调整，
-该集合就不再是盲测。项目默认先完成开发集基座评测；正式 Base/SFT/GRPO 在协议和 checkpoint
-冻结后统一运行。
+#### B. 澄清能力
 
-## 6. 三个正式条件
+- G+ 至少提问一次的 task rate；
+- G+ grounded-question task rate；
+- G+ no-ask rate；
+- C+ unnecessary first-ask rate；
+- C+ 第二次无信息提问、完全/近似重复问题和问题上限触发率；
+- 提问后无后续购物动作的 task rate；
+- 推荐补充 G−→G+ strict gains、losses、ties 和对应 task IDs；
+- 推荐补充 G−→G+ purchase-success gains/losses。
 
-同一个 task 使用相同完整目标和相同 frozen opening，分别运行：
+`grounded` 只表示 Shopper 回答使用了冻结 omitted facts，不单独证明该问题具有因果必要性。因果证据
+来自同 task、同 gap opening 的 G+ 与 G− 结果迁移。
 
-### G+：Gap / ask-enabled（主条件）
+#### C. 执行可靠性
 
-- Actor 只看到不完整 opening；
-- 工具中包含 `ask_shopper`；
-- 独立 LLM Shopper 只依据私有完整目标回答；
-- 衡量真实多轮购物成功率和自主澄清行为。
-
-### G−：Gap / ask-disabled（因果对照）
-
-- Actor 看到与 G+ 完全相同的 opening；
-- 隐藏 `ask_shopper`，其余工具与参数相同；
-- 衡量在无法补齐信息时的购物结果。
-
-G+ 与 G− 的 task 级成功迁移，是“澄清带来实际收益”的主要证据。它比仅统计提问率更重要。
-
-### C+：Complete / ask-enabled（过度提问对照）
-
-- Actor 看到完整请求；
-- 仍提供 `ask_shopper`；
-- 衡量模型是否在信息已经充分时无条件提问。
-
-三种条件不是同一条件下的重复采样，不报告 Pass@k。每个条件均保持一次确定性 rollout，
-并分别报告结果。
-
-## 7. 五个互不覆盖的结果面板
-
-### A. Reward 与终局
-
-- Reward v3 type、validity、final reward；
-- strict gold success；
-- purchase success（包括 valid alternative）；
-- hard gates、weighted score 和 termination reason；
-- 固定分母下的缺失与基础设施无效任务。
-
-### B. 完整需求 Rubric
-
-- hard/soft requirement 的 satisfied、violated、unknown；
-- Reward–Rubric disagreement；
-- Rubric 从私有完整 Query 生成，但在 Actor 之间冻结；
-- Judge 只能用 Actor 实际看过的 opening、Shopper 回答、页面证据和动作作判断。
-
-### C. 轨迹质量
-
-保留原项目五维：搜索策略、候选利用、证据核验、决策质量和终止效率。不要把五维相加成
-总分。Judge 输入必须包含 Actor 可见的 Shopper tool response，但不得包含
-`opening_audit`、`omitted_facts`、`used_facts`、Reward 或 gold 信息。
-
-### D. 澄清行为
-
-- ask task rate 与每题问题数分布；
-- grounded ask：回答的 `used_facts` 非空且是 frozen `omitted_facts` 的子集；
-- gap 上的 no-ask rate；
-- complete 上的 unnecessary-ask rate；
-- 首次提问位置、提问是否发生在购买前；
-- Shopper 调用数、空回答、截断、API 失败；
-- G+ 相对 G− 的 task 级 success gain/loss；
-- 回答后搜索词、候选选择或规格判断是否出现可审计变化。
-
-`grounded` 只证明问答命中了预先冻结的信息缺口，不等价于证明该问题在因果上必要；因果收益
-由 G+/G− 配对结果负责。
-
-### E. 确定性行为与基础设施
-
-- 环境购物步数与总 Actor 回合数分开统计；
-- Action Guard、重复调用、repeat loop 和 max steps；
-- observation/context 截断；
-- Actor 与 Shopper 的请求数、token 和延迟；
+- 环境购物动作数与 Actor 总回合数；
+- Action Guard rejection 及原因；
+- malformed/illegal tool call；
+- duplicate action、duplicate search 和 repeat loop；
+- max steps；
+- context overflow、observation truncation；
+- Actor/Shopper API error；
 - infrastructure-invalid task IDs。
 
-`ask_shopper` 不改变商店页面，也不是 ShopSimulator 环境动作。正式协议允许最多 35 个商店
-动作和 2 个 Shopper 问题；问题不挤占 35 个环境动作，但问题数、Actor 回合数和延迟必须单独
-报告，避免把提问当作零成本。
+### 5.3 DEV 结果解释规则
 
-## 8. Base/SFT/GRPO 比较
+DEV-500 已经参与 SFT checkpoint 与 RL 方案选择，因此当前结果按以下边界解释：
 
-基座为 `Qwen3.5-2B`。每个模型都运行 G+、G−、C+，并做两层配对：
+1. 先拒绝任务缺失、Reward 版本错误、模型名错误或基础设施异常未解释的 run；
+2. G+ 和 C+ strict success 形成并列主指标，Pareto 更优的候选优先；
+3. 两者互有胜负时，使用 `(G+ + C+) / 2` 的 DEV 选择索引；
+4. 检查 G−→G+ 净迁移不得因 G− 大幅退化而虚增；
+5. 依次用 Reward-valid、Done、较低的严重澄清错误和较少 Guard 作为 tie-breaker；
+6. 记录所有候选结果和选择理由；运行 Final-200 前预先冻结唯一 RL checkpoint。
 
-1. 同一条件内：Base ↔ SFT ↔ GRPO；
-2. 同一模型内：G+ ↔ G−，以及 G+ 的 gap ask rate ↔ C+ 的 unnecessary ask rate。
+RL 没有超过 SFT 也是有效实验结论，不能通过改看 Final、改分母或只挑某一条件来包装提升。
 
-主要指标按优先级为：
+### 5.4 最小执行流程
 
-1. G+ strict gold / purchase success；
-2. G+ 相对 G− 的成功率增益和 task 迁移；
-3. gap grounded-ask rate；
-4. complete unnecessary-ask rate；
-5. Reward/Rubric、轨迹五维和失败类型；
-6. 商店步数、总回合数、Shopper 调用和延迟。
+```text
+当前 release：DEV-500 × G+/G−/C+
+    -> Base / SFT-325 / BPO-v1 每格 500 条
+    -> 确定性汇总与 task-level 配对迁移
+    -> 如实标记 frozen development benchmark
 
-项目不声明单一“总分”。一个合理的澄清 Agent 应同时提高 G+ 购物成功、保持正的 G+−G−
-增益，并控制 C+ 上的不必要提问。
-
-## 9. 训练前基座里程碑
-
-在启动多轮 SFT 前必须完成：
-
-1. 多轮 evaluation pool 的 Reward-reachability 清洗脚本与 replacement manifest；
-2. 开发集和正式集 opening 冻结工具；
-3. collector 的 G+ / G− / C+ 模式；
-4. 澄清行为确定性汇总；
-5. Qwen3.5-2B 开发集 smoke；
-6. Qwen3.5-2B 完整开发基座评测；
-7. 协议、模型 hash、prompt、tool schema、Shopper 和推理参数 manifest。
-
-完成这些项目后，才进入多轮 SFT。最终 benchmark 只在 checkpoint 和全部协议冻结后运行。
-
-当前第 1、3、4 项及其 CPU 契约测试已经完成；第 2 项的工具链已具备，但正式 opening
-尚未生成。后续正式入口只允许读取清洗后的
-`data/multiturn/evaluation-v1/tasks.jsonl`，不得退回原始 500 候选。
-
-opening 冻结分为两步：`generate_multiturn_tasks.py` 使用指定 Shopper 模型生成并审计
-gap opening；`freeze_multiturn_openings.py` 从同一私有目标确定性提取 complete opening，
-验证 `source_goal_hash`，并生成 G+/G−/C+ condition manifest。G+ 与 G− 只引用同一份
-gap opening，不重复生成。
-
-## 10. 五面板评测 v2 实现
-
-多轮评测不再只停留在 rollout `summary.json`。当前代码已经把原单轮四面板内核升级为
-`shopping-trajectory-evaluation-v2`，每条轨迹明确拼装五个面板：
-
-1. `reward_and_terminal`：Reward v3 与终局；
-2. `requirement_rubric`：逐要求判断和 Reward–Rubric disagreement；
-3. `trajectory_quality`：五维 Judge 和错误类型；
-4. `clarification`：代码指标与 Judge 澄清判断；
-5. `deterministic`：动作、合法性、重复、上下文和基础设施。
-
-澄清面板会确定性记录：
-
-- Shopper 问题数和 grounded 数；
-- gap no-ask 与 complete unnecessary-ask；
-- 首次问题位置和购买前提问；
-- 回答后搜索/候选/规格/购买动作；
-- Actor/Shopper 调用数；
-- G− 到 G+ 的 strict/purchase success task 迁移；
-- 每个 Actor 在 C+ 上的不必要提问 task IDs。
-
-`auditable_post_answer_action` 只表示回答后存在可见动作，不宣称因果上一定使用了答案。真正的
-因果收益仍由同 task 的 G+/G− 成功迁移负责。
-
-### 10.1 冻结共享 Rubric
-
-Rubric 只为每个 task 生成一次，Base/SFT/GRPO 和三个条件共享：
-
-```bash
-export PYTHONPATH=./src
-
-python scripts/freeze_multiturn_rubrics.py \
-  --tasks data/multiturn/evaluation-dev-v1/tasks.jsonl \
-  --output-dir outputs/evaluation/multiturn/shared-dev-v1 \
-  --model qwen3.8-27b \
-  --base-url http://127.0.0.1:8001/v1 \
-  --api-key local-qwen
+后续增强：
+    -> CARL-BPO v2.1 完成后追加同协议 DEV-500
+    -> 冻结唯一模型并一次性运行 Final-200
 ```
 
-入口支持 `--resume`，并保存 TaskFacts、代码候选、Qwen 原始选择、最终 Rubric、请求元数据和
-输入/产物 SHA-256。API key 不写入 manifest。
-
-### 10.2 对一个 Actor/条件运行五面板
-
-先由 `scripts/evaluate_multiturn.sh` 或同一 collector 生成原始轨迹，再执行：
+当前入口默认使用 DEV-v2：
 
 ```bash
-export PYTHONPATH=./src
-export OPENAI_BASE_URL="你的 DeepSeek API base URL"
-export OPENAI_API_KEY="你的 API key"
-
-python scripts/evaluate_multiturn_panels.py \
-  --expected-tasks data/multiturn/evaluation-dev-v1/tasks.jsonl \
-  --trajectories outputs/evaluation/multiturn/base-dev/gap-ask-enabled/trajectories.jsonl \
-  --rubrics outputs/evaluation/multiturn/shared-dev-v1/rubrics.jsonl \
-  --output-dir outputs/evaluation/multiturn/base-dev/gap-ask-enabled \
-  --actor-label base \
-  --condition gap-ask-enabled \
-  --judge-model deepseek-v4-flash-0731
+export MULTITURN_ASSET_DIR="$PWD/data/multiturn/evaluation-dev-v2"
+export EVAL_OUTPUT_DIR="$PWD/outputs/evaluation/release-dev500/MODEL_LABEL"
+bash scripts/evaluate_multiturn_parallel.sh MODEL_LABEL
 ```
 
-该入口会：
+正式运行前应先使用小规模 limit 做基础设施 smoke；smoke 产物与正式新目录隔离，正式 run 不设置 limit。
 
-- 规范化事件并分离商店步数与 Shopper 问题；
-- 先计算确定性指标；
-- infrastructure-invalid 轨迹保留在固定分母，但不伪造 Judge 分数；
-- 为有效轨迹调用 Judge，严格验证 rubric/event IDs 和五面板 schema；
-- 保存可恢复的 `judges.jsonl`、`preprocessed.jsonl`、`evaluations.jsonl`、汇总和无密钥 manifest。
+## 6. 最小评测的统计与展示
 
-### 10.3 生成 Base/SFT/GRPO × G+/G−/C+ 配对结果
+最低交付必须给原始计数和固定分母，例如 `345/500 (69.0%)`，不能只给百分比。推荐同时给：
 
-每个 Actor 根目录都必须包含三个条件的 `evaluations.jsonl`：
+- success rate 的 task bootstrap 95% CI；
+- Base→SFT、SFT→RL 的 paired bootstrap 差值 CI；
+- G−↔G+ 二元成功迁移的 McNemar 检验；
+- gains、losses 和 ties；
+- 每个关键退化类型的 task IDs。
 
-```bash
-python scripts/compare_multiturn_evaluations.py \
-  --expected-tasks data/multiturn/evaluation-dev-v1/tasks.jsonl \
-  --run base=outputs/evaluation/multiturn/base-dev \
-  --run sft=outputs/evaluation/multiturn/sft-dev \
-  --run grpo=outputs/evaluation/multiturn/grpo-dev \
-  --output outputs/evaluation/multiturn/dev-comparison.json
+如果暂时没有实现置信区间或 G−→G+ 逐题迁移，固定分母的原始计数、绝对成功率和完整失败分布仍
+构成当前最小可信评测；逐题迁移和统计推断可在完整评测阶段补充。模型之间已有配对轨迹时，应像
+BPO v1 对 SFT 一样报告 gains/losses，而不是只比较聚合百分比。
+
+推荐结果首页只放：
+
+| 模型 | G+ strict | C+ strict | G− strict | C+ unnecessary ask | Done | Reward valid |
+|---|---:|---:|---:|---:|---:|---:|
+| Base | 2/500 | 3/500 | 1/500 | 29/500 | 168/1500 | 166/1500 |
+| SFT-325 | 345/500 | 361/500 | 264/500 | 469/500 | 1490/1500 | 1486/1500 |
+| BPO v1 | 345/500 | 360/500 | 263/500 | 461/500 | 1487/1500 | 1483/1500 |
+
+## 7. 完整评测体系
+
+完整评测保留最小可信评测的全部结果，并增加五个互不覆盖的面板。LLM Judge 只增强需求级与过程级
+解释，不能覆盖 Reward v4 的确定性终局结论。
+
+### 面板 A：Reward 与终局
+
+沿用最小评测全部 Reward v4 指标、固定分母、终局类型和基础设施无效任务。
+
+### 面板 B：完整需求 Rubric
+
+- 从每个 task 的私有完整目标生成一次要求候选；
+- 使用冻结的本地 Qwen3.8-27B 整理 Rubric；
+- 每个 task 只冻结一份，Base/SFT/RL 和三个条件共享；
+- 按 hard/required/soft 报告 satisfied、violated、unknown；
+- 保留 Reward–Rubric disagreement，不允许一方覆盖另一方。
+
+Rubric LLM 只能筛选和描述代码候选，不能创造新的字段、值或隐藏要求。模型 revision、prompt、schema、
+temperature、thinking 开关和产物哈希全部进入 manifest。
+
+### 面板 C：轨迹质量 Judge
+
+主 Judge 使用冻结的 `deepseek-v4-flash-0731`，逐轨迹分别评价：
+
+1. search strategy；
+2. candidate utilization；
+3. evidence verification；
+4. decision quality；
+5. termination efficiency。
+
+五维分别报告 0/1/2 分布和均值，不相加为总分。Judge 只能看到 Query、冻结 Rubric、Actor 实际看过
+的 observation、Shopper 已公开回答、动作和白名单行为指标；不能看到 Reward、gold ASIN、私有
+omitted facts、raw observation 或其他模型结果。
+
+### 面板 D：澄清行为
+
+沿用最小评测的确定性澄清指标，并由 Judge 补充问题是否具体、是否与缺口相关、回答后决策是否有可见
+依据。`auditable_post_answer_action` 只表示回答后出现了可审计动作，不宣称一定存在因果使用。
+
+### 面板 E：确定性行为与基础设施
+
+沿用最小评测的 Guard、重复、步数、上下文和 API 指标。`infrastructure_invalid` 轨迹保留在固定分母，
+但标记为 `not_judged`，不要求 LLM 猜测分数。
+
+## 8. 完整评测的校准、成本与运行策略
+
+在触碰 Final-200 Judge 结果前，先在 DEV 上人工复核约 50 条分层轨迹，检查：
+
+- Rubric 是否遗漏或扩写要求；
+- Judge schema 成功率；
+- 是否引用不存在的 event ID；
+- hard requirement 和主要错误类型的一致率；
+- Reward–Rubric disagreement 是否有可解释证据。
+
+prompt 和模型只能在 DEV 上校准。正式 Rubric、Judge 和抽样策略冻结后才能运行 Final。
+
+Base、SFT 和一个 RL 的全量 Judge 是 1,800 条轨迹；增加一个预注册 RL 消融则为 2,400 条。按每条
+12K–24K 输入、1K–2K 输出，并为重试预留 10%–20%。价格随服务变化，不在协议中写死金额；先运行
+20 task × 3 condition × 1 model 的 pilot，从保存的 API `usage` 与当期单价外推。Rubric 使用本地
+Qwen3.8-27B 时没有额外 API 调用费用，但需要记录 GPU 时间。当前简历版本不要求运行 Judge。
+
+如果时间或预算有限，可以预先冻结 50–100 个分层 task 只做 Judge 诊断；这必须标成“诊断样本”，不能
+冒充全量五面板结果。若启动后续独立评测，确定性核心指标仍对全部 Final-200 运行。
+
+## 9. 完整评测产物
+
+```text
+shared/
+  task_facts.jsonl
+  rubric_candidates.jsonl
+  rubrics.jsonl
+  manifest.json
+
+MODEL/CONDITION/
+  trajectories.jsonl
+  summary.json
+  preprocessed.jsonl
+  judges.jsonl
+  evaluations.jsonl
+  evaluation_summary.json
+  run_manifest.json
+
+comparison/
+  deterministic-comparison.json
+  paired-transitions.json
+  five-panel-comparison.json
+  final-report.md
 ```
 
-比较器会拒绝 task、condition 或 interaction mode 错配，分别输出：
+原始轨迹和 Judge 请求保存在 `outputs/`，通常不提交 Git；仓库提交冻结配置、哈希、汇总、统计结果和
+代表性 bad cases。API key、私有完整目标和 Judge 不需要的 gold 字段不得进入公开报告。
 
-- 同条件内 Base → SFT → GRPO 的配对迁移；
-- 每个 Actor 内 G− → G+ 的成功获得/损失 task IDs；
-- C+ 不必要提问；
-- Rubric、轨迹五维、步数、Guard、重复与澄清变化；
-- `composite_score=null`，明确禁止合成总分。
+## 10. 发布门槛
 
-正式测试只能在 opening、Shopper 合约、Rubric、Judge、模型 checkpoint 和全部 manifest
-冻结后运行。当前新增的是代码入口和 CPU 契约，尚未调用 Qwen/DeepSeek，也未产生正式成绩。
+### 当前 DEV-500 release
+
+- [x] DEV-500 与正式 SFT、RL train/validation 零 task-ID 重叠；
+- [x] Base、SFT-325、BPO v1 各完成 G+/G−/C+ 500 条轨迹；
+- [x] Environment v2.1、Reward v4、Shopper 和推理参数保持同一合同；
+- [x] 报告每格原始计数、固定分母、Done、Reward-valid 和澄清行为；
+- [x] 明确标记为 frozen development benchmark，不声称未见 test-set 泛化；
+- [ ] 可选增强：补齐 Base/SFT 的 G−→G+ task-level gains/losses 和置信区间。
+
+### 后续独立完整评测
+
+- [ ] CARL-BPO v2.1 完成，并在 DEV 上冻结唯一 checkpoint；
+- [x] Final-200 已通过结果盲抽、固定 seed、父资产哈希和 manifest 冻结；
+- [x] Final-200 与所有训练/开发集合零 task-ID 重叠；
+- [ ] Base/SFT/选定 RL 各完成 Final-200 的 G+/G−/C+；
+- [ ] Final 结果不用于重新选模型或调参；
+- [ ] Rubric/Judge 已在 DEV 人工样本上校准并冻结；
+- [ ] 每个 task 只有一个共享 Rubric；
+- [ ] Judge 输入通过 blind guard；
+- [ ] 全量或预注册诊断样本的 Judge 覆盖范围明确；
+- [ ] 五面板分别报告，不输出综合总分；
+- [ ] 统计检验、置信区间和 bad-case 复核完成。
+
+## 11. 与旧评测文档的关系
+
+- [evaluation.md](evaluation.md)、[evaluation-dataset.md](evaluation-dataset.md)、
+  [evaluation-updates.md](evaluation-updates.md) 和
+  [evaluation-dashboard.html](evaluation-dashboard.html) 描述原参考项目的 Reward v3 单轮评测；
+- 旧 Reward v3 Final-200 可以作为额外单轮回归，但不能与当前 Reward v4 Final-200 合并分母或排名；
+- 当前多轮项目的正式结论、运行边界和指标定义以本文、版本化 manifest 与代码契约为准。

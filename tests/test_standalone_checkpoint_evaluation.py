@@ -3,6 +3,7 @@ import hashlib
 import pytest
 
 from scripts.run_standalone_checkpoint_evaluation import (
+    validate_final_assets,
     validate_exported_model,
     validate_source_checkpoint,
 )
@@ -64,6 +65,53 @@ def test_validate_source_checkpoint_rejects_stale_tracker(tmp_path):
 
     with pytest.raises(ValueError, match="tracker is behind"):
         validate_source_checkpoint(source)
+
+
+def test_validate_final_assets_accepts_frozen_final200(tmp_path):
+    import json
+    from scripts.freeze_multiturn_final_subset import normalized_text_sha256
+
+    rows = [{"task_id": task_id} for task_id in range(200)]
+    hashes = {}
+    for name in ("tasks", "gap_openings", "complete_openings"):
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+        hashes[name] = normalized_text_sha256(path)
+    conditions = tmp_path / "conditions.jsonl"
+    conditions.write_text(
+        "".join(
+            json.dumps({"task_id": task_id, "condition": condition}, sort_keys=True)
+            + "\n"
+            for task_id in range(200)
+            for condition in (
+                "gap-ask-enabled",
+                "gap-ask-disabled",
+                "complete-ask-enabled",
+            )
+        ),
+        encoding="utf-8",
+    )
+    hashes["conditions"] = normalized_text_sha256(conditions)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "shopping-multiturn-final-subset-v1",
+                "evaluation_role": "final",
+                "final_evaluation_used": True,
+                "reward_contract": "shopsimulator-reward-v4",
+                "task_count": 200,
+                "subset_sha256": hashes,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    expected, manifest_sha = validate_final_assets(tmp_path)
+    assert expected == 200
+    assert len(manifest_sha) == 64
 
 
 def test_summarize_uses_all_three_panels():

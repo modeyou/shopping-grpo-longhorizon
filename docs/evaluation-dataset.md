@@ -1,6 +1,9 @@
 # Final-200 Clean 评测集
 
-Final-200 Clean 是本仓库唯一用于横向比较的正式测试集。它仍有 200 题，但不是原始
+> **历史参考项目资产。** 本文冻结的是 Reward v3 单轮 Final-200 Clean。当前多轮项目使用 Reward v4
+> 的 DEV-500/Final-200，正式协议见 [多轮购物 Agent 评测协议](multiturn-evaluation.md)。
+
+Final-200 Clean 是原参考项目用于横向比较的正式测试集。它仍有 200 题，但不是原始
 Final-200 的原封不动副本：剔除了 81 道会让 Reward v3 错判、漏判或无法达到严格成功的
 原题，再从冻结的 ShopSimulator 任务池补入 81 道已经过相同检查的任务。
 

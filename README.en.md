@@ -1,5 +1,9 @@
 # Shopping GRPO
 
+> **Translation status:** this English README still describes the historical Reward v3
+> reference workflow. The current project is the Reward v4 multi-turn clarification,
+> SFT, BPO/CARL-BPO, and DEV-500 release documented in the Chinese [README](README.md).
+
 <div align="center">
 
 **English** · [简体中文](README.md)
