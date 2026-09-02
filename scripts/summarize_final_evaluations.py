@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit and summarize Base/SFT/RL runs on one frozen final benchmark."""
+"""Audit and summarize two or more model runs on one frozen final benchmark."""
 
 from __future__ import annotations
 
@@ -203,9 +203,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if len(args.run) != 3:
-        raise SystemExit("exactly three --run LABEL=ROOT values are required")
-    if len({label for label, _ in args.run}) != 3:
+    if len(args.run) < 2:
+        raise SystemExit("at least two --run LABEL=ROOT values are required")
+    if len({label for label, _ in args.run}) != len(args.run):
         raise SystemExit("final run labels must be unique")
     output = args.output_dir.resolve()
     if output.exists() and any(output.iterdir()):

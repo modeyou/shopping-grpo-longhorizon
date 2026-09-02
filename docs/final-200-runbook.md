@@ -122,15 +122,17 @@ asset manifest        f9a3970c9bc59374ac23741a4a4519dca44832cc55414ce55944bb1fd4
 建议运行顺序为 Base → SFT → RL。发生 API/环境错误时先修复并从原输出恢复，不得删除失败 task 或改变
 固定分母。
 
-## 5. 三模型离线汇总
+## 5. 多模型离线汇总
 
-三次运行全部完成后执行：
+所有运行完成后，重复传入 `--run LABEL=ROOT`。脚本接受至少两个、任意数量且 label 唯一的模型，自动
+生成所有模型对的逐题比较。例如同时汇总 Base、SFT、BPO v1 和 CARL-BPO v2.1：
 
 ```bash
 python scripts/summarize_final_evaluations.py \
   --run base=outputs/evaluation/final200-v1/base \
   --run sft=outputs/evaluation/final200-v1/sft-325 \
-  --run rl=outputs/evaluation/final200-v1/carl-bpo-v2.1 \
+  --run bpo-v1=outputs/evaluation/final200-v1/bpo-v1 \
+  --run carl-bpo-v2.1=outputs/evaluation/final200-v1/carl-bpo-v2.1 \
   --output-dir outputs/evaluation/final200-v1/comparison
 ```
 

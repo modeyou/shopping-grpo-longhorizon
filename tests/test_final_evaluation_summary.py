@@ -57,3 +57,31 @@ def test_summary_builds_condition_and_model_pairing():
     assert paired["gains"] == 3
     assert paired["losses"] == 0
     assert paired["ties"] == 597
+
+
+def test_summary_supports_arbitrary_model_count():
+    conditions = (
+        "gap-ask-enabled",
+        "gap-ask-disabled",
+        "complete-ask-enabled",
+    )
+    runs = {
+        label: _run(
+            {
+                condition: list(range(1, success_count + 1))
+                for condition in conditions
+            }
+        )
+        for label, success_count in (
+            ("base", 1),
+            ("sft", 2),
+            ("bpo-v1", 3),
+            ("carl-bpo-v2.1", 4),
+        )
+    }
+
+    result = summarize(runs)
+
+    assert list(result["models"]) == list(runs)
+    assert len(result["pairwise"]) == 6
+    assert "bpo-v1_to_carl-bpo-v2.1" in result["pairwise"]
