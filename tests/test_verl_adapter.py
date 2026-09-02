@@ -103,6 +103,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             loop.base_url = "http://shop.test"
             loop.timeout = 60
             loop.max_steps = 35
+            loop.max_concurrent_environments_per_worker = 2
             loop.required_environment_version = "shopsimulator-environment-v2.1"
             loop.reward_mode = "constraint_aware"
             loop.env_factory = FakeEnv
