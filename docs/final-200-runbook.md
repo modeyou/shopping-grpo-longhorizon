@@ -1,7 +1,9 @@
 # Final-200×3 运行手册
 
-本文给出 CARL-BPO v2.1 训练完成后的最短评测路径。最终目标是让 Base、SFT-325 和唯一选定的
-CARL-BPO checkpoint 在同一份未见 Final-200 上各运行 G+、G−、C+，共 1,800 条轨迹。
+本文给出唯一选定 CARL-BPO checkpoint 的最终评测路径。当前候选是 CARL-BPO v3 step200
+merged；它已完成 DEV-500×3，但截至2026-09-03尚未使用 Final-200。最终目标是让 Base、
+SFT-325 和唯一选定的 CARL-BPO checkpoint 在同一份未见 Final-200 上各运行 G+、G−、C+，
+共1,800条轨迹。
 
 ## 1. 已冻结资产
 
@@ -33,17 +35,37 @@ checkpoint 只按训练前冻结的 validation 规则选择，不在 DEV-500 或
 3. 再比较 invalid 和模型未完成；
 4. 仍相同则选择更早 checkpoint。
 
-把选择理由、validation 数字和 checkpoint step 写入运行记录。只导出这个 checkpoint：
+把选择理由、validation 数字和 checkpoint step 写入运行记录。只导出这个 checkpoint。
+
+LoRA checkpoint 必须执行“veRL导出 → PEFT merge”两步。已确认当前 `export_grpo.sh` 的输出中，
+顶层 `model.safetensors` 是未合并的 SFT base，真正的 RL 更新位于 `lora_adapter/`；直接评测
+export 目录会漏掉 RL 更新：
 
 ```bash
-RL_RUN="$PWD/outputs/models/CARL_BPO_RUN"
-RL_STEP=SELECTED_STEP
+RL_RUN="$PWD/outputs/models/carl-bpo-v3-step500-r4000-seed20260823-20260901-193508"
+RL_STEP=200
 RL_SOURCE="$RL_RUN/global_step_$RL_STEP"
-RL_MODEL="$PWD/outputs/models/carl-bpo-v2.1-step-$RL_STEP-export"
+RL_EXPORT="$PWD/outputs/models/carl-bpo-v3-step${RL_STEP}-export"
+RL_MODEL="$PWD/outputs/models/carl-bpo-v3-step${RL_STEP}-merged"
 
 test -d "$RL_SOURCE/actor"
+test ! -e "$RL_EXPORT"
 test ! -e "$RL_MODEL"
-bash scripts/export_grpo.sh "$RL_SOURCE/actor" "$RL_MODEL"
+
+bash scripts/export_grpo.sh "$RL_SOURCE/actor" "$RL_EXPORT"
+
+test -f "$RL_EXPORT/model.safetensors"
+test -f "$RL_EXPORT/lora_adapter/adapter_model.safetensors"
+
+CUDA_VISIBLE_DEVICES="" PYTHONPATH=src "$PWD/.venv/bin/python" \
+  scripts/merge_lora_adapter.py \
+  --base-model "$RL_EXPORT" \
+  --adapter "$RL_EXPORT/lora_adapter" \
+  --output "$RL_MODEL" \
+  --bf16
+
+test -f "$RL_MODEL/model.safetensors"
+test -f "$RL_MODEL/merge_manifest.json"
 ```
 
 ## 3. 先运行 RL-only DEV-500×3
@@ -75,7 +97,7 @@ FINAL_ASSETS="$PWD/data/multiturn/final-200-v1"
 `--source-checkpoint`：
 
 ```bash
-LABEL=carl-bpo-v2.1-step-$RL_STEP
+LABEL=carl-bpo-v3-step-$RL_STEP-merged
 OUT="$PWD/outputs/evaluation/final200-v1/$LABEL"
 ACTORS="$PWD/outputs/evaluation/actors/final200-v1-$LABEL"
 
@@ -125,14 +147,14 @@ asset manifest        f9a3970c9bc59374ac23741a4a4519dca44832cc55414ce55944bb1fd4
 ## 5. 多模型离线汇总
 
 所有运行完成后，重复传入 `--run LABEL=ROOT`。脚本接受至少两个、任意数量且 label 唯一的模型，自动
-生成所有模型对的逐题比较。例如同时汇总 Base、SFT、BPO v1 和 CARL-BPO v2.1：
+生成所有模型对的逐题比较。例如同时汇总 Base、SFT、BPO v1 和 CARL-BPO v3：
 
 ```bash
 python scripts/summarize_final_evaluations.py \
   --run base=outputs/evaluation/final200-v1/base \
   --run sft=outputs/evaluation/final200-v1/sft-325 \
   --run bpo-v1=outputs/evaluation/final200-v1/bpo-v1 \
-  --run carl-bpo-v2.1=outputs/evaluation/final200-v1/carl-bpo-v2.1 \
+  --run carl-bpo-v3=outputs/evaluation/final200-v1/carl-bpo-v3-step-200-merged \
   --output-dir outputs/evaluation/final200-v1/comparison
 ```
 

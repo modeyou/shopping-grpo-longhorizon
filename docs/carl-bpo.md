@@ -2,8 +2,10 @@
 
 > **名称**：CARL-BPO（Completion-Aligned Root–Local Branching Policy Optimization）
 > **中文名**：完成率对齐的 Root–Local 分支策略优化
-> **状态**：CARL-BPO v1/v2/v2.1 作为历史诊断对照；v2.1 已完成但未在 DEV-500 上超过
-> SFT-325；v3 方案已确认，等待代码实现与确定性审计，尚未批准启动新训练
+> **状态（2026-09-03）**：CARL-BPO v1/v2/v2.1 作为历史诊断对照；v3 已实现并从
+> SFT-325 完成到 `global_step_200`，当前训练已人工暂停，checkpoint 可继续训练。step 200
+> 的 LoRA 已正确合并并完成 DEV-500×3：strict total `0.655`，SFT-325 为 `0.647`。
+> 这是一项正向开发集结果，尚未执行 Final-200，也不能视为最终统计结论。
 > **起点模型**：SFT `checkpoint-325`
 
 本文把正式 `full-bpo-v1` 的失败分析落成一套做减法后的 RL 改进方案。CARL-BPO
@@ -17,14 +19,15 @@ Root K=4 全局组 + Local K=4 局部组
           ↓
 目标对比分级筛选
           ↓
-Root episode LOO + Local suffix-only sibling LOO
+Root episode LOO + Local branch-action-only sibling LOO
           ↓
-标准 PPO token loss，Root/Local group 等权
+action-balanced PPO loss，Root/Local policy mass 各 0.5
 ```
 
-本文定义方案、实现约束和验证门槛。第 1–16 节记录 CARL-BPO v1 的设计与当前实现；
-第 17 节记录正式运行暴露的问题及已经确认的 v2 替换方案。本文不会自动启动训练、合并模型，
-也不会使用 `final200`。
+本文定义方案、实现约束和验证门槛。第 1–16 节保留 v1 的设计演进与共享运行基础，
+第 17 节记录 v2/v2.1 的采样修订，第 18 节是当前 v3 算法合同，第 19 节记录当前运行、
+导出、合并和 DEV-500 证据。任何“当前实现”判断以第 18–19 节和源码为准；历史章节与其冲突时
+不得覆盖当前合同。
 
 ## 1. 问题与目标
 
@@ -385,7 +388,8 @@ patches/verl-0.8.0-shopping-dynamic-sampling.patch
 ```
 
 实现不得改变 Environment v2.1、Reward v4、observation v2、tool schema v2、数据 manifest
-或训练/评测零重叠契约。实现落地不构成启动训练、合并模型或运行 final200 的授权。
+或训练/评测零重叠契约。v3 已完成实现与 step 1–200 运行；是否从 step 200 继续到500以及是否
+使用 Final-200，仍是独立决策。
 
 ## 12. SwanLab 可观测性方案
 
@@ -399,7 +403,7 @@ JSON 为准。SwanLab 指标缺失、收尾状态异常或网络中断不得覆�
 
 ```text
 project: shopping-multiturn-agentic
-experiment: carl-bpo-v1-step500-r4000-seed20260823
+experiment: carl-bpo-v3-step500-r4000-seed20260823
 tags: carl-bpo, root-local, reward-v4, sft325, seed-20260823
 ```
 
@@ -605,7 +609,7 @@ history exporter 已把 decision steps 从旧 `0/10/50/100/150/200` 扩展到
 
 - SwanLab最后completed step等于本地optimizer记录；
 - checkpoint和validation节点无缺失；
-- 累计Root/Local groups均为500，accepted returns为4000；
+- 累计Root/Local groups均为500，accepted sibling terminal outcomes为4000；
 - 云端summary与本地最终validation一致；
 - 如云端run状态异常但本地完成，必须记录最后一致step和缺失区间，不能静默修补历史。
 
@@ -878,9 +882,11 @@ git pull --ff-only origin feat/bpo2
 
 export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=0,2,3,4
+export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 unset RAY_ADDRESS
 
+export SHOPSIM_BASE_URL='http://127.0.0.1:5700'
 export BPO_MODEL="$PWD/outputs/models/sft-checkpoint-sweep-dev200-v1/checkpoint-325"
 export SHOPPER_MODEL=deepseek-v4-flash-0731
 export SHOPPER_BASE_URL='https://your-endpoint/compatible-mode/v1'
@@ -909,7 +915,7 @@ export SWANLAB_API_KEY
 也不产生候选模型。每次使用新的空输出目录：
 
 ```bash
-export CARL_PREFLIGHT_NAME="carl-bpo-v1-preflight-$(date +%Y%m%d-%H%M%S)"
+export CARL_PREFLIGHT_NAME="carl-bpo-v3-preflight-$(date +%Y%m%d-%H%M%S)"
 export CARL_PREFLIGHT_OUT="$PWD/outputs/bpo/$CARL_PREFLIGHT_NAME"
 
 bash scripts/bpo.sh \
@@ -938,7 +944,7 @@ fused gradient、scheduler、step-0 cache、GPU headroom 和 API 鉴权检查均
 LR、Root/Local 比例或 checkpoint 频率 override：
 
 ```bash
-export CARL_NAME="carl-bpo-v1-step500-r4000-seed20260823-$(date +%Y%m%d-%H%M%S)"
+export CARL_NAME="carl-bpo-v3-step500-r4000-seed20260823-$(date +%Y%m%d-%H%M%S)"
 export CARL_OUT="$PWD/outputs/models/$CARL_NAME"
 export CARL_LOG="$PWD/outputs/bpo/logs/$CARL_NAME.log"
 export CARL_PID_FILE="${CARL_LOG%.log}.pid"
@@ -961,7 +967,8 @@ echo "CARL_PID=$CARL_PID"
 tail -F "$CARL_LOG"
 ```
 
-默认配置已经冻结500 optimizer steps、1000 accepted groups、4000 accepted returns、10-step
+默认配置已经冻结500 optimizer steps、1000 accepted groups、4000 accepted sibling terminal
+outcomes、10-step
 warmup 和500-step cosine horizon。正式 run 会先执行或精确复用 step-0 validation，随后在同一
 SwanLab run 内对首步非零梯度和首个正学习率参数 delta 执行硬门槛。通过后继续训练；失败则
 立即退出。500是上限，不代表自动选择 `global_step_500`。
@@ -994,8 +1001,9 @@ export CARL_ANALYSIS_OUT="$PWD/outputs/analysis/$CARL_NAME"
   --all-custom
 ```
 
-审计通过后仍只按 V6 使用冻结 validation 选择一个 checkpoint。未经再次确认，不合并模型、
-不执行 dev500 配对评测，也不使用 final200。
+完整500步运行才使用上述 N500/R4000 审计。人工暂停在中间 checkpoint 时，不得把不完整运行伪装成
+N500 已验收；应保存 `run_contract.json`、`training_diagnostics.jsonl`、完整日志、checkpoint 和
+`latest_checkpointed_iteration.txt`，再按第19节执行 checkpoint 级导出与评测。
 
 ## 17. CARL-BPO v2：目标优先候选池与可验证 Local 覆盖
 
@@ -1306,8 +1314,8 @@ v2.1 不改变 Reward、return、LOO、mask、PPO loss、Root/Local 结构或40/
 
 ### 18.1 状态、目标与边界
 
-CARL-BPO v3 的中文名为“快照增强的动作级信用 BPO”。本节是 v3 的设计冻结稿，优先级高于
-第 1—17 节中 v1/v2/v2.1 的历史实现说明。后续实现必须逐项满足本节；不得为了复用旧代码而
+CARL-BPO v3 的中文名为“快照增强的动作级信用 BPO”。本节是已落地的 v3 算法合同，优先级高于
+第 1—17 节中 v1/v2/v2.1 的历史实现说明。当前及后续实现必须逐项满足本节；不得为了复用旧代码而
 保留与 v3 冲突的 suffix-only、全局 token-mean 或占位 action metadata 路径。
 
 v3 只解决已经被正式运行证据支持的两个问题：
@@ -1343,14 +1351,14 @@ v3 采用 **snapshot-enhanced GiGPO** 作为方法锚点：
 1 Local group × K=4 同 snapshot continuations
 ```
 
-因此仍是 8 个 sibling returns/step，`M=1`，K 固定为4。Root 和 Local 可以来自不同 task；
+因此仍是8个 sibling terminal outcomes/step，`M=1`，K固定为4。Root 和 Local 可以来自不同 task；
 不把一次更新改成同一 backbone 上的多分叉，也不把 K 提高为8或更多。
 
 保持不变的项目合同：
 
 - 起点：SFT `checkpoint-325`；
 - 每步 Root/Local 各1组；
-- 最多500个 optimizer steps，4000 accepted returns；
+- 最多500个 optimizer steps，4000 accepted sibling terminal outcomes；
 - Reward、train-return 映射和 K=4 sibling LOO 数值定义不变；
 - Root/Local 总目标权重固定为 `0.5 / 0.5`；
 - Local 有效阶段的累计目标仍为 `product/option/search_strategy = 40/35/25`；
@@ -1536,7 +1544,7 @@ checkpoint 后硬停止，不得用无语义动作分歧的组补齐。
 
 ### 18.11 实现落点与禁止项
 
-实现必须按职责拆分：
+当前实现按以下职责拆分，后续修改不得破坏边界：
 
 1. `agent_loop.py` 记录真实 Root/Local action boundaries、结构化 tool call 和 snapshot identity；
 2. 独立的 action canonicalization 函数生成 semantic key，供筛选、审计和测试共用；
@@ -1558,7 +1566,7 @@ checkpoint 后硬停止，不得用无语义动作分歧的组补齐。
 
 ### 18.12 确定性测试、preflight 与运行验收
 
-代码实现后、任何正式训练前必须通过：
+当前 v3 已实现这些检查；未来每次修改或正式启动前仍必须全部通过：
 
 1. Root K=4 的每个真实 action boundary 可重建，action 数不再恒为占位值1；
 2. 同 tool/arguments、不同 reasoning/XML 格式得到相同 semantic key；
@@ -1575,8 +1583,8 @@ checkpoint 后硬停止，不得用无语义动作分歧的组补齐。
     return range、active actions/tokens 和 Root/Local action loss；
 12. 120批硬停止、25步 checkpoint 和 pending group 不训练合同继续成立。
 
-第一步运行门槛应额外人工核对一条 Root 和一条 Local 的 token span、semantic key、LOO、
-active support 与最终 actor loss。审计通过前不启动500步正式训练；正式训练仍需用户再次确认。
+第一步运行门槛还会核对 Root/Local token span、semantic key、LOO、active support 与最终
+actor loss。当前 run 已通过启动门槛并到达 step200；该事实不替代后续 checkpoint 的行为评测。
 
 ### 18.13 Local 信用的四项必查风险与处理原则
 
@@ -1613,3 +1621,162 @@ v3 的结构正确性通过并不等于 Local 信号足够有效。新正式运�
 本轮不立即增大 K 或 Local 采样温度。这两项会同时改变 rollout 成本、行为分布与
 PPO 数据合同；应先用 v3 的 authoritative metrics 确认问题是“没有第二个动作”、
 “同动作后果噪声”还是“Local advantage 尺度不合适”，再只改对应环节。
+
+## 19. 当前 v3 进度、导出合同与 DEV-500 结论
+
+### 19.1 当前运行状态
+
+截至2026-09-03，当前正式运行是：
+
+```text
+run name: carl-bpo-v3-step500-r4000-seed20260823-20260901-193508
+SwanLab: mode/shopping-multiturn-agentic/sconfuhu
+start model: SFT checkpoint-325
+reached checkpoint: global_step_200
+current process state: manually stopped after checkpoint 200 for DEV evaluation
+configured horizon: 500
+checkpoint interval: 25
+validation: step 0, 10, 50, 100, 150, 200, ... 500
+```
+
+“训练到 step 200”不等于“500步正式运行已经完成”。当前可以从保存完好的
+`global_step_200` 继续，但是否继续应依据本节的 DEV 结果和后续能力归因决定；不得把
+`audit_bpo_formal_run.py` 的 N500/R4000 完整验收标志用于这个中间状态。
+
+### 19.2 v3 已落地的真实算法合同
+
+当前 `feat/bpo2` 的权威配置与源码已经实现：
+
+- 每个 optimizer step 为1个 Root K=4和1个 Local K=4；
+- completion-aligned train return：gold `1.25`、valid alternative `1.0`、model failure
+  `-0.075`，其他可验证正常终局为 `0.1 * clip(terminal_utility, -1, 1)`；
+- Local 只允许 `product`、`option`、`search_strategy`，500个 Local 的目标为
+  `200/175/125`；
+- Local 必须有 return contrast、有效 canonical tool action，且至少2个不同 semantic action；
+- Root 的所有真实 action 获得 episode LOO；Local 只有当前 branch action 获得 sibling LOO，
+  prefix 和后续 suffix 不进入 policy loss；
+- action-balanced loss 先在 action 内平均，再在 group 内平均，Root/Local policy mass各0.5；
+- quality search 为10个 generation batches；120批仍无法凑齐严格 Root+Local 才硬停止，
+  不降级为单树更新；
+- Reward v4、K=4、rollout temperature `0.7`、top-p `0.9`、peak LR `1e-6`、10步 warmup和
+  500-step cosine horizon没有因 v3 改动。
+
+这里的“accepted sibling terminal outcomes”是入选 group 数乘以 K，不是统计学 effective
+sample size。当前监控已停止把它称为 effective returns。
+
+### 19.3 LoRA 导出与合并：必须是两阶段
+
+`scripts/export_grpo.sh` 调用 veRL FSDP merger。对当前 LoRA checkpoint，观察到的导出目录包含：
+
+```text
+model.safetensors                 # 未合并的 SFT-325 base
+lora_adapter/adapter_model.safetensors
+lora_adapter/adapter_config.json
+```
+
+当前 v3 step200 的导出 base 与 SFT-325 的 SHA-256 完全相同；adapter 则有186个非零
+`lora_B` tensor，`lora_B_abs_sum=122.4163575`。因此直接把 `*-export` 目录交给 vLLM 会漏掉
+RL 更新，得到近似或逐字节等同 SFT 的结果。正确流程是先导出，再 merge adapter：
+
+```bash
+cd ~/shopping-grpo
+
+export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
+export MERGE_PYTHON="$PWD/.venv/bin/python"
+
+export CARL_RUN="$PWD/outputs/models/carl-bpo-v3-step500-r4000-seed20260823-20260901-193508"
+export CARL_STEP=200
+export CARL_SOURCE="$CARL_RUN/global_step_$CARL_STEP"
+export CARL_EXPORT="$PWD/outputs/models/carl-bpo-v3-step200-export"
+export CARL_MERGED="$PWD/outputs/models/carl-bpo-v3-step200-merged"
+
+test -d "$CARL_SOURCE/actor"
+test ! -e "$CARL_EXPORT"
+test ! -e "$CARL_MERGED"
+
+bash scripts/export_grpo.sh "$CARL_SOURCE/actor" "$CARL_EXPORT"
+
+test -f "$CARL_EXPORT/model.safetensors"
+test -f "$CARL_EXPORT/lora_adapter/adapter_model.safetensors"
+
+CUDA_VISIBLE_DEVICES="" PYTHONPATH=src "$MERGE_PYTHON" \
+  scripts/merge_lora_adapter.py \
+  --base-model "$CARL_EXPORT" \
+  --adapter "$CARL_EXPORT/lora_adapter" \
+  --output "$CARL_MERGED" \
+  --bf16
+
+test -f "$CARL_MERGED/model.safetensors"
+test -f "$CARL_MERGED/merge_manifest.json"
+```
+
+所有 forward scoring、DEV-500 和 Final-200 的 `--model` 都必须指向 `CARL_MERGED`；
+`--source-checkpoint` 仍指向 `CARL_SOURCE`。禁止再把 `CARL_EXPORT` 当作独立 RL 模型。
+
+本次已验证：
+
+```text
+SFT-325 model SHA-256:        a6bd209090d8fef4a842639af3b2f403467794d40023925362910d99fd8338b0
+v3 export base SHA-256:       a6bd209090d8fef4a842639af3b2f403467794d40023925362910d99fd8338b0
+v3 merged model SHA-256:      622204f176539806e412475ef192b04700ab31112c0cc4f15748605b83dfe1f6
+SFT vs merged byte comparison: different
+```
+
+### 19.4 DEV-500×3：合并后结果
+
+冻结 DEV-500 的三个条件各500条，共1500条。正确合并后的 v3 step200 与 SFT-325 对比为：
+
+| model | gap ask | gap no-ask | complete ask | strict total | gap gain | unnecessary ask | mean Reward v4 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SFT-325 | 0.690 | 0.528 | 0.722 | 0.647 | +0.162 | 0.938 | 0.6010 |
+| CARL-BPO v3 step200 merged | **0.700** | 0.528 | **0.736** | **0.655** | **+0.172** | **0.924** | **0.6138** |
+| delta | +0.010 | 0.000 | +0.014 | **+0.008** | +0.010 | -0.014 | +0.0128 |
+
+逐题 strict flips 为：
+
+| condition | gains | losses | net |
+|---|---:|---:|---:|
+| gap-ask-enabled | 13 | 8 | +5 |
+| gap-ask-disabled | 4 | 4 | 0 |
+| complete-ask-enabled | 14 | 7 | +7 |
+| 合计（仅描述） | 31 | 19 | +12 |
+
+运行完整性为 v3 `1492/1500` done、`1485/1500` reward-valid、29个 guard；SFT 分别为
+`1490/1500`、`1486/1500`、32。结果说明正确合并的 step200 确有正向行为变化，之前未合并
+评测得到“与 SFT 完全相同”的结论无效。
+
+边界也必须保留：当前摘录尚未给出合并模型的
+`gold_purchase + valid_alternative_purchase` 原始计数，也未给出每个条件的显著性检验；
+`+12/1500` 是开发集上的点估计，不证明最终泛化或统计显著性。Final-200 尚未使用。
+
+### 19.5 已完成与未完成的因果审计
+
+已有 v3 step1–200 diagnostics 对150个 product/option Local tree做了语义复核：80个 product、
+70个 option，覆盖137个 task。结果为：
+
+| 类别 | product | option | 合计 |
+|---|---:|---:|---:|
+| stable success action | 25 | 23 | 48 |
+| single success, unreplicated | 6 | 9 | 15 |
+| mixed return under same semantic action | 15 | 10 | 25 |
+| failure only | 34 | 28 | 62 |
+
+48个 stable-success tree 中，41个被判为稳定成功动作语义正确，7个语义错误。该结果支持
+“部分 Local 对照确实对齐正确 product/option 动作”，同时也证明不能把所有 Local return contrast
+都解释为当前动作的稳定因果效果。
+
+固定50个 DEV 状态、100个 desirable/wrong action 的 forward scoring 已改用 merged 模型：
+99/100 个 candidate 的 decision log-prob 发生非零变化，排除了“RL 权重完全未进入模型”的解释。
+但当前保存到文档的摘要还没有回答 correct-vs-wrong margin 在多少状态上扩大，也没有完成
+selected Local action 的逐 checkpoint 前后排名统计；这两项仍是未完成的定向归因，而不是已验证结论。
+
+### 19.6 当前决策
+
+1. 保留 v3 step200 merged 作为当前 RL 候选；任何引用都必须带 `merged`。
+2. 不再引用未合并 step200 的 DEV 结果作为算法证据。
+3. 暂不修改 Reward、K、Local temperature/top-p 或 Root/Local 0.5/0.5，再启动新消融。
+4. 下一项最低成本工作是聚合100个固定动作的 correct-minus-wrong margin delta，并补出合并模型
+   的 gold+valid-alternative 原始计数。
+5. 是否续训到500应结合上述归因、训练 validation 曲线和预算决定；不能仅因 step200 已正向就默认
+   继续，也不能仅因提升较小就否定 v3。
+6. Final-200 保持未使用，直到唯一 checkpoint 和模型哈希正式冻结。

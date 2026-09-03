@@ -4,6 +4,13 @@
 > reference workflow. The current project is the Reward v4 multi-turn clarification,
 > SFT, BPO/CARL-BPO, and DEV-500 release documented in the Chinese [README](README.md).
 
+> **Current Reward v4 status (2026-09-03):** the correctly merged CARL-BPO v3
+> step-200 checkpoint reaches `982/1500 (65.5%)` strict success on frozen
+> DEV-500 x 3, versus `970/1500 (64.7%)` for SFT checkpoint-325. This is a
+> positive development-set estimate, not a Final-200 result or a claim of
+> statistical significance. The remainder of this English README is retained as
+> the historical Reward v3 reference workflow.
+
 <div align="center">
 
 **English** · [简体中文](README.md)
@@ -28,6 +35,23 @@ a frozen benchmark
 </div>
 
 ![Shopping GRPO project overview](docs/images/project-overview-pipeline.png)
+
+## Current Reward v4 / CARL-BPO result
+
+| Model | Gap + ask | Gap - ask | Complete + ask | Strict total | Mean reward |
+|---|---:|---:|---:|---:|---:|
+| SFT checkpoint-325 | 345/500 (69.0%) | 264/500 (52.8%) | 361/500 (72.2%) | 970/1500 (64.7%) | 0.6010 |
+| **CARL-BPO v3 step-200 merged** | **350/500 (70.0%)** | 264/500 (52.8%) | **368/500 (73.6%)** | **982/1500 (65.5%)** | **0.6138** |
+
+The paired strict flips are `13 gains / 8 losses` for Gap + ask, `4 / 4` for
+Gap - ask, and `14 / 7` for Complete + ask. The three conditions total a
+descriptive net improvement of 12 trajectories. Final-200 remains unused.
+
+The veRL export directory is not itself the standalone RL model: its top-level
+`model.safetensors` is the unchanged SFT base, while the learned update is in
+`lora_adapter/`. Merge the adapter before evaluation. See the
+[CARL-BPO design and evidence](docs/carl-bpo.md)
+and the [Final-200 runbook](docs/final-200-runbook.md) for the current contract.
 
 ## What is ShopSimulator?
 
@@ -384,8 +408,11 @@ bash scripts/grpo.sh --logger swanlab
 - [Data collection and dataset provenance](docs/data-collection.md)
 - [LoRA SFT](docs/sft.md)
 - [GRPO with veRL](docs/grpo.md)
+- [CARL-BPO v3 design, export contract, and DEV evidence](docs/carl-bpo.md)
+- [CARL-BPO v3 monitoring and audit](docs/carl-bpo-v3-monitor.md)
 - [Held-out evaluation](docs/evaluation.md)
 - [Final-200 Clean evaluation dataset](docs/evaluation-dataset.md)
+- [Final-200 runbook](docs/final-200-runbook.md)
 - [Final-200 Benchmark Dashboard (historical)](docs/evaluation-dashboard.html)
 - [Reward v3 design](docs/reward-v3.md)
 - [Auditable experiment results](experiments/comparison.md)

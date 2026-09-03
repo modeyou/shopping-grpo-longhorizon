@@ -3,9 +3,11 @@
 > **适用范围**：本文记录已经完成的 `full-bpo-v1`（200 steps / 400 trees /
 > 1600 sibling returns）实现与运行证据。当前 `feat/bpo2` 分支中的
 > `configs/bpo.yaml`、`scripts/bpo.sh` 和 `scripts/train_bpo.py` 已切换到
-> CARL-BPO（500 steps / Root+Local / 4000 accepted returns）。因此本文第5至9节的
+> CARL-BPO v3（500-step horizon / Root+Local / 4000 accepted sibling terminal outcomes）。
+> v3 已运行到 step 200，并在正确合并 LoRA 后完成 DEV-500×3。因此本文第5至9节的
 > 旧训练、导出和分支切换命令不得用于新运行；CARL-BPO 的唯一运行手册见
-> [`carl-bpo.md` 第16节](carl-bpo.md#16-当前实现与-linux-运行手册)。本文的快照、补丁、
+> [`carl-bpo.md` 第16节](carl-bpo.md#16-当前实现与-linux-运行手册)，当前实验状态与
+> 两阶段导出合同见[第19节](carl-bpo.md#19-当前-v3-进度导出合同与-dev-500-结论)。本文的快照、补丁、
 > 显存和故障分析仍作为共享基础设施说明。
 
 本文只描述本项目独立的 BPO 路线。BPO 使用自己的配置、运行入口和输出目录，
@@ -112,8 +114,8 @@ session 隔离约束。正常的错误动作、无购买、错误购买和终止
 
 若一个 group 的四个 return 没有可辨别差异，组内相对 advantage 为零，不进入 optimizer。
 正式训练每步严格要求 2 个有效 group；第一棵会跨候选生成 batch 保留，绝不降级为单树更新。
-第 10 个候选 batch 仍未满批时告警，第 30 个仍未凑齐时硬停止并保留最近 checkpoint；当前
-未完成 step 不计数，也不会把无差异树或伪造的第二棵树塞进训练。
+第 10 个候选 batch 仍未满批时告警，第 30 个仍未凑齐时硬停止并保留最近 checkpoint；该
+`full-bpo-v1` 历史实现的未完成 step 不计数，也不会把无差异树或伪造的第二棵树塞进训练。
 
 ### 2.4 BPO、GRPO、critic 与 PPO 的关系
 
@@ -501,9 +503,9 @@ BPO 与 GRPO 不得同时占用 GPU 0–3、同一 Ray runtime 或同一批 Shop
 
 ### 8.1 导出 step 200
 
-正式验收通过后，将 veRL FSDP actor checkpoint 导出为可由 vLLM 直接加载的
-Hugging Face 模型。导出目录必须是全新的，不能覆盖 SFT merged model 或训练
-checkpoint：
+正式验收通过后先导出 veRL FSDP actor，再把导出目录中的 LoRA adapter 合并到导出 base。
+已确认当前 LoRA 导出目录里的 `model.safetensors` 仍是 SFT base；它不能直接代表 RL 模型。
+导出目录和最终 merged 目录都必须是全新的，不能覆盖 SFT model 或训练 checkpoint：
 
 ```bash
 cd ~/shopping-grpo
@@ -512,21 +514,33 @@ export GRPO_PYTHON=/home/gjx/.venvs/shopping-grpo/bin/python
 
 BPO_RUN="$PWD/outputs/models/bpo-native-v4-step200-r1600-seed20260823-20260826-113750-r3"
 BPO_SOURCE="$BPO_RUN/global_step_200"
-BPO_EVAL_MODEL="$PWD/outputs/models/bpo-native-v4-step200-r1600-seed20260823-export"
+BPO_EXPORT="$PWD/outputs/models/bpo-native-v4-step200-r1600-seed20260823-export"
+BPO_EVAL_MODEL="$PWD/outputs/models/bpo-native-v4-step200-r1600-seed20260823-merged"
 
 test -d "$BPO_SOURCE/actor"
 test "$(<"$BPO_RUN/latest_checkpointed_iteration.txt")" = "200"
+test ! -e "$BPO_EXPORT"
 test ! -e "$BPO_EVAL_MODEL"
 
 bash scripts/export_grpo.sh \
   "$BPO_SOURCE/actor" \
-  "$BPO_EVAL_MODEL"
+  "$BPO_EXPORT"
+
+test -f "$BPO_EXPORT/model.safetensors"
+test -f "$BPO_EXPORT/lora_adapter/adapter_model.safetensors"
+
+CUDA_VISIBLE_DEVICES="" PYTHONPATH=src "$PWD/.venv/bin/python" \
+  scripts/merge_lora_adapter.py \
+  --base-model "$BPO_EXPORT" \
+  --adapter "$BPO_EXPORT/lora_adapter" \
+  --output "$BPO_EVAL_MODEL" \
+  --bf16
 ```
 
 ### 8.2 冻结 dev500 三面板评测
 
-下面的独立入口不经过 SFT LoRA merge，不会把 BPO 伪装成 SFT checkpoint。它会绑定
-原始 `global_step_200`、检查导出模型、验证 dev500 manifest、实时探测
+下面的独立入口必须加载上一步的 merged RL 模型。它会绑定原始 `global_step_200`、检查模型、
+验证 dev500 manifest、实时探测
 ShopSimulator Environment v2.1 / Reward v4、检查 Shopper API，并在评测审计中明确记录
 `final_evaluation_used=false`。
 

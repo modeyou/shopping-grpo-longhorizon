@@ -7,9 +7,9 @@ rollout、错误 advantage、无效 optimizer update、资源泄漏或 GRPO 回�
 可直接把下面这段交给 Codex Spark：
 
 ```text
-请严格按照 docs/bpo-independent-audit.md 对当前 feat/bpo2 做独立、只读审计。
+请严格按照 docs/bpo-independent-audit.md 对当前 feat/bpo2 的 CARL-BPO v3 做独立、只读审计。
 不要修改代码，不要启动训练，不要合并模型，也不要运行正式 200 题评测。
-先读取 AGENTS.md，再检查 b156e19..HEAD 的实际 diff；不要把 docs/bpo.md 的声明当作实现证据。
+先读取 AGENTS.md，再记录 HEAD 并检查 v3 相关源码、配置与补丁；不要把文档声明当作实现证据。
 执行指南中安全的静态检查和测试，并按规定格式输出 findings。若没有发现问题，也必须列出
 已验证范围、未验证范围和残余风险。不要因为已有测试通过就省略源码数据流审查。
 ```
@@ -17,9 +17,10 @@ rollout、错误 advantage、无效 optimizer update、资源泄漏或 GRPO 回�
 ## 1. 审计边界
 
 - 被审计分支：`feat/bpo2` 当前远端 HEAD；先记录完整 commit SHA。
-- 对照起点：`b156e19`；重点审查 `git diff b156e19..HEAD`。
-- 算法依据：*Branching Policy Optimization: Sandbox-Native Language Agent
-  Reinforcement Learning*，<https://arxiv.org/abs/2607.14171>。
+- 实现锚点：v3 首个实现提交 `987668a`，同时必须审查其后的修复直至当前 HEAD；commit只用于
+  定位，算法事实仍以当前源码为准。
+- 算法依据：BPO提供snapshot branching背景；当前v3的Root/Local两级信用以GiGPO为方法锚点，
+  但动作边界、canonical semantic gate与action-balanced loss均为本项目适配，必须按源码单独审查。
 - 运行契约：ShopSimulator Environment v2.1、Reward v4、observation v2、tool schema v2。
 - 不在本次审计范围：启动 BPO/GRPO 训练、模型合并、正式 200 题评测、修改 formal 数据。
 - 审计必须只读；发现问题后先报告，不在同一轮自动修复。
@@ -76,7 +77,9 @@ hash 和 branch metadata；三个 clone 必须拥有互异的环境 lease。
 - return 对完整 `token_level_rewards` 求和，不能被 actor `response_mask` 丢掉终局环境奖励；
 - 每个 sibling 的 baseline 是其他 K−1 个 return 的均值；
 - LOO advantage 数值正确且组内和接近 0；
-- `upstream_lambda=0.95` 只控制 action 距离权重；
+- Root 的所有真实 action 获得 episode LOO；Local 只有 branch action 获得 sibling LOO；
+- Local prefix和suffix必须同时退出policy numerator与denominator；
+- action内先做token mean，group内做action mean，Root/Local policy mass严格各0.5；
 - constant、NaN/Inf、metadata 不完整和 prefix 漂移不能进入 optimizer；
 - critic 和 reference policy 没有被意外启用。
 
@@ -97,17 +100,17 @@ hash 和 branch metadata；三个 clone 必须拥有互异的环境 lease。
 
 ## 3. 动态采样审计
 
-正式 BPO 的冻结值是
-`target=2/minimum=2/require_full_batch=true/soft_warning=10/max_batches=30`。第一棵有效树会跨候选
-generation batch 保留，但不得用单棵 K=4 tree 完成较小更新；只有凑满 2 棵树、8 个 sibling
-returns 后才能进入 optimizer。逐分支验证：
+正式 v3 的冻结值是
+`target=2/minimum=2/require_full_batch=true/quality_search=10/max_batches=120`。Root与Local候选
+分别进入保留池，不得用单棵 K=4 tree 完成较小更新；只有凑满1棵Root和1棵Local、共8个
+sibling terminal outcomes后才能进入 optimizer。逐分支验证：
 
-1. `target=2/minimum=2/require_full_batch=true/max_batches=30` 在 Hydra 合并配置、run contract
+1. `target=2/minimum=2/require_full_batch=true/max_batches=120` 在 Hydra 合并配置、run contract
    和 trainer 实际执行路径中保持一致；
 2. 0 个有效 group 的路径不会对空列表执行 `DataProto.concat()`；
 3. 只有 1 个有效 group 时会跨 generation batch 正确保留，且不会提前进入 balance、log-prob、
    advantage 或 actor update；
-4. 第 10 个 candidate batch 只产生慢批告警，不改变 batch 要求；第 30 个仍未凑齐时必须
+4. 第10个 candidate batch结束quality search但不改变严格双组要求；第120个仍未凑齐时必须
    fail closed，不能单树更新或伪造第二棵树；
 5. 2 个有效 group 的正式路径不会混入额外或半个 sibling group；每次 optimizer batch 必须是
    2 棵树和 8 个 sibling returns；
@@ -140,9 +143,10 @@ call 的其他合法参数；后续 tool schema 仍负责拒绝缺少必填参�
 从 AgentLoop `extra_fields` 一直追到 `training_diagnostics.jsonl`，确认所有 BPO 字段与 trajectory
 逐行对齐。尤其验证：
 
-- `bpo_branch_action_sha256` 只哈希该 sibling 分叉处由 actor 生成且 mask=1 的 token，不混入
-  工具 observation；
-- `bpo_unique_branch_action_count` 使用上述 hash，而不是拿 tool-step 序号冒充 assistant action；
+- `bpo_branch_semantic_action_sha256` 来自规范化的单个tool name+arguments，不混入reasoning、
+  XML空白或工具observation；
+- Local必须全部semantic-valid且至少包含2个不同semantic action；token hash不能替代该门槛；
+- `bpo_action_token_starts/ends` 能重建真实action，Local policy support只覆盖branch action；
 - `bpo_unique_tool_sequence_count`、终止原因、完整错误和错误类型可用于区分 sibling 相同、
   reward constant、XML 错误和基础设施错误；
 - metadata 缺失时明确记录 incomplete 或 fail closed，不产生误导性的多样性数字；
@@ -160,20 +164,18 @@ export PYTHONPATH=./src
 "$GRPO_PYTHON" scripts/apply_verl_bpo_patch.py --check
 
 "$GRPO_PYTHON" -m pytest \
-  tests/test_bpo_advantage.py \
-  tests/test_bpo_branching.py \
-  tests/test_bpo_config.py \
-  tests/test_bpo_entrypoint.py \
-  tests/test_bpo_environment_contract.py \
-  tests/test_bpo_snapshots.py \
-  tests/test_verl_bpo_entropy_patch.py \
-  tests/test_verl_bpo_xml_tool_parser_patch.py \
+  tests/test_bpo_*.py \
   tests/test_verl_dynamic_sampling.py \
   tests/test_verl_dynamic_sampling_patch.py \
+  tests/test_verl_bpo_entropy_patch.py \
+  tests/test_verl_bpo_xml_tool_parser_patch.py \
+  tests/test_merge_lora_adapter.py \
+  tests/test_standalone_checkpoint_evaluation.py \
   -q
 ```
 
-验收要求是所有收集到的测试通过，当前范围不得少于 59 个。若本地缺少 veRL、Hydra、
+验收要求是所有列出的测试均通过；不要冻结历史测试数量，因为 v3 测试集合会随实现修复增加。
+若本地缺少 veRL、Hydra、
 OmegaConf、Torch 或服务器依赖，必须把对应项写成 `NOT RUN`；不得用纯单元测试替代并宣称完整
 集成通过。
 
