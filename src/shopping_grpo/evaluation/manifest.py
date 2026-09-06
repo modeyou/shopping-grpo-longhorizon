@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
+import json
 from pathlib import Path
 
 from shopping_grpo.evaluation.contracts import (
@@ -41,6 +42,19 @@ def sha256_file(path: str | Path, *, chunk_size: int = 1024 * 1024) -> str:
         while chunk := stream.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_json_sha256(value: object) -> str:
+    """Hash a JSON-compatible value with a stable, whitespace-free encoding."""
+
+    serialized = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _reject_secrets(value: object, path: str = "manifest") -> None:

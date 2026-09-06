@@ -512,6 +512,48 @@ def _spans_from_quote(query: str, quote: str) -> list[dict]:
     return _exact_spans(query, quote)
 
 
+def _validated_span_ranges(spans: object, *, query: str, path: str) -> list[tuple[int, int]]:
+    """Return candidate evidence ranges while rejecting malformed source spans."""
+
+    if not isinstance(spans, list) or not spans:
+        raise ContractValidationError(f"{path} must contain direct Query evidence")
+    ranges = []
+    for index, value in enumerate(spans):
+        if not isinstance(value, Mapping):
+            raise ContractValidationError(f"{path}[{index}] must be an object")
+        text = value.get("text")
+        start = value.get("start")
+        end = value.get("end")
+        if (
+            not isinstance(text, str)
+            or not text
+            or isinstance(start, bool)
+            or isinstance(end, bool)
+            or not isinstance(start, int)
+            or not isinstance(end, int)
+            or start < 0
+            or end <= start
+            or end > len(query)
+            or query[start:end] != text
+        ):
+            raise ContractValidationError(
+                f"{path}[{index}] is not a valid Query span"
+            )
+        ranges.append((start, end))
+    return ranges
+
+
+def _overlaps_any(
+    selected_ranges: list[tuple[int, int]],
+    candidate_ranges: list[tuple[int, int]],
+) -> bool:
+    return any(
+        selected_start < candidate_end and candidate_start < selected_end
+        for selected_start, selected_end in selected_ranges
+        for candidate_start, candidate_end in candidate_ranges
+    )
+
+
 def materialize_rubric_bundle(
     *,
     task_facts: Mapping,
@@ -556,13 +598,50 @@ def materialize_rubric_bundle(
     response = validate_curator_response(
         curator_response,
         candidate_ids=by_id,
+        query=str(task_facts.get("query") or ""),
     )
+    unmapped = response["unmapped_query_requirements"]
+    if unmapped:
+        examples = [
+            str(item["query_quote"])
+            for item in unmapped[:3]
+            if isinstance(item, Mapping)
+        ]
+        raise ContractValidationError(
+            "candidate coverage gaps must be resolved before Rubric freeze: "
+            + ", ".join(examples)
+        )
     query = str(task_facts.get("query") or "")
     rubrics = []
     for selected in response["selected_constraints"]:
         candidate = by_id[selected["candidate_id"]]
         hardness = selected["hardness"]
-        quote_spans = _spans_from_quote(query, selected.get("query_quote", ""))
+        quote_spans = _spans_from_quote(query, selected["query_quote"])
+        if not quote_spans:
+            raise ContractValidationError(
+                "selected query_quote must produce at least one Query span"
+            )
+        # When the deterministic extractor found an exact lexical anchor, the
+        # curator quote must overlap it.  Candidates built from structured
+        # product facts may lack that anchor because the Query uses a synonym
+        # (for example, "提供光亮" vs. the field value "照明"); in that case
+        # the curator's verbatim quote is retained as the auditable evidence.
+        candidate_spans = candidate.get("query_spans") or []
+        if candidate_spans:
+            candidate_ranges = _validated_span_ranges(
+                candidate_spans,
+                query=query,
+                path=f"candidate {selected['candidate_id']}.query_spans",
+            )
+            selected_ranges = [
+                (int(span["start"]), int(span["end"]))
+                for span in quote_spans
+            ]
+            if not _overlaps_any(selected_ranges, candidate_ranges):
+                raise ContractValidationError(
+                    f"selected query_quote for {selected['candidate_id']} does "
+                    "not support that candidate's Query evidence"
+                )
         rubrics.append(
             {
                 "rubric_id": f"r{len(rubrics) + 1:04d}",
@@ -571,12 +650,7 @@ def materialize_rubric_bundle(
                 "description": selected["description"].strip(),
                 "hardness": hardness,
                 "hardness_source": candidate["hardness_source"],
-                # Query spans are code-owned evidence. A curator paraphrase
-                # falls back to the extractor's already validated spans.
-                "query_spans": (
-                    quote_spans
-                    or deepcopy(candidate.get("query_spans") or [])
-                ),
+                "query_spans": quote_spans,
                 "field_path": candidate["field_path"],
                 "operator": candidate["operator"],
                 "expected_value": deepcopy(candidate["expected_value"]),

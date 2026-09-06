@@ -32,6 +32,13 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_normalized_newlines(path: Path) -> str:
+    """Hash text task manifests using the Final-200 CRLF-normalization rule."""
+
+    raw = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _load_resource_object(name: str) -> dict:
     try:
         resource = files(_RESOURCE_PACKAGE).joinpath(name)
@@ -161,4 +168,75 @@ def guard_blind_final(
             "refusing to consume frozen blind-final tasks without "
             "--allow-blind-final: "
             + json.dumps(blocked, ensure_ascii=False, sort_keys=True)
+        )
+
+
+def guard_declared_final_tasks(
+    tasks_path: Path,
+    *,
+    allowed: bool,
+) -> None:
+    """Require an explicit opt-in for a task file declared as a blind final.
+
+    Multi-turn Final-200 uses a different, Reward-v4 manifest from the older
+    wheel-packaged Final-200 guard above.  Its task IDs are therefore bound to
+    the adjacent subset manifest rather than guessed from a filename.
+    """
+
+    tasks = Path(tasks_path)
+    manifest_path = tasks.parent / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ArtifactError(
+            f"{manifest_path}: invalid final-evaluation manifest"
+        ) from exc
+    if not isinstance(manifest, Mapping):
+        raise ArtifactError(f"{manifest_path}: manifest must be an object")
+    if manifest.get("evaluation_role") != "final":
+        return
+    selection = manifest.get("selection")
+    if not isinstance(selection, Mapping) or selection.get("result_blind") is not True:
+        raise ArtifactError(
+            f"{manifest_path}: final evaluation must declare result_blind=true"
+        )
+    subset_hashes = manifest.get("subset_sha256")
+    expected_hash = (
+        subset_hashes.get("tasks")
+        if isinstance(subset_hashes, Mapping)
+        else None
+    )
+    normalization = manifest.get("source")
+    normalization = (
+        normalization.get("hash_normalization")
+        if isinstance(normalization, Mapping)
+        else None
+    )
+    if normalization in (None, "none"):
+        actual_hash = _sha256_file(tasks)
+    elif normalization == "CRLF/CR-to-LF-v1":
+        actual_hash = _sha256_normalized_newlines(tasks)
+    else:
+        raise ArtifactError(
+            f"{manifest_path}: unsupported task hash normalization {normalization!r}"
+        )
+    if not isinstance(expected_hash, str) or actual_hash != expected_hash:
+        raise ArtifactError(
+            f"{tasks}: does not match the adjacent final manifest task hash"
+        )
+    if not allowed:
+        raise ArtifactError(
+            "refusing to consume declared blind-final tasks without "
+            "--allow-blind-final: "
+            + json.dumps(
+                {
+                    "tasks": str(tasks),
+                    "manifest": str(manifest_path),
+                    "task_count": manifest.get("task_count"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         )

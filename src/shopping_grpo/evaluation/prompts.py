@@ -14,7 +14,7 @@ from shopping_grpo.evaluation.contracts import (
 )
 from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
 
-RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v1-draft-r4"
+RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v1-draft-r5"
 TRAJECTORY_JUDGE_PROMPT_VERSION = "trajectory-judge-v2-draft-r1"
 _JUDGE_VISIBLE_ERROR_TAXONOMY = ERROR_TAXONOMY - {
     "reward_rubric_disagreement",
@@ -113,6 +113,20 @@ def build_rubric_curator_messages(
         "task_id": int(task_id),
         "query": str(query),
         "candidates": deepcopy(candidates),
+        "coverage_audit_requirement": {
+            "unmapped_query_requirements": [
+                {
+                    "description": "An explicit Query requirement with no valid candidate",
+                    "query_quote": "A non-empty verbatim substring of Query",
+                }
+            ],
+            "instruction": (
+                "Always include unmapped_query_requirements in the JSON output. "
+                "Use [] only when every explicit, independently evaluable Query "
+                "requirement is covered by a selected candidate. Do not invent a "
+                "candidate to hide a coverage gap."
+            ),
+        },
     }
     return [
         {"role": "system", "content": RUBRIC_CURATOR_SYSTEM_PROMPT},

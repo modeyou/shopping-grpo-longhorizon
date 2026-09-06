@@ -139,6 +139,10 @@ def validate_rubric_bundle(
     rubric_ids = set()
     candidate_ids = set()
     rubrics = _list(payload.get("rubrics"), "rubric_bundle.rubrics")
+    if not rubrics:
+        raise ContractValidationError(
+            "rubric_bundle.rubrics must contain at least one Query-backed requirement"
+        )
     for index, item_value in enumerate(rubrics):
         path = f"rubric_bundle.rubrics[{index}]"
         item = _mapping(item_value, path)
@@ -172,6 +176,10 @@ def validate_rubric_bundle(
             raise ContractValidationError(f"{path}.expected_value is required")
         _unique_nonempty_strings(item.get("data_sources"), f"{path}.data_sources")
         spans = _list(item.get("query_spans"), f"{path}.query_spans")
+        if not spans:
+            raise ContractValidationError(
+                f"{path}.query_spans must contain direct Query evidence"
+            )
         for span_index, span_value in enumerate(spans):
             span_path = f"{path}.query_spans[{span_index}]"
             span = _mapping(span_value, span_path)
@@ -194,6 +202,7 @@ def validate_curator_response(
     response: object,
     *,
     candidate_ids: Iterable[str],
+    query: str,
 ) -> dict:
     """Ensure Flash selected only constraints supplied by deterministic code."""
 
@@ -202,6 +211,10 @@ def validate_curator_response(
     selected = _list(
         payload.get("selected_constraints"),
         "curator_response.selected_constraints",
+    )
+    unmapped = _list(
+        payload.get("unmapped_query_requirements"),
+        "curator_response.unmapped_query_requirements",
     )
     seen = set()
     for index, item_value in enumerate(selected):
@@ -225,12 +238,23 @@ def validate_curator_response(
             raise ContractValidationError(
                 f"{path}.hardness must be one of {sorted(RUBRIC_HARDNESS)}"
             )
-        quote = item.get("query_quote")
-        if quote is not None and not isinstance(quote, str):
-            raise ContractValidationError(f"{path}.query_quote must be a string")
+        quote = _nonempty_text(item.get("query_quote"), f"{path}.query_quote")
+        if quote not in query:
+            raise ContractValidationError(
+                f"{path}.query_quote must occur verbatim in the Query"
+            )
         _nonempty_text(
             item.get("selection_reason"), f"{path}.selection_reason"
         )
+    for index, item_value in enumerate(unmapped):
+        path = f"curator_response.unmapped_query_requirements[{index}]"
+        item = _mapping(item_value, path)
+        _nonempty_text(item.get("description"), f"{path}.description")
+        quote = _nonempty_text(item.get("query_quote"), f"{path}.query_quote")
+        if quote not in query:
+            raise ContractValidationError(
+                f"{path}.query_quote must occur verbatim in the Query"
+            )
     return deepcopy(dict(payload))
 
 
