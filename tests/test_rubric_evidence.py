@@ -1,7 +1,10 @@
 import pytest
 
 from shopping_grpo.evaluation.contracts import ContractValidationError
-from shopping_grpo.evaluation.prompts import build_rubric_curator_messages
+from shopping_grpo.evaluation.prompts import (
+    RUBRIC_CURATOR_SYSTEM_PROMPT,
+    build_rubric_curator_messages,
+)
 from shopping_grpo.evaluation.rubric import (
     build_task_facts,
     materialize_rubric_bundle,
@@ -55,6 +58,13 @@ def test_curator_request_contains_only_task_id_and_query():
     )
 
     assert messages[1]["content"] == '{"query": "预算100元以内", "task_id": 7}'
+
+
+def test_curator_prompt_marks_optional_and_unverifiable_requirements():
+    assert "也行、可以、即可、都行" in RUBRIC_CURATOR_SYSTEM_PROMPT
+    assert "没有用户给出可见且可验证阈值的模糊要求必须为" in (
+        RUBRIC_CURATOR_SYSTEM_PROMPT
+    )
 
 
 @pytest.mark.parametrize("quote", ["", "预算200元以内", "不存在"])

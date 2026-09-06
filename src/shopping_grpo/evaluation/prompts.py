@@ -34,8 +34,11 @@ RUBRIC_CURATOR_SYSTEM_PROMPT = """\
 - description 只重述该项要求，不扩写；
 - acceptance_criteria 说明 Judge 应从 Actor 可见的搜索结果、详情、规格、价格或最终操作中看到什么
   才能判为 satisfied；证据不可见时 Judge 应判 unknown；
-- 明确的品类、预算上限、否定要求、指定规格或数量为 hard；“优先、最好、倾向、左右”等偏好为 soft；
-  无法可靠判断时为 needs_review；
+- 明确的品类、预算上限、否定要求、指定规格或数量为 hard；“优先、最好、倾向、左右、也行、可以、即可、都行”
+  等偏好或可选条件为 soft；
+- “大、小、高档、好看、舒适、质量好”等没有用户给出可见且可验证阈值的模糊要求必须为
+  needs_review，不能伪装成可严格判定的 hard；
+- 无法可靠判断时为 needs_review；
 - selection_reason 简要说明原文为何支持该需求。
 
 只输出一个 JSON 对象，不输出 Markdown 或额外字段：
