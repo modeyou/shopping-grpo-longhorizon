@@ -71,9 +71,13 @@ def test_curator_request_contains_only_task_id_and_query():
     assert "candidates" not in payload
 
 
-def test_curator_prompt_marks_optional_and_unverifiable_requirements():
+def test_curator_prompt_separates_requirement_strength_from_verifiability():
     assert "也行、可以、即可、都行" in RUBRIC_CURATOR_SYSTEM_PROMPT
-    assert "没有用户给出可见且可验证阈值的模糊要求必须为" in (
+    assert "即使要求没有量化阈值，也仍然是 hard" in (
+        RUBRIC_CURATOR_SYSTEM_PROMPT
+    )
+    assert "在没有充分可见证据时判 unknown" in RUBRIC_CURATOR_SYSTEM_PROMPT
+    assert "不得补充用户未提到的认证、数值阈值、具体设计或商品属性" in (
         RUBRIC_CURATOR_SYSTEM_PROMPT
     )
 

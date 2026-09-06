@@ -39,7 +39,7 @@ from shopping_grpo.evaluation.task_facts import task_facts_from_products
 from shopping_grpo.multiturn.benchmark import load_products
 
 
-RUBRIC_FREEZE_VERSION = "shopping-multiturn-rubric-freeze-v4"
+RUBRIC_FREEZE_VERSION = "shopping-multiturn-rubric-freeze-v5"
 
 
 def parse_args():

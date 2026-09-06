@@ -15,7 +15,7 @@ from shopping_grpo.evaluation.contracts import (
 from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
 from shopping_grpo.evaluation.rubric import build_query_evidence_anchors
 
-RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v2-query-only-r2"
+RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v2-query-only-r3"
 TRAJECTORY_JUDGE_PROMPT_VERSION = "trajectory-judge-v2-draft-r1"
 _JUDGE_VISIBLE_ERROR_TAXONOMY = ERROR_TAXONOMY - {
     "reward_rubric_disagreement",
@@ -35,11 +35,14 @@ RUBRIC_CURATOR_SYSTEM_PROMPT = """\
 - description 只重述该项要求，不扩写；
 - acceptance_criteria 说明 Judge 应从 Actor 可见的搜索结果、详情、规格、价格或最终操作中看到什么
   才能判为 satisfied；证据不可见时 Judge 应判 unknown；
-- 明确的品类、预算上限、否定要求、指定规格或数量为 hard；“优先、最好、倾向、左右、也行、可以、即可、都行”
-  等偏好或可选条件为 soft；
-- “大、小、高档、好看、舒适、质量好”等没有用户给出可见且可验证阈值的模糊要求必须为
-  needs_review，不能伪装成可严格判定的 hard；
-- 无法可靠判断时为 needs_review；
+- 明确的品类、预算上限、否定要求、指定规格或数量为 hard；“必须、一定要、需要、要、需、不得、不能”
+  等强制措辞，即使要求没有量化阈值，也仍然是 hard；
+- “优先、最好、倾向、左右、也行、可以、即可、都行”等偏好或可选条件为 soft；
+- hard/soft 只表达用户要求的强弱，不表达是否容易验证。对“大、小、高档、好看、舒适、安全性好、质量好”等
+  没有明确阈值的 hard 要求，不得降级；应在 acceptance_criteria 中要求 Judge 在没有充分可见证据时判 unknown；
+- 只有 Query 本身无法可靠判断要求含义或优先级时才使用 needs_review；
+- acceptance_criteria 不得补充用户未提到的认证、数值阈值、具体设计或商品属性；只能说明 Judge 应寻找何种
+  与该原文直接相关的可见证据，或在证据不足时判 unknown；
 - selection_reason 简要说明原文为何支持该需求。
 
 只输出一个 JSON 对象，不输出 Markdown 或额外字段：
