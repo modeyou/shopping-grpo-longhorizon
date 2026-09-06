@@ -7,6 +7,7 @@ def test_grid_runner_builds_one_panel_run_per_actor_and_condition(tmp_path):
     plan = {
         "expected_tasks": "tasks.jsonl",
         "rubrics": "rubrics.jsonl",
+        "rubric_approval": "approval.json",
         "judge": {"model": "judge", "base_url": "https://judge.example/v1"},
         "runs": [
             {
@@ -38,6 +39,9 @@ def test_grid_runner_builds_one_panel_run_per_actor_and_condition(tmp_path):
     )
 
     assert len(commands) == 7
+    assert commands[0][commands[0].index("--rubric-approval") + 1] == str(
+        tmp_path / "approval.json"
+    )
     assert commands[0][commands[0].index("--output-dir") + 1] == str(
         tmp_path / "out" / "base" / "gap-ask-enabled"
     )
@@ -50,6 +54,7 @@ def test_grid_runner_supports_a_single_gplus_condition(tmp_path):
     plan = {
         "expected_tasks": "tasks.jsonl",
         "rubrics": "rubrics.jsonl",
+        "rubric_approval": "approval.json",
         "judge": {"model": "judge", "base_url": "https://judge.example/v1"},
         "runs": [
             {

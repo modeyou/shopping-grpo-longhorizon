@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 
-CONTRACT_VERSION = "shopping-trajectory-evaluation-v2"
-RUBRIC_SCHEMA_VERSION = "shopping-requirement-rubric-v2"
+CONTRACT_VERSION = "shopping-trajectory-evaluation-v3"
+RUBRIC_SCHEMA_VERSION = "shopping-requirement-rubric-v3"
+RUBRIC_APPROVAL_SCHEMA_VERSION = "shopping-rubric-approval-v1"
 JUDGE_SCHEMA_VERSION = "shopping-trajectory-judge-v2"
 
 JUDGE_DIMENSIONS = (
@@ -20,6 +21,9 @@ RUBRIC_STATUSES = frozenset(
     {"satisfied", "violated", "unknown", "not_applicable"}
 )
 RUBRIC_HARDNESS = frozenset({"hard", "soft", "needs_review"})
+RUBRIC_REVIEW_STATUSES = frozenset(
+    {"auto_drafted", "approved", "needs_review"}
+)
 JUDGE_STATUSES = frozenset({"valid", "invalid", "not_judged"})
 CLARIFICATION_STATUSES = frozenset(
     {"effective", "ineffective", "unnecessary", "not_applicable", "unknown"}
@@ -102,14 +106,35 @@ def _unique_nonempty_strings(values: object, path: str) -> list[str]:
     return result
 
 
+def _require_exact_fields(value: Mapping, fields: set[str], path: str) -> None:
+    if set(value) != fields:
+        raise ContractValidationError(
+            f"{path} must contain exactly {sorted(fields)}"
+        )
+
+
 def validate_rubric_bundle(
     bundle: object,
     *,
     expected_task_id: int | None = None,
+    require_approved: bool = False,
 ) -> dict:
     """Validate and defensively copy one frozen task-level Rubric bundle."""
 
     payload = _mapping(bundle, "rubric_bundle")
+    _require_exact_fields(
+        payload,
+        {
+            "schema_version",
+            "rubric_version",
+            "task_id",
+            "query",
+            "generation",
+            "review",
+            "rubrics",
+        },
+        "rubric_bundle",
+    )
     if payload.get("schema_version") != RUBRIC_SCHEMA_VERSION:
         raise ContractValidationError(
             "rubric_bundle.schema_version must be "
@@ -127,16 +152,76 @@ def validate_rubric_bundle(
     generation = _mapping(
         payload.get("generation"), "rubric_bundle.generation"
     )
-    for field in (
+    generation_fields = {
         "curator_version",
         "curator_model",
         "curator_prompt_version",
         "task_data_hash",
         "query_hash",
-    ):
+    }
+    _require_exact_fields(
+        generation, generation_fields, "rubric_bundle.generation"
+    )
+    for field in generation_fields:
         _nonempty_text(generation.get(field), f"rubric_bundle.generation.{field}")
 
+    # Import locally to keep contracts independent at module import time while
+    # sharing the exact hashing and anchor implementation used at generation.
+    from shopping_grpo.evaluation.rubric import (
+        GENERIC_ACCEPTANCE_CRITERIA,
+        TASK_FACTS_VERSION,
+        build_query_evidence_anchors,
+        stable_hash,
+    )
+
+    expected_query_hash = stable_hash(query)
+    if generation.get("query_hash") != expected_query_hash:
+        raise ContractValidationError(
+            "rubric_bundle.generation.query_hash does not match the Query"
+        )
+    expected_task_hash = stable_hash(
+        {
+            "schema_version": TASK_FACTS_VERSION,
+            "task_id": task_id,
+            "query": query,
+        }
+    )
+    if generation.get("task_data_hash") != expected_task_hash:
+        raise ContractValidationError(
+            "rubric_bundle.generation.task_data_hash does not match task facts"
+        )
+
+    review = _mapping(payload.get("review"), "rubric_bundle.review")
+    _require_exact_fields(
+        review, {"status", "reviewer", "reviewed_at"}, "rubric_bundle.review"
+    )
+    review_status = _nonempty_text(
+        review.get("status"), "rubric_bundle.review.status"
+    )
+    if review_status not in RUBRIC_REVIEW_STATUSES:
+        raise ContractValidationError(
+            "rubric_bundle.review.status must be one of "
+            f"{sorted(RUBRIC_REVIEW_STATUSES)}"
+        )
+    reviewer = review.get("reviewer")
+    reviewed_at = review.get("reviewed_at")
+    if review_status == "approved":
+        _nonempty_text(reviewer, "rubric_bundle.review.reviewer")
+        _nonempty_text(reviewed_at, "rubric_bundle.review.reviewed_at")
+    elif reviewer is not None or reviewed_at is not None:
+        raise ContractValidationError(
+            "unapproved rubric_bundle review metadata must be null"
+        )
+    if require_approved and review_status != "approved":
+        raise ContractValidationError(
+            "rubric_bundle must be explicitly approved before Judge evaluation"
+        )
+
+    anchors = build_query_evidence_anchors(query)
+    anchors_by_id = {anchor["anchor_id"]: anchor for anchor in anchors}
+
     rubric_ids = set()
+    contains_needs_review = False
     rubrics = _list(payload.get("rubrics"), "rubric_bundle.rubrics")
     if not rubrics:
         raise ContractValidationError(
@@ -145,6 +230,22 @@ def validate_rubric_bundle(
     for index, item_value in enumerate(rubrics):
         path = f"rubric_bundle.rubrics[{index}]"
         item = _mapping(item_value, path)
+        _require_exact_fields(
+            item,
+            {
+                "rubric_id",
+                "rubric_source",
+                "description",
+                "acceptance_criteria",
+                "hardness",
+                "hardness_source",
+                "query_spans",
+                "query_anchor_ids",
+                "data_sources",
+                "selection_reason",
+            },
+            path,
+        )
         rubric_id = _nonempty_text(item.get("rubric_id"), f"{path}.rubric_id")
         if rubric_id in rubric_ids:
             raise ContractValidationError(f"duplicate rubric_id {rubric_id!r}")
@@ -156,14 +257,19 @@ def validate_rubric_bundle(
         _nonempty_text(
             item.get("description"), f"{path}.description"
         )
-        _nonempty_text(
+        criteria = _nonempty_text(
             item.get("acceptance_criteria"), f"{path}.acceptance_criteria"
         )
+        if criteria != GENERIC_ACCEPTANCE_CRITERIA:
+            raise ContractValidationError(
+                f"{path}.acceptance_criteria must use the code-owned policy"
+            )
         hardness = _nonempty_text(item.get("hardness"), f"{path}.hardness")
         if hardness not in RUBRIC_HARDNESS:
             raise ContractValidationError(
                 f"{path}.hardness must be one of {sorted(RUBRIC_HARDNESS)}"
             )
+        contains_needs_review = contains_needs_review or hardness == "needs_review"
         _nonempty_text(
             item.get("hardness_source"), f"{path}.hardness_source"
         )
@@ -181,14 +287,33 @@ def validate_rubric_bundle(
             raise ContractValidationError(
                 f"{path}.query_anchor_ids must contain at least one anchor"
             )
+        unknown_anchor_ids = sorted(set(anchor_ids) - set(anchors_by_id))
+        if unknown_anchor_ids:
+            raise ContractValidationError(
+                f"{path}.query_anchor_ids references unknown anchors: "
+                f"{unknown_anchor_ids}"
+            )
         spans = _list(item.get("query_spans"), f"{path}.query_spans")
         if not spans:
             raise ContractValidationError(
                 f"{path}.query_spans must contain direct Query evidence"
             )
+        expected_spans = [
+            {
+                "text": anchors_by_id[anchor_id]["text"],
+                "start": anchors_by_id[anchor_id]["start"],
+                "end": anchors_by_id[anchor_id]["end"],
+            }
+            for anchor_id in anchor_ids
+        ]
+        if spans != expected_spans:
+            raise ContractValidationError(
+                f"{path}.query_spans do not match query_anchor_ids"
+            )
         for span_index, span_value in enumerate(spans):
             span_path = f"{path}.query_spans[{span_index}]"
             span = _mapping(span_value, span_path)
+            _require_exact_fields(span, {"text", "start", "end"}, span_path)
             _nonempty_text(span.get("text"), f"{span_path}.text")
             start = _integer(span.get("start"), f"{span_path}.start")
             end = _integer(span.get("end"), f"{span_path}.end")
@@ -200,6 +325,19 @@ def validate_rubric_bundle(
                 raise ContractValidationError(
                     f"{span_path} does not match rubric_bundle.query"
                 )
+
+    if review_status == "approved" and contains_needs_review:
+        raise ContractValidationError(
+            "approved rubric_bundle cannot contain needs_review Rubrics"
+        )
+    if review_status == "needs_review" and not contains_needs_review:
+        raise ContractValidationError(
+            "rubric_bundle.review.status is needs_review without an unresolved Rubric"
+        )
+    if review_status == "auto_drafted" and contains_needs_review:
+        raise ContractValidationError(
+            "rubric_bundle with an unresolved Rubric must use needs_review status"
+        )
 
     return deepcopy(dict(payload))
 
@@ -216,6 +354,7 @@ def validate_curator_response(
     requirements = _list(
         payload.get("requirements"), "curator_response.requirements"
     )
+    _require_exact_fields(payload, {"requirements"}, "curator_response")
     if not requirements:
         raise ContractValidationError(
             "curator_response.requirements must contain at least one requirement"
@@ -224,6 +363,13 @@ def validate_curator_response(
     for index, item_value in enumerate(requirements):
         path = f"curator_response.requirements[{index}]"
         item = _mapping(item_value, path)
+        expected_fields = {
+            "description",
+            "hardness",
+            "query_anchor_ids",
+            "selection_reason",
+        }
+        _require_exact_fields(item, expected_fields, path)
         description = _nonempty_text(item.get("description"), f"{path}.description")
         selected_anchor_ids = _unique_nonempty_strings(
             item.get("query_anchor_ids"), f"{path}.query_anchor_ids"
@@ -244,9 +390,6 @@ def validate_curator_response(
                 f"{path} repeats a requirement with the same description and quote"
             )
         seen.add(identity)
-        _nonempty_text(
-            item.get("acceptance_criteria"), f"{path}.acceptance_criteria"
-        )
         hardness = _nonempty_text(item.get("hardness"), f"{path}.hardness")
         if hardness not in RUBRIC_HARDNESS:
             raise ContractValidationError(

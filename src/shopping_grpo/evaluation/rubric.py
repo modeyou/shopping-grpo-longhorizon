@@ -16,8 +16,13 @@ from shopping_grpo.evaluation.contracts import (
 
 
 TASK_FACTS_VERSION = "shopping-query-facts-v1"
-RUBRIC_CURATOR_VERSION = "shopping-query-rubric-curator-v2"
+RUBRIC_CURATOR_VERSION = "shopping-query-rubric-curator-v3"
 QUERY_EVIDENCE_ANCHOR_VERSION = "shopping-query-evidence-anchors-v1"
+GENERIC_ACCEPTANCE_CRITERIA = (
+    "仅依据 Actor 可见轨迹：存在直接支持该 Query 原文要求的可观察证据时判 "
+    "satisfied；存在直接冲突证据时判 violated；证据不足时判 unknown。不得使用"
+    "常识或未展示信息补全。"
+)
 
 
 def _canonical_json(value: object) -> str:
@@ -114,9 +119,7 @@ def materialize_rubric_bundle(
                 "rubric_id": f"r{len(rubrics) + 1:04d}",
                 "rubric_source": "query_only_llm",
                 "description": requirement["description"].strip(),
-                "acceptance_criteria": requirement[
-                    "acceptance_criteria"
-                ].strip(),
+                "acceptance_criteria": GENERIC_ACCEPTANCE_CRITERIA,
                 "hardness": requirement["hardness"],
                 "hardness_source": "curator_query_interpretation",
                 "query_spans": quote_spans,
@@ -137,6 +140,15 @@ def materialize_rubric_bundle(
             "curator_prompt_version": str(curator_prompt_version),
             "task_data_hash": str(task_facts["task_data_hash"]),
             "query_hash": str(task_facts["query_hash"]),
+        },
+        "review": {
+            "status": (
+                "needs_review"
+                if any(item["hardness"] == "needs_review" for item in rubrics)
+                else "auto_drafted"
+            ),
+            "reviewer": None,
+            "reviewed_at": None,
         },
         "rubrics": rubrics,
     }

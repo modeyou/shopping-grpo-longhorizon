@@ -34,6 +34,8 @@ def test_frozen_model_defaults_match_selected_evaluation_stack():
             "raw.jsonl",
             "--rubrics",
             "rubrics.jsonl",
+            "--rubric-approval",
+            "approval.json",
             "--output-dir",
             "out",
             "--actor-label",

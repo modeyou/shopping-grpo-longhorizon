@@ -39,7 +39,7 @@ from shopping_grpo.evaluation.task_facts import task_facts_from_products
 from shopping_grpo.multiturn.benchmark import load_products
 
 
-RUBRIC_FREEZE_VERSION = "shopping-multiturn-rubric-freeze-v5"
+RUBRIC_FREEZE_VERSION = "shopping-multiturn-rubric-freeze-v6"
 
 
 def parse_args():
@@ -77,6 +77,7 @@ def _curate(
     *,
     run_plan_sha256: str,
     on_request,
+    on_attempt,
 ):
     messages = build_rubric_curator_messages(
         task_id=facts["task_id"],
@@ -105,9 +106,31 @@ def _curate(
                 curator_prompt_version=RUBRIC_CURATOR_PROMPT_VERSION,
                 rubric_version=RUBRIC_FREEZE_VERSION,
             )
+            on_attempt(
+                {
+                    "task_id": int(facts["task_id"]),
+                    "request_id": request["request_id"],
+                    "schema_attempt": attempt,
+                    "validation_status": "valid",
+                    "validation_error": None,
+                    "curator_response": response["result"],
+                    "request_metadata": response["metadata"],
+                }
+            )
             return response, bundle, request_ids
         except ContractValidationError as exc:
             last_error = exc
+            on_attempt(
+                {
+                    "task_id": int(facts["task_id"]),
+                    "request_id": request["request_id"],
+                    "schema_attempt": attempt,
+                    "validation_status": "invalid",
+                    "validation_error": str(exc),
+                    "curator_response": response["result"],
+                    "request_metadata": response["metadata"],
+                }
+            )
             if attempt >= schema_retries:
                 break
             messages.extend(
@@ -190,6 +213,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     calls_path = args.output_dir / "curator_calls.jsonl"
     requests_path = args.output_dir / "curator_requests.jsonl"
+    attempts_path = args.output_dir / "curator_attempts.jsonl"
     final_paths = [
         args.output_dir / "task_facts.jsonl",
         args.output_dir / "rubrics.jsonl",
@@ -204,6 +228,7 @@ def main():
     if not args.resume and (
         calls_path.exists()
         or requests_path.exists()
+        or attempts_path.exists()
         or any(path.exists() for path in final_paths)
     ):
         raise SystemExit(
@@ -241,6 +266,9 @@ def main():
             return
         append_jsonl_fsync(requests_path, request)
         cached_requests[request["request_id"]] = request
+
+    def record_attempt(attempt: dict) -> None:
+        append_jsonl_fsync(attempts_path, attempt)
 
     client = OpenAIJSONClient(
         model=args.model,
@@ -288,6 +316,7 @@ def main():
                 args.schema_retries,
                 run_plan_sha256=run_plan_sha256,
                 on_request=record_request,
+                on_attempt=record_attempt,
             )
             append_jsonl_fsync(
                 calls_path,
@@ -324,7 +353,12 @@ def main():
         "run_plan_sha256": run_plan_sha256,
         "artifacts": {
             path.name: sha256_file(path)
-            for path in [calls_path, requests_path, *final_paths[:2]]
+            for path in [
+                calls_path,
+                requests_path,
+                attempts_path,
+                *final_paths[:2],
+            ]
         },
     }
     write_json_atomic(final_paths[2], manifest, force=args.resume)
