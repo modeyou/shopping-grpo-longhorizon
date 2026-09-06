@@ -14,7 +14,7 @@ from shopping_grpo.evaluation.contracts import (
 )
 from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
 
-RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v1-draft-r5"
+RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v2-query-only-r1"
 TRAJECTORY_JUDGE_PROMPT_VERSION = "trajectory-judge-v2-draft-r1"
 _JUDGE_VISIBLE_ERROR_TAXONOMY = ERROR_TAXONOMY - {
     "reward_rubric_disagreement",
@@ -22,50 +22,35 @@ _JUDGE_VISIBLE_ERROR_TAXONOMY = ERROR_TAXONOMY - {
 }
 
 RUBRIC_CURATOR_SYSTEM_PROMPT = """\
-你是当前 Shopping Agent 项目的需求 Rubric 整理器，不是自由生成需求的助手。
+你是 Shopping Agent 项目的需求 Rubric 起草器。输入只包含用户 Query；你看不到、也不得猜测
+目标商品、Gold 商品、Reward、商品库或隐藏环境状态。
 
-你只能从输入的 candidates 中选择用户 Query 确实表达的约束，并做简短自然语言化。
-严禁新增 candidate_id，严禁修改候选的底层字段、操作符或期望值，严禁把目标商品的
-全部属性自动视为用户需求。
+将 Query 中每一项彼此独立、会影响商品选择或购买决策的明确要求写成一条 Rubric。必须完整覆盖
+明确要求；但同义重复、礼貌语和不影响选择的背景描述不单列。不要根据常识补写用户没有说过的
+品牌、材质、规格、功能、价格、数量或商品属性。
 
-先保证完整覆盖 Query 中每一个彼此独立的明确要求，再做最小化和去重。“最小”只表示
-同义或上下位重复要求不重复计分，绝不表示少选要求。每个 candidate 的
-selection_guidance 是强制选择规则。
+每条 requirement 必须：
+- 用 query_quote 给出 Query 中连续、逐字存在且非空的原文；
+- description 只重述该项要求，不扩写；
+- acceptance_criteria 说明 Judge 应从 Actor 可见的搜索结果、详情、规格、价格或最终操作中看到什么
+  才能判为 satisfied；证据不可见时 Judge 应判 unknown；
+- 明确的品类、预算上限、否定要求、指定规格或数量为 hard；“优先、最好、倾向、左右”等偏好为 soft；
+  无法可靠判断时为 needs_review；
+- selection_reason 简要说明原文为何支持该需求。
 
-每条选择必须有 Query 原文直接支持：
-- 泛化的目标商品属性不能仅凭常识或商品字段入选；
-- 同一用户要求已经由更具体的 option、规格或价格候选覆盖时，不再拆成多个含义重叠
-  的泛化 core_function；
-- 品类词不能因为碰巧等于目标商品 brand 而被选成品牌约束；
-- “适用于/兼容某品牌”是兼容性要求，不代表所购商品自身必须属于该品牌；
-- Query 明确给出商品类型时，品类本身是一条独立要求，应和功能、规格分别保留；
-- 组合 option 可以承载 Query 明确要求的多个规格，但不能借机加入用户未要求的品牌、
-  型号、数量或实质规格；
-- 每条入选约束必须提供 Query 中连续、逐字存在且能独立支持该约束的非空原文片段。
-
-例：Query “推荐移动电源”中的“移动电源”是品类，不是品牌；Query “适用于海信
-电视的回音壁”要求兼容海信电视，不要求回音壁品牌为海信。
-
-hard/soft 规则：
-- 明确品类、明确预算上限、否定要求、指定规格或选项属于 hard；
-- “优先、最好、倾向、左右”等偏好属于 soft；
-- candidates 中的 hardness_hint 只是代码初筛提示；最终 hard/soft 必须服从 Query
-  原文措辞，“最好”等明确偏好不能被强制改成 hard；
-- 无法可靠判断时使用 needs_review，不要强行二选一。
-
-只输出一个 JSON 对象：
+只输出一个 JSON 对象，不输出 Markdown 或额外字段：
 {
-  "selected_constraints": [
+  "requirements": [
     {
-      "candidate_id": "c0001",
-      "description": "非空、简短、人类可读且不扩写的新描述",
+      "description": "非空、简短、用户可读的要求重述",
+      "acceptance_criteria": "可由可见轨迹核验的满足条件",
       "hardness": "hard | soft | needs_review",
-      "query_quote": "非空且逐字存在于 Query 的连续原文",
-      "selection_reason": "非空；说明该候选为何由这段原文直接支持"
+      "query_quote": "Query 中逐字存在的连续原文",
+      "selection_reason": "该原文如何直接支持此要求"
     }
   ]
 }
-不要输出 Markdown、解释性前后缀或任何额外字段。"""
+"""
 
 TRAJECTORY_JUDGE_SYSTEM_PROMPT = f"""\
 你是当前 Shopping Agent / ShopSimulator 项目的离线轨迹 Judge。
@@ -105,28 +90,12 @@ def build_rubric_curator_messages(
     *,
     task_id: int,
     query: str,
-    candidates: list[Mapping],
 ) -> list[dict]:
-    """Build an OpenAI-compatible Flash request without hidden free-form data."""
+    """Build a Query-only OpenAI-compatible curator request."""
 
     payload = {
         "task_id": int(task_id),
         "query": str(query),
-        "candidates": deepcopy(candidates),
-        "coverage_audit_requirement": {
-            "unmapped_query_requirements": [
-                {
-                    "description": "An explicit Query requirement with no valid candidate",
-                    "query_quote": "A non-empty verbatim substring of Query",
-                }
-            ],
-            "instruction": (
-                "Always include unmapped_query_requirements in the JSON output. "
-                "Use [] only when every explicit, independently evaluable Query "
-                "requirement is covered by a selected candidate. Do not invent a "
-                "candidate to hide a coverage gap."
-            ),
-        },
     }
     return [
         {"role": "system", "content": RUBRIC_CURATOR_SYSTEM_PROMPT},

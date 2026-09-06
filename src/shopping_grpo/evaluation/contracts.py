@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from copy import deepcopy
 
 CONTRACT_VERSION = "shopping-trajectory-evaluation-v2"
-RUBRIC_SCHEMA_VERSION = "shopping-requirement-rubric-v1"
+RUBRIC_SCHEMA_VERSION = "shopping-requirement-rubric-v2"
 JUDGE_SCHEMA_VERSION = "shopping-trajectory-judge-v2"
 
 JUDGE_DIMENSIONS = (
@@ -128,7 +128,7 @@ def validate_rubric_bundle(
         payload.get("generation"), "rubric_bundle.generation"
     )
     for field in (
-        "extractor_version",
+        "curator_version",
         "curator_model",
         "curator_prompt_version",
         "task_data_hash",
@@ -137,7 +137,6 @@ def validate_rubric_bundle(
         _nonempty_text(generation.get(field), f"rubric_bundle.generation.{field}")
 
     rubric_ids = set()
-    candidate_ids = set()
     rubrics = _list(payload.get("rubrics"), "rubric_bundle.rubrics")
     if not rubrics:
         raise ContractValidationError(
@@ -147,21 +146,19 @@ def validate_rubric_bundle(
         path = f"rubric_bundle.rubrics[{index}]"
         item = _mapping(item_value, path)
         rubric_id = _nonempty_text(item.get("rubric_id"), f"{path}.rubric_id")
-        candidate_id = _nonempty_text(
-            item.get("candidate_id"), f"{path}.candidate_id"
-        )
         if rubric_id in rubric_ids:
             raise ContractValidationError(f"duplicate rubric_id {rubric_id!r}")
-        if candidate_id in candidate_ids:
-            raise ContractValidationError(
-                f"duplicate selected candidate_id {candidate_id!r}"
-            )
         rubric_ids.add(rubric_id)
-        candidate_ids.add(candidate_id)
+        if item.get("rubric_source") != "query_only_llm":
+            raise ContractValidationError(
+                f"{path}.rubric_source must be 'query_only_llm'"
+            )
         _nonempty_text(
-            item.get("constraint_type"), f"{path}.constraint_type"
+            item.get("description"), f"{path}.description"
         )
-        _nonempty_text(item.get("description"), f"{path}.description")
+        _nonempty_text(
+            item.get("acceptance_criteria"), f"{path}.acceptance_criteria"
+        )
         hardness = _nonempty_text(item.get("hardness"), f"{path}.hardness")
         if hardness not in RUBRIC_HARDNESS:
             raise ContractValidationError(
@@ -170,11 +167,13 @@ def validate_rubric_bundle(
         _nonempty_text(
             item.get("hardness_source"), f"{path}.hardness_source"
         )
-        _nonempty_text(item.get("field_path"), f"{path}.field_path")
-        _nonempty_text(item.get("operator"), f"{path}.operator")
-        if "expected_value" not in item:
-            raise ContractValidationError(f"{path}.expected_value is required")
-        _unique_nonempty_strings(item.get("data_sources"), f"{path}.data_sources")
+        if item.get("data_sources") != ["query"]:
+            raise ContractValidationError(
+                f"{path}.data_sources must be ['query'] for Query-only Rubrics"
+            )
+        _nonempty_text(
+            item.get("selection_reason"), f"{path}.selection_reason"
+        )
         spans = _list(item.get("query_spans"), f"{path}.query_spans")
         if not spans:
             raise ContractValidationError(
@@ -201,44 +200,38 @@ def validate_rubric_bundle(
 def validate_curator_response(
     response: object,
     *,
-    candidate_ids: Iterable[str],
     query: str,
 ) -> dict:
-    """Ensure Flash selected only constraints supplied by deterministic code."""
+    """Validate an LLM-generated requirement list against its Query evidence."""
 
     payload = _mapping(response, "curator_response")
-    allowed = {str(candidate_id) for candidate_id in candidate_ids}
-    selected = _list(
-        payload.get("selected_constraints"),
-        "curator_response.selected_constraints",
+    requirements = _list(
+        payload.get("requirements"), "curator_response.requirements"
     )
-    unmapped = _list(
-        payload.get("unmapped_query_requirements"),
-        "curator_response.unmapped_query_requirements",
-    )
-    seen = set()
-    for index, item_value in enumerate(selected):
-        path = f"curator_response.selected_constraints[{index}]"
-        item = _mapping(item_value, path)
-        candidate_id = _nonempty_text(
-            item.get("candidate_id"), f"{path}.candidate_id"
+    if not requirements:
+        raise ContractValidationError(
+            "curator_response.requirements must contain at least one requirement"
         )
-        if candidate_id not in allowed:
+    seen = set()
+    for index, item_value in enumerate(requirements):
+        path = f"curator_response.requirements[{index}]"
+        item = _mapping(item_value, path)
+        description = _nonempty_text(item.get("description"), f"{path}.description")
+        quote = _nonempty_text(item.get("query_quote"), f"{path}.query_quote")
+        identity = (description, quote)
+        if identity in seen:
             raise ContractValidationError(
-                f"{path} references unknown candidate_id {candidate_id!r}"
+                f"{path} repeats a requirement with the same description and quote"
             )
-        if candidate_id in seen:
-            raise ContractValidationError(
-                f"{path} repeats candidate_id {candidate_id!r}"
-            )
-        seen.add(candidate_id)
-        _nonempty_text(item.get("description"), f"{path}.description")
+        seen.add(identity)
+        _nonempty_text(
+            item.get("acceptance_criteria"), f"{path}.acceptance_criteria"
+        )
         hardness = _nonempty_text(item.get("hardness"), f"{path}.hardness")
         if hardness not in RUBRIC_HARDNESS:
             raise ContractValidationError(
                 f"{path}.hardness must be one of {sorted(RUBRIC_HARDNESS)}"
             )
-        quote = _nonempty_text(item.get("query_quote"), f"{path}.query_quote")
         if quote not in query:
             raise ContractValidationError(
                 f"{path}.query_quote must occur verbatim in the Query"
@@ -246,15 +239,6 @@ def validate_curator_response(
         _nonempty_text(
             item.get("selection_reason"), f"{path}.selection_reason"
         )
-    for index, item_value in enumerate(unmapped):
-        path = f"curator_response.unmapped_query_requirements[{index}]"
-        item = _mapping(item_value, path)
-        _nonempty_text(item.get("description"), f"{path}.description")
-        quote = _nonempty_text(item.get("query_quote"), f"{path}.query_quote")
-        if quote not in query:
-            raise ContractValidationError(
-                f"{path}.query_quote must occur verbatim in the Query"
-            )
     return deepcopy(dict(payload))
 
 

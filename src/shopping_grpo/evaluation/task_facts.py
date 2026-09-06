@@ -1,4 +1,4 @@
-"""Map ShopSimulator goals to private versioned TaskFacts records."""
+"""Extract Query-only, versioned records for Rubric drafting."""
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ def task_facts_from_environment(
     *,
     task_ids: Iterable[int],
     goals: list[Mapping],
-    product_item_dict: Mapping,
 ) -> list[dict]:
-    """Build private TaskFacts in requested task order without running an env."""
+    """Build Query-only task facts in requested task order."""
 
     requested = [int(task_id) for task_id in task_ids]
     if len(set(requested)) != len(requested):
@@ -27,29 +26,10 @@ def task_facts_from_environment(
         goal = goals[task_id]
         if not isinstance(goal, Mapping):
             raise ValueError(f"goal {task_id} must be an object")
-        asin = goal.get("asin")
-        product = product_item_dict.get(asin)
-        if not isinstance(product, Mapping):
-            raise ValueError(
-                f"goal {task_id} target ASIN {asin!r} is missing"
-            )
         query = str(goal.get("instruction_text") or "").strip()
         if not query:
             raise ValueError(f"goal {task_id} has no instruction_text")
-        instruction_record = {
-            "instruction": query,
-            "attributes": goal.get("attributes") or [],
-            "instruction_options": goal.get("goal_options") or [],
-        }
-        rows.append(
-            build_task_facts(
-                task_id=task_id,
-                query=query,
-                target_product=product,
-                instruction_record=instruction_record,
-                reward_goal=goal,
-            )
-        )
+        rows.append(build_task_facts(task_id=task_id, query=query))
     return rows
 
 
@@ -58,10 +38,7 @@ def task_facts_from_products(
     task_ids: Iterable[int],
     products: list[Mapping],
 ) -> list[dict]:
-    """Build the same private facts directly from frozen product task data."""
-
-    from web_agent_site.engine.constraints import explicit_budget_from_instruction
-    from web_agent_site.engine.reward_features import compile_reward_features
+    """Build the same Query-only facts from frozen product task data."""
 
     requested = [int(task_id) for task_id in task_ids]
     if len(set(requested)) != len(requested):
@@ -88,19 +65,5 @@ def task_facts_from_products(
         query = str(instruction.get("instruction") or "").strip()
         if not query:
             raise ValueError(f"task {task_id} has no instruction text")
-        goal = {
-            "asin": product.get("asin"),
-            "category": product.get("category"),
-            "price_upper": explicit_budget_from_instruction(query),
-        }
-        goal.update(compile_reward_features(instruction, product))
-        rows.append(
-            build_task_facts(
-                task_id=task_id,
-                query=query,
-                target_product=product,
-                instruction_record=instruction,
-                reward_goal=goal,
-            )
-        )
+        rows.append(build_task_facts(task_id=task_id, query=query))
     return rows

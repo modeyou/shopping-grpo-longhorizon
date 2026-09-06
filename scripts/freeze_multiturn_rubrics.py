@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze one shared Qwen-curated Rubric bundle per evaluation task."""
+"""Freeze one shared Query-only Rubric bundle per evaluation task."""
 
 from __future__ import annotations
 
@@ -31,15 +31,14 @@ from shopping_grpo.evaluation.prompts import (
     build_rubric_curator_messages,
 )
 from shopping_grpo.evaluation.rubric import (
-    RUBRIC_EXTRACTOR_VERSION,
-    extract_rubric_candidates,
     materialize_rubric_bundle,
+    RUBRIC_CURATOR_VERSION,
 )
 from shopping_grpo.evaluation.task_facts import task_facts_from_products
 from shopping_grpo.multiturn.benchmark import load_products
 
 
-RUBRIC_FREEZE_VERSION = "shopping-multiturn-rubric-freeze-v2"
+RUBRIC_FREEZE_VERSION = "shopping-multiturn-rubric-freeze-v3"
 
 
 def parse_args():
@@ -73,7 +72,6 @@ def _task_ids(path: Path) -> list[int]:
 def _curate(
     client,
     facts,
-    candidates,
     schema_retries,
     *,
     run_plan_sha256: str,
@@ -82,7 +80,6 @@ def _curate(
     messages = build_rubric_curator_messages(
         task_id=facts["task_id"],
         query=facts["query"],
-        candidates=candidates["candidates"],
     )
     request_ids = []
     last_error = None
@@ -102,7 +99,6 @@ def _curate(
         try:
             bundle = materialize_rubric_bundle(
                 task_facts=facts,
-                candidates=candidates,
                 curator_response=response["result"],
                 curator_model=client.model,
                 curator_prompt_version=RUBRIC_CURATOR_PROMPT_VERSION,
@@ -125,7 +121,7 @@ def _curate(
                         "role": "user",
                         "content": (
                             "上一个 JSON 未通过冻结 schema："
-                            f"{exc}。只修复 JSON，仍只能引用输入 candidate_id。"
+                            f"{exc}。只修复 JSON，且只基于输入 Query。"
                         ),
                     },
                 ]
@@ -142,7 +138,7 @@ def _run_plan(args) -> dict:
         "schema_version": RUBRIC_FREEZE_VERSION,
         "task_manifest_sha256": sha256_file(args.tasks),
         "product_data_sha256": sha256_file(args.products),
-        "extractor_version": RUBRIC_EXTRACTOR_VERSION,
+        "curator_version": RUBRIC_CURATOR_VERSION,
         "curator": {
             "model": args.model,
             "base_url": args.base_url,
@@ -194,10 +190,15 @@ def main():
     requests_path = args.output_dir / "curator_requests.jsonl"
     final_paths = [
         args.output_dir / "task_facts.jsonl",
-        args.output_dir / "rubric_candidates.jsonl",
         args.output_dir / "rubrics.jsonl",
         args.output_dir / "manifest.json",
     ]
+    obsolete_paths = [args.output_dir / "rubric_candidates.jsonl"]
+    if any(path.exists() for path in obsolete_paths):
+        raise SystemExit(
+            "output contains obsolete candidate-based Rubric artifacts; use a "
+            "new output directory"
+        )
     if not args.resume and (
         calls_path.exists()
         or requests_path.exists()
@@ -206,8 +207,8 @@ def main():
         raise SystemExit(
             f"output already exists under {args.output_dir}; pass --resume"
         )
-    if args.resume and final_paths[3].exists():
-        previous_manifest = load_json(final_paths[3])
+    if args.resume and final_paths[2].exists():
+        previous_manifest = load_json(final_paths[2])
         if previous_manifest.get("run_plan_sha256") != run_plan_sha256:
             raise SystemExit(
                 "Rubric resume plan mismatch; use a new output directory for "
@@ -219,9 +220,7 @@ def main():
         task_ids=task_ids,
         products=load_products(args.products),
     )
-    candidate_rows = [extract_rubric_candidates(row) for row in facts_rows]
     facts_by_id = {row["task_id"]: row for row in facts_rows}
-    candidates_by_id = {row["task_id"]: row for row in candidate_rows}
     cached = (
         index_jsonl(calls_path, key="task_id", allowed_keys=set(task_ids))
         if calls_path.exists()
@@ -254,7 +253,6 @@ def main():
     bundles = []
     for index, task_id in enumerate(task_ids, start=1):
         facts = facts_by_id[task_id]
-        candidates = candidates_by_id[task_id]
         if task_id in cached:
             cached_row = cached[task_id]
             if cached_row.get("run_plan_sha256") != run_plan_sha256:
@@ -276,7 +274,6 @@ def main():
                 )
             bundle = materialize_rubric_bundle(
                 task_facts=facts,
-                candidates=candidates,
                 curator_response=cached_row["curator_response"],
                 curator_model=args.model,
                 curator_prompt_version=RUBRIC_CURATOR_PROMPT_VERSION,
@@ -286,7 +283,6 @@ def main():
             response, bundle, request_ids = _curate(
                 client,
                 facts,
-                candidates,
                 args.schema_retries,
                 run_plan_sha256=run_plan_sha256,
                 on_request=record_request,
@@ -307,18 +303,16 @@ def main():
         print(f"rubric {index}/{len(task_ids)} task={task_id}")
 
     _require_exact_task_coverage("task facts", facts_rows, task_ids)
-    _require_exact_task_coverage("Rubric candidates", candidate_rows, task_ids)
     _require_exact_task_coverage("Rubric bundles", bundles, task_ids)
     write_jsonl_atomic(final_paths[0], facts_rows, force=args.resume)
-    write_jsonl_atomic(final_paths[1], candidate_rows, force=args.resume)
-    write_jsonl_atomic(final_paths[2], bundles, force=args.resume)
+    write_jsonl_atomic(final_paths[1], bundles, force=args.resume)
     manifest = {
         "schema_version": RUBRIC_FREEZE_VERSION,
         "task_count": len(task_ids),
         "task_manifest": str(args.tasks),
         "task_manifest_sha256": sha256_file(args.tasks),
         "product_data_sha256": sha256_file(args.products),
-        "extractor_version": RUBRIC_EXTRACTOR_VERSION,
+        "curator_version": RUBRIC_CURATOR_VERSION,
         "curator_model": args.model,
         "curator_prompt_version": RUBRIC_CURATOR_PROMPT_VERSION,
         "thinking": False,
@@ -327,10 +321,10 @@ def main():
         "run_plan_sha256": run_plan_sha256,
         "artifacts": {
             path.name: sha256_file(path)
-            for path in [calls_path, requests_path, *final_paths[:3]]
+            for path in [calls_path, requests_path, *final_paths[:2]]
         },
     }
-    write_json_atomic(final_paths[3], manifest, force=args.resume)
+    write_json_atomic(final_paths[2], manifest, force=args.resume)
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
 
 
