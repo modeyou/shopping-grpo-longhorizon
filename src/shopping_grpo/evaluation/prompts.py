@@ -13,10 +13,13 @@ from shopping_grpo.evaluation.contracts import (
     validate_rubric_bundle,
 )
 from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
-from shopping_grpo.evaluation.rubric import build_query_evidence_anchors
+from shopping_grpo.evaluation.rubric import (
+    build_query_evidence_anchors,
+    stable_hash,
+)
 
 RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v4-reward-v4-candidates-r4"
-TRAJECTORY_JUDGE_PROMPT_VERSION = "trajectory-judge-v2-draft-r1"
+TRAJECTORY_JUDGE_PROMPT_VERSION = "trajectory-judge-v2-single-cache-r3"
 _JUDGE_VISIBLE_ERROR_TAXONOMY = ERROR_TAXONOMY - {
     "reward_rubric_disagreement",
     "infrastructure_invalid",
@@ -115,6 +118,12 @@ Environment Reward、Reward 分项或代码判定的任务成功结论；这些�
 最能解释轨迹失败或低分的根因；secondary 最多两个次要错误，不得与
 primary 重复。没有明显错误时 primary 使用 null，secondary 必须为空列表。
 errors.evidence_event_ids 必须引用能支持归因的真实轨迹事件。
+输入中的 deterministic_facts 由代码从最终环境状态和冻结 Rubric 计算。final_purchase 是最终购买
+状态，不是中途临时选择；price_checks 和 option_checks 的 pass/fail 是权威代码结果。你不得重新计算、
+否定或改写这些
+客观事实，涉及价格和最终规格的 Rubric、维度与错误标签必须与它们一致。
+如果 option_checks 对某条 Rubric 的状态是 unavailable，表示最终购买状态没有记录该规格轴；即使轨迹中
+曾点击过相应选项，也不能证明它进入最终订单，该 Rubric 必须判为 unknown。
 只输出 JSON，不输出 Markdown。
 schema_version 必须是 {JUDGE_SCHEMA_VERSION}。禁止输出 total_score、overall_score
 或任何综合分。"""
@@ -155,7 +164,6 @@ def actor_visible_trajectory(normalized: Mapping) -> dict:
         "action_attempt_id",
         "executed_step_id",
         "assistant_text",
-        "tool_call_id",
         "tool_name",
         "parameters",
         "tool_call_parse_error",
@@ -177,11 +185,128 @@ def actor_visible_trajectory(normalized: Mapping) -> dict:
         }
         events.append(event)
     return {
-        "trajectory_id": normalized.get("trajectory_id"),
         "task_id": normalized.get("task_id"),
         "status": normalized.get("status"),
         "done": normalized.get("done"),
         "events": events,
+    }
+
+
+def _numeric(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _price_check(*, actual: float | None, expected: Mapping) -> dict:
+    result = {
+        "actual_price": actual,
+        "constraint": deepcopy(dict(expected)),
+        "status": "unavailable",
+    }
+    if actual is None:
+        return result
+    kind = expected.get("kind")
+    lower = _numeric(expected.get("lower"))
+    upper = _numeric(expected.get("upper"))
+    if kind == "hard_max" and upper is not None:
+        passed = actual <= upper
+    elif kind == "hard_min" and lower is not None:
+        passed = actual >= lower
+    elif kind in {"hard_range", "soft_target"} and None not in (lower, upper):
+        passed = lower <= actual <= upper
+    else:
+        return result
+    result["status"] = "pass" if passed else "fail"
+    return result
+
+
+def _option_check(*, options: Mapping, semantics: list[Mapping]) -> dict:
+    comparisons = []
+    for semantic in semantics:
+        expected = semantic.get("expected_value")
+        if not isinstance(expected, Mapping):
+            continue
+        source_axis = str(expected.get("source_axis") or "")
+        actual = options.get(source_axis) if source_axis else None
+        operator = semantic.get("operator")
+        if operator == "eq":
+            target = expected.get("value")
+            passed = actual == target if actual is not None else None
+        elif operator == "contains_component":
+            target = expected.get("component")
+            passed = (
+                str(target).casefold() in str(actual).casefold()
+                if actual is not None and target is not None
+                else None
+            )
+        else:
+            target = None
+            passed = None
+        comparisons.append(
+            {
+                "source_axis": source_axis or None,
+                "operator": operator,
+                "expected": deepcopy(target),
+                "actual": deepcopy(actual),
+                "passed": passed,
+            }
+        )
+    known = [row["passed"] for row in comparisons]
+    if not known or any(value is None for value in known):
+        status = "unavailable"
+    else:
+        status = "pass" if all(known) else "fail"
+    return {"status": status, "comparisons": comparisons}
+
+
+def deterministic_judge_facts(
+    *,
+    normalized: Mapping,
+    rubric_bundle: Mapping,
+) -> dict:
+    """Expose neutral final-state facts and code-owned price arithmetic."""
+
+    terminal = normalized.get("terminal")
+    terminal = terminal if isinstance(terminal, Mapping) else {}
+    purchase = terminal.get("purchase")
+    purchase = purchase if isinstance(purchase, Mapping) else {}
+    final_purchase = {
+        key: deepcopy(purchase.get(key))
+        for key in ("asin", "name", "category", "price", "options", "attributes")
+        if key in purchase
+    }
+    actual_price = _numeric(purchase.get("price"))
+    options = purchase.get("options")
+    options = options if isinstance(options, Mapping) else {}
+    price_checks = []
+    option_checks = []
+    for rubric in rubric_bundle.get("rubrics") or []:
+        option_semantics = []
+        for semantic in rubric.get("candidate_semantics") or []:
+            constraint_type = semantic.get("constraint_type")
+            if constraint_type in {"option", "option_component"}:
+                option_semantics.append(semantic)
+            if constraint_type != "price":
+                continue
+            expected = semantic.get("expected_value")
+            if not isinstance(expected, Mapping):
+                continue
+            check = _price_check(actual=actual_price, expected=expected)
+            check["rubric_id"] = str(rubric["rubric_id"])
+            price_checks.append(check)
+        if option_semantics:
+            check = _option_check(options=options, semantics=option_semantics)
+            check["rubric_id"] = str(rubric["rubric_id"])
+            option_checks.append(check)
+    return {
+        "final_purchase": final_purchase or None,
+        "price_checks": price_checks,
+        "option_checks": option_checks,
     }
 
 
@@ -229,9 +354,12 @@ def build_trajectory_judge_messages(
         name: {"allowed_scores": [0, 1, 2]}
         for name in JUDGE_DIMENSIONS
     }
-    payload = {
+    facts = deterministic_judge_facts(
+        normalized=normalized,
+        rubric_bundle=rubric,
+    )
+    semantic_core = {
         "task_id": normalized["task_id"],
-        "trajectory_id": normalized["trajectory_id"],
         "query": normalized.get("actor_query") or rubric["query"],
         "rubric": rubric["rubrics"],
         "dimension_spec": dimensions,
@@ -245,10 +373,16 @@ def build_trajectory_judge_messages(
         "judge_visible_metrics": judge_visible_metrics(
             deterministic_metrics
         ),
+        "deterministic_facts": facts,
+    }
+    semantic_trajectory_id = f"semantic-{stable_hash(semantic_core)}"
+    payload = {
+        **semantic_core,
+        "trajectory_id": semantic_trajectory_id,
         "required_output": {
             "schema_version": JUDGE_SCHEMA_VERSION,
             "task_id": normalized["task_id"],
-            "trajectory_id": normalized["trajectory_id"],
+            "trajectory_id": semantic_trajectory_id,
             "judge_status": "valid | invalid | not_judged",
             "rubric_assessments": [
                 {
@@ -289,3 +423,18 @@ def build_trajectory_judge_messages(
             "content": json.dumps(payload, ensure_ascii=False, sort_keys=True),
         },
     ]
+
+
+def semantic_judge_trajectory_id(messages: list[Mapping]) -> str:
+    """Return the stable trajectory ID embedded in one Judge request."""
+
+    if len(messages) != 2 or messages[1].get("role") != "user":
+        raise ValueError("unexpected Judge message layout")
+    try:
+        payload = json.loads(str(messages[1]["content"]))
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("Judge user message is not valid JSON") from exc
+    value = str(payload.get("trajectory_id") or "")
+    if not value.startswith("semantic-"):
+        raise ValueError("Judge request lacks semantic trajectory ID")
+    return value

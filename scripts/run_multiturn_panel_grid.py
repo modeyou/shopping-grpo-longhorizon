@@ -95,6 +95,7 @@ def build_commands(
     )
     rubrics = _path(plan.get("rubrics"), plan_dir=plan_dir, field="rubrics")
     judge_args = _judge_args(plan.get("judge"))
+    judge_cache_dir = output_root / "semantic-judge-cache"
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
         raise ValueError("plan.runs must be a non-empty list")
@@ -136,6 +137,8 @@ def build_commands(
                 str(rubrics),
                 "--output-dir",
                 str(actor_root / condition),
+                "--judge-cache-dir",
+                str(judge_cache_dir),
                 "--actor-label",
                 label,
                 "--condition",

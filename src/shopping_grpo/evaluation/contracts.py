@@ -21,7 +21,10 @@ RUBRIC_STATUSES = frozenset(
 )
 RUBRIC_HARDNESS = frozenset({"hard", "soft", "needs_review"})
 RUBRIC_REVIEW_STATUSES = frozenset(
-    {"auto_drafted", "needs_review"}
+    {"auto_drafted", "human_approved", "needs_review"}
+)
+RUBRIC_SOURCES = frozenset(
+    {"reward_v4_candidates_llm", "human_review_revision"}
 )
 JUDGE_STATUSES = frozenset({"valid", "invalid", "not_judged"})
 CLARIFICATION_STATUSES = frozenset(
@@ -235,9 +238,9 @@ def validate_rubric_bundle(
         if rubric_id in rubric_ids:
             raise ContractValidationError(f"duplicate rubric_id {rubric_id!r}")
         rubric_ids.add(rubric_id)
-        if item.get("rubric_source") != "reward_v4_candidates_llm":
+        if item.get("rubric_source") not in RUBRIC_SOURCES:
             raise ContractValidationError(
-                f"{path}.rubric_source must be 'reward_v4_candidates_llm'"
+                f"{path}.rubric_source must be one of {sorted(RUBRIC_SOURCES)}"
             )
         candidate_ids = _unique_nonempty_strings(
             item.get("candidate_ids"), f"{path}.candidate_ids"
@@ -359,6 +362,17 @@ def validate_rubric_bundle(
     if review_status == "auto_drafted" and contains_needs_review:
         raise ContractValidationError(
             "rubric_bundle with an unresolved Rubric must use needs_review status"
+        )
+    sources = {item["rubric_source"] for item in rubrics}
+    if review_status == "human_approved" and sources != {
+        "human_review_revision"
+    }:
+        raise ContractValidationError(
+            "human-approved Rubrics must use human_review_revision provenance"
+        )
+    if review_status == "human_approved" and contains_needs_review:
+        raise ContractValidationError(
+            "human-approved Rubrics cannot contain unresolved requirements"
         )
 
     return deepcopy(dict(payload))
@@ -634,6 +648,72 @@ def validate_judge_result(
             "judge_result.overall_diagnosis must be a string"
         )
     return deepcopy(dict(payload))
+
+
+def validate_judge_deterministic_consistency(
+    result: Mapping,
+    deterministic_facts: Mapping,
+) -> None:
+    """Reject Judge price assessments that contradict code-owned arithmetic."""
+
+    if result.get("judge_status") != "valid":
+        return
+    assessments = {
+        str(item.get("rubric_id")): item.get("status")
+        for item in result.get("rubric_assessments") or []
+        if isinstance(item, Mapping)
+    }
+    expected_status = {"pass": "satisfied", "fail": "violated"}
+    for fact_name in ("price_checks", "option_checks"):
+        for check in deterministic_facts.get(fact_name) or []:
+            if not isinstance(check, Mapping):
+                raise ContractValidationError(
+                    f"deterministic_facts.{fact_name} must contain objects"
+                )
+            code_status = check.get("status")
+            if code_status == "unavailable" and fact_name == "price_checks":
+                continue
+            if code_status == "unavailable" and fact_name == "option_checks":
+                rubric_id = str(check.get("rubric_id") or "")
+                actual = assessments.get(rubric_id)
+                if actual != "unknown":
+                    raise ContractValidationError(
+                        f"rubric {rubric_id} option_checks status must be "
+                        f"'unknown' because the final option is unavailable; "
+                        f"got {actual!r}"
+                    )
+                continue
+            required = expected_status.get(str(code_status))
+            if required is None:
+                raise ContractValidationError(
+                    f"deterministic {fact_name} check has an unknown status"
+                )
+            rubric_id = str(check.get("rubric_id") or "")
+            actual = assessments.get(rubric_id)
+            if actual != required:
+                raise ContractValidationError(
+                    f"rubric {rubric_id} {fact_name} status must be {required!r} "
+                    f"because deterministic check is {code_status!r}; got {actual!r}"
+                )
+    errors = result.get("errors")
+    errors = errors if isinstance(errors, Mapping) else {}
+    error_labels = {errors.get("primary"), *(errors.get("secondary") or [])}
+    for fact_name, impossible_error in (
+        ("price_checks", "budget_violation"),
+        ("option_checks", "wrong_option"),
+    ):
+        checks = deterministic_facts.get(fact_name) or []
+        statuses = [
+            check.get("status")
+            for check in checks
+            if isinstance(check, Mapping)
+        ]
+        if statuses and all(status == "pass" for status in statuses):
+            if impossible_error in error_labels:
+                raise ContractValidationError(
+                    f"errors must not contain {impossible_error!r} because all "
+                    f"deterministic {fact_name} pass"
+                )
 
 
 def rubric_ids(bundle: Mapping) -> list[str]:

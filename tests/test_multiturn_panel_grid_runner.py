@@ -42,6 +42,12 @@ def test_grid_runner_builds_one_panel_run_per_actor_and_condition(tmp_path):
     assert commands[0][commands[0].index("--output-dir") + 1] == str(
         tmp_path / "out" / "base" / "gap-ask-enabled"
     )
+    assert commands[0][commands[0].index("--judge-cache-dir") + 1] == str(
+        tmp_path / "out" / "semantic-judge-cache"
+    )
+    assert commands[3][commands[3].index("--judge-cache-dir") + 1] == str(
+        tmp_path / "out" / "semantic-judge-cache"
+    )
     assert commands[-1][-1] == "--allow-blind-final"
     assert "base=" + str(tmp_path / "out" / "base") in commands[-1]
     assert "rl=" + str(tmp_path / "out" / "rl") in commands[-1]

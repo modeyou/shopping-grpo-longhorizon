@@ -1,0 +1,32 @@
+{
+  "expected_tasks": "../../data/multiturn/final-200-v1/tasks.jsonl",
+  "rubrics": "../../tmp/final200-rubrics-minimal-v1/rubrics.jsonl",
+  "judge": {
+    "model": "deepseek-v4-flash-0731",
+    "base_url": "https://ws-66q3vmu9ebhzahay.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "max_tokens": 4096,
+    "timeout": 180,
+    "retries": 2,
+    "schema_retries": 2
+  },
+  "runs": [
+    {
+      "actor_label": "base",
+      "trajectories": {
+        "gap-ask-enabled": "../../outputs/evaluation/final200-gplus-reference-v1/selected-artifacts/outputs/evaluation/final200-v1/base/gap-ask-enabled/trajectories.jsonl"
+      }
+    },
+    {
+      "actor_label": "sft-325",
+      "trajectories": {
+        "gap-ask-enabled": "../../outputs/evaluation/final200-gplus-reference-v1/selected-artifacts/outputs/evaluation/final200-v1/sft-325/gap-ask-enabled/trajectories.jsonl"
+      }
+    },
+    {
+      "actor_label": "carl-bpo-v3-step200",
+      "trajectories": {
+        "gap-ask-enabled": "../../outputs/evaluation/final200-gplus-reference-v1/selected-artifacts/outputs/evaluation/final200-v1/carl-bpo-v3-step200/gap-ask-enabled/trajectories.jsonl"
+      }
+    }
+  ]
+}

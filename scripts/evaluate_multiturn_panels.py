@@ -23,7 +23,13 @@ from shopping_grpo.evaluation.contracts import (
     ContractValidationError,
     rubric_ids,
     validate_rubric_bundle,
+    validate_judge_deterministic_consistency,
     validate_judge_result,
+)
+from shopping_grpo.evaluation.judge_cache import (
+    JUDGE_CACHE_VERSION,
+    SemanticJudgeCache,
+    semantic_request_spec,
 )
 from shopping_grpo.evaluation.manifest import (
     build_run_manifest,
@@ -35,6 +41,8 @@ from shopping_grpo.evaluation.model_client import OpenAIJSONClient
 from shopping_grpo.evaluation.prompts import (
     TRAJECTORY_JUDGE_PROMPT_VERSION,
     build_trajectory_judge_messages,
+    deterministic_judge_facts,
+    semantic_judge_trajectory_id,
 )
 from shopping_grpo.evaluation.results import (
     assemble_task_evaluation,
@@ -53,6 +61,7 @@ def parse_args():
     parser.add_argument("--trajectories", type=Path, required=True)
     parser.add_argument("--rubrics", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--judge-cache-dir", type=Path, required=True)
     parser.add_argument("--actor-label", required=True)
     parser.add_argument(
         "--condition", choices=MULTITURN_CONDITIONS, required=True
@@ -84,6 +93,7 @@ def _task_ids(path: Path) -> list[int]:
 
 def _judge(
     client,
+    cache,
     normalized,
     metrics,
     rubric,
@@ -102,55 +112,127 @@ def _judge(
         for event in normalized.get("events") or []
         if event.get("event_id")
     ]
-    request_ids = []
-    last_error = None
-    for attempt in range(schema_retries + 1):
-        request = {
-            "schema_version": "shopping-judge-request-v1",
-            "run_plan_sha256": run_plan_sha256,
-            "task_id": int(normalized["task_id"]),
-            "trajectory_id": str(normalized["trajectory_id"]),
-            "schema_attempt": attempt,
-            "messages": deepcopy(messages),
-        }
-        request["request_sha256"] = canonical_json_sha256(request)
-        request["request_id"] = request["request_sha256"]
-        on_request(request)
-        request_ids.append(request["request_id"])
-        response = client.complete_json(messages)
-        try:
-            validated = validate_judge_result(
-                response["result"],
-                rubric_ids=rubric_ids(rubric),
-                expected_task_id=normalized["task_id"],
-                expected_trajectory_id=normalized["trajectory_id"],
-                allowed_event_ids=allowed_events,
-            )
-            return response, validated, request_ids
-        except ContractValidationError as exc:
-            last_error = exc
-            if attempt >= schema_retries:
-                break
-            messages.extend(
-                [
-                    {
-                        "role": "assistant",
-                        "content": json.dumps(
-                            response["result"], ensure_ascii=False
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            "上一个 JSON 未通过冻结 schema："
-                            f"{exc}。只修复 JSON；不得新增 rubric_id 或 event_id。"
-                        ),
-                    },
-                ]
-            )
-    raise ContractValidationError(
-        f"task {normalized['task_id']} judge schema retries exhausted: {last_error}"
+    semantic_trajectory_id = semantic_judge_trajectory_id(messages)
+    facts = deterministic_judge_facts(
+        normalized=normalized,
+        rubric_bundle=rubric,
     )
+    request_spec = semantic_request_spec(
+        model=client.model,
+        base_url=client.base_url,
+        prompt_version=TRAJECTORY_JUDGE_PROMPT_VERSION,
+        max_tokens=client.max_tokens,
+        thinking=client.thinking,
+        messages=messages,
+    )
+    semantic_request_sha256 = canonical_json_sha256(request_spec)
+    request_ids = []
+    lookup_request = {
+        "schema_version": "shopping-judge-request-v2",
+        "run_plan_sha256": run_plan_sha256,
+        "task_id": int(normalized["task_id"]),
+        "trajectory_id": str(normalized["trajectory_id"]),
+        "schema_attempt": 0,
+        "request_kind": "semantic_cache_lookup",
+        "semantic_request_sha256": semantic_request_sha256,
+        "messages": deepcopy(messages),
+    }
+    lookup_request["request_sha256"] = canonical_json_sha256(lookup_request)
+    lookup_request["request_id"] = lookup_request["request_sha256"]
+    on_request(lookup_request)
+    request_ids.append(lookup_request["request_id"])
+    computed_request_ids = []
+
+    def compute():
+        local_messages = deepcopy(messages)
+        local_request_ids = []
+        last_error = None
+        for attempt in range(schema_retries + 1):
+            request = {
+                "schema_version": "shopping-judge-request-v2",
+                "run_plan_sha256": run_plan_sha256,
+                "task_id": int(normalized["task_id"]),
+                "trajectory_id": str(normalized["trajectory_id"]),
+                "schema_attempt": attempt,
+                "request_kind": "external_api_call",
+                "semantic_request_sha256": semantic_request_sha256,
+                "messages": deepcopy(local_messages),
+            }
+            request["request_sha256"] = canonical_json_sha256(request)
+            request["request_id"] = request["request_sha256"]
+            on_request(request)
+            local_request_ids.append(request["request_id"])
+            response = client.complete_json(local_messages)
+            try:
+                validated = validate_judge_result(
+                    response["result"],
+                    rubric_ids=rubric_ids(rubric),
+                    expected_task_id=normalized["task_id"],
+                    expected_trajectory_id=semantic_trajectory_id,
+                    allowed_event_ids=allowed_events,
+                )
+                validate_judge_deterministic_consistency(validated, facts)
+                computed_request_ids.extend(local_request_ids)
+                return {
+                    "judge_result": validated,
+                    "request_metadata": response["metadata"],
+                }
+            except ContractValidationError as exc:
+                last_error = exc
+                if attempt >= schema_retries:
+                    break
+                local_messages.extend(
+                    [
+                        {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                response["result"], ensure_ascii=False
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "上一个 JSON 未通过冻结 schema："
+                                f"{exc}。只修复 JSON；不得新增 rubric_id 或 event_id，"
+                                "且不得违反 deterministic_facts。"
+                            ),
+                        },
+                    ]
+                )
+        raise ContractValidationError(
+            f"task {normalized['task_id']} judge schema retries exhausted: "
+            f"{last_error}"
+        )
+
+    cached_response, cache_hit = cache.get_or_compute(request_spec, compute)
+    semantic_result = validate_judge_result(
+        cached_response["judge_result"],
+        rubric_ids=rubric_ids(rubric),
+        expected_task_id=normalized["task_id"],
+        expected_trajectory_id=semantic_trajectory_id,
+        allowed_event_ids=allowed_events,
+    )
+    validate_judge_deterministic_consistency(semantic_result, facts)
+    judge_result = deepcopy(semantic_result)
+    judge_result["trajectory_id"] = str(normalized["trajectory_id"])
+    judge_result = validate_judge_result(
+        judge_result,
+        rubric_ids=rubric_ids(rubric),
+        expected_task_id=normalized["task_id"],
+        expected_trajectory_id=normalized["trajectory_id"],
+        allowed_event_ids=allowed_events,
+    )
+    if not cache_hit:
+        request_ids.extend(computed_request_ids)
+    metadata = deepcopy(cached_response.get("request_metadata") or {})
+    metadata.update(
+        {
+            "semantic_cache_hit": cache_hit,
+            "semantic_request_sha256": semantic_request_sha256,
+            "semantic_trajectory_id": semantic_trajectory_id,
+        }
+    )
+    return metadata, judge_result, request_ids
 
 
 def _run_plan(args) -> dict:
@@ -171,6 +253,7 @@ def _run_plan(args) -> dict:
             "retries": args.retries,
             "schema_retries": args.schema_retries,
             "prompt_version": TRAJECTORY_JUDGE_PROMPT_VERSION,
+            "semantic_cache_version": JUDGE_CACHE_VERSION,
             "thinking": False,
             "temperature": 0.0,
         },
@@ -286,6 +369,7 @@ def main():
         response_format_json=True,
         thinking=False,
     )
+    cache = SemanticJudgeCache(args.judge_cache_dir)
     preprocessed = []
     evaluations = []
     for index, task_id in enumerate(expected_ids, start=1):
@@ -350,8 +434,9 @@ def main():
                 },
             )
         else:
-            response, judge_result, request_ids = _judge(
+            request_metadata, judge_result, request_ids = _judge(
                 client,
+                cache,
                 normalized,
                 metrics,
                 rubrics[task_id],
@@ -366,7 +451,7 @@ def main():
                     "run_plan_sha256": run_plan_sha256,
                     "trajectory_id": normalized["trajectory_id"],
                     "judge_result": judge_result,
-                    "request_metadata": response["metadata"],
+                    "request_metadata": request_metadata,
                     "request_ids": request_ids,
                 },
             )

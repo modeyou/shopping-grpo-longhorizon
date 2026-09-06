@@ -39,6 +39,8 @@ def test_frozen_model_defaults_match_selected_evaluation_stack():
             "rubrics.jsonl",
             "--output-dir",
             "out",
+            "--judge-cache-dir",
+            "shared-judge-cache",
             "--actor-label",
             "base",
             "--condition",
@@ -48,6 +50,7 @@ def test_frozen_model_defaults_match_selected_evaluation_stack():
         panel = parse_panel_args()
     assert panel.judge_model == "deepseek-v4-flash-0731"
     assert panel.condition == "gap-ask-enabled"
+    assert panel.judge_cache_dir == Path("shared-judge-cache")
 
 
 def test_comparison_run_spec_is_label_and_root():
