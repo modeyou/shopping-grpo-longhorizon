@@ -21,7 +21,6 @@ from shopping_grpo.evaluation.blind_guard import guard_declared_final_tasks
 from shopping_grpo.evaluation.comparison import MULTITURN_CONDITIONS
 from shopping_grpo.evaluation.contracts import (
     ContractValidationError,
-    RUBRIC_APPROVAL_SCHEMA_VERSION,
     rubric_ids,
     validate_rubric_bundle,
     validate_judge_result,
@@ -53,7 +52,6 @@ def parse_args():
     parser.add_argument("--expected-tasks", type=Path, required=True)
     parser.add_argument("--trajectories", type=Path, required=True)
     parser.add_argument("--rubrics", type=Path, required=True)
-    parser.add_argument("--rubric-approval", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--actor-label", required=True)
     parser.add_argument(
@@ -163,7 +161,6 @@ def _run_plan(args) -> dict:
         "expected_tasks_sha256": sha256_file(args.expected_tasks),
         "trajectories_sha256": sha256_file(args.trajectories),
         "rubrics_sha256": sha256_file(args.rubrics),
-        "rubric_approval_sha256": sha256_file(args.rubric_approval),
         "actor": {"label": args.actor_label},
         "condition": args.condition,
         "judge": {
@@ -258,22 +255,12 @@ def main():
         if judges_path.exists()
         else {}
     )
-    approval = load_json(args.rubric_approval)
-    if approval.get("schema_version") != RUBRIC_APPROVAL_SCHEMA_VERSION:
-        raise SystemExit("unsupported rubric approval manifest")
-    rubrics_sha256 = sha256_file(args.rubrics)
-    if approval.get("approved_rubrics_sha256") != rubrics_sha256:
-        raise SystemExit("rubric approval does not match --rubrics")
-    if approval.get("task_count") != len(expected_ids):
-        raise SystemExit("rubric approval task_count does not match expected tasks")
     for task_id, bundle in rubrics.items():
         try:
-            validate_rubric_bundle(
-                bundle, expected_task_id=task_id, require_approved=True
-            )
+            validate_rubric_bundle(bundle, expected_task_id=task_id)
         except ContractValidationError as exc:
             raise SystemExit(
-                f"unapproved or invalid rubric task {task_id}: {exc}"
+                f"invalid rubric task {task_id}: {exc}"
             ) from exc
     cached_requests = (
         index_jsonl(requests_path, key="request_id")

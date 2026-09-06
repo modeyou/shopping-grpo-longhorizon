@@ -24,6 +24,31 @@ class ModelResponseError(ValueError):
     """Raised when a provider response cannot satisfy the JSON contract."""
 
 
+def _http_error_message(error: HTTPError) -> str:
+    """Extract a bounded provider error without exposing request credentials."""
+
+    try:
+        body = error.read().decode("utf-8", errors="replace")
+    except (AttributeError, OSError):
+        body = ""
+    message = ""
+    if body:
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, Mapping):
+            detail = payload.get("error")
+            if isinstance(detail, Mapping):
+                code = str(detail.get("code") or "").strip()
+                text = str(detail.get("message") or "").strip()
+                message = f"{code}: {text}" if code and text else code or text
+            elif isinstance(detail, str):
+                message = detail.strip()
+    message = " ".join(message.split())[:500]
+    return message or str(error.reason or "request rejected")
+
+
 def _retry_after_seconds(
     error: HTTPError,
     *,
@@ -149,7 +174,10 @@ class OpenAIJSONClient:
                     status not in RETRYABLE_HTTP_STATUSES
                     or attempt >= self.retries
                 ):
-                    raise
+                    detail = _http_error_message(exc)
+                    raise ModelResponseError(
+                        f"provider HTTP {status}: {detail}"
+                    ) from exc
                 retry_http_statuses.append(status)
                 exponential = self.retry_delay_seconds * (2**attempt)
                 retry_after = _retry_after_seconds(exc)

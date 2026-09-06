@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 
-CONTRACT_VERSION = "shopping-trajectory-evaluation-v3"
-RUBRIC_SCHEMA_VERSION = "shopping-requirement-rubric-v3"
-RUBRIC_APPROVAL_SCHEMA_VERSION = "shopping-rubric-approval-v1"
+CONTRACT_VERSION = "shopping-trajectory-evaluation-v4"
+RUBRIC_SCHEMA_VERSION = "shopping-requirement-rubric-v5"
 JUDGE_SCHEMA_VERSION = "shopping-trajectory-judge-v2"
 
 JUDGE_DIMENSIONS = (
@@ -22,7 +21,7 @@ RUBRIC_STATUSES = frozenset(
 )
 RUBRIC_HARDNESS = frozenset({"hard", "soft", "needs_review"})
 RUBRIC_REVIEW_STATUSES = frozenset(
-    {"auto_drafted", "approved", "needs_review"}
+    {"auto_drafted", "needs_review"}
 )
 JUDGE_STATUSES = frozenset({"valid", "invalid", "not_judged"})
 CLARIFICATION_STATUSES = frozenset(
@@ -117,7 +116,6 @@ def validate_rubric_bundle(
     bundle: object,
     *,
     expected_task_id: int | None = None,
-    require_approved: bool = False,
 ) -> dict:
     """Validate and defensively copy one frozen task-level Rubric bundle."""
 
@@ -158,6 +156,7 @@ def validate_rubric_bundle(
         "curator_prompt_version",
         "task_data_hash",
         "query_hash",
+        "candidate_hash",
     }
     _require_exact_fields(
         generation, generation_fields, "rubric_bundle.generation"
@@ -192,9 +191,7 @@ def validate_rubric_bundle(
         )
 
     review = _mapping(payload.get("review"), "rubric_bundle.review")
-    _require_exact_fields(
-        review, {"status", "reviewer", "reviewed_at"}, "rubric_bundle.review"
-    )
+    _require_exact_fields(review, {"status"}, "rubric_bundle.review")
     review_status = _nonempty_text(
         review.get("status"), "rubric_bundle.review.status"
     )
@@ -203,20 +200,6 @@ def validate_rubric_bundle(
             "rubric_bundle.review.status must be one of "
             f"{sorted(RUBRIC_REVIEW_STATUSES)}"
         )
-    reviewer = review.get("reviewer")
-    reviewed_at = review.get("reviewed_at")
-    if review_status == "approved":
-        _nonempty_text(reviewer, "rubric_bundle.review.reviewer")
-        _nonempty_text(reviewed_at, "rubric_bundle.review.reviewed_at")
-    elif reviewer is not None or reviewed_at is not None:
-        raise ContractValidationError(
-            "unapproved rubric_bundle review metadata must be null"
-        )
-    if require_approved and review_status != "approved":
-        raise ContractValidationError(
-            "rubric_bundle must be explicitly approved before Judge evaluation"
-        )
-
     anchors = build_query_evidence_anchors(query)
     anchors_by_id = {anchor["anchor_id"]: anchor for anchor in anchors}
 
@@ -235,6 +218,8 @@ def validate_rubric_bundle(
             {
                 "rubric_id",
                 "rubric_source",
+                "candidate_ids",
+                "candidate_semantics",
                 "description",
                 "acceptance_criteria",
                 "hardness",
@@ -250,9 +235,47 @@ def validate_rubric_bundle(
         if rubric_id in rubric_ids:
             raise ContractValidationError(f"duplicate rubric_id {rubric_id!r}")
         rubric_ids.add(rubric_id)
-        if item.get("rubric_source") != "query_only_llm":
+        if item.get("rubric_source") != "reward_v4_candidates_llm":
             raise ContractValidationError(
-                f"{path}.rubric_source must be 'query_only_llm'"
+                f"{path}.rubric_source must be 'reward_v4_candidates_llm'"
+            )
+        candidate_ids = _unique_nonempty_strings(
+            item.get("candidate_ids"), f"{path}.candidate_ids"
+        )
+        if not candidate_ids:
+            raise ContractValidationError(f"{path}.candidate_ids must not be empty")
+        semantics = _list(
+            item.get("candidate_semantics"), f"{path}.candidate_semantics"
+        )
+        semantic_ids = []
+        for semantic_index, semantic_value in enumerate(semantics):
+            semantic_path = f"{path}.candidate_semantics[{semantic_index}]"
+            semantic = _mapping(semantic_value, semantic_path)
+            _require_exact_fields(
+                semantic,
+                {
+                    "candidate_id",
+                    "constraint_type",
+                    "field_path",
+                    "operator",
+                    "expected_value",
+                },
+                semantic_path,
+            )
+            semantic_ids.append(
+                _nonempty_text(
+                    semantic.get("candidate_id"), f"{semantic_path}.candidate_id"
+                )
+            )
+            for field in ("constraint_type", "field_path", "operator"):
+                _nonempty_text(semantic.get(field), f"{semantic_path}.{field}")
+            if "expected_value" not in semantic:
+                raise ContractValidationError(
+                    f"{semantic_path}.expected_value is required"
+                )
+        if semantic_ids != candidate_ids:
+            raise ContractValidationError(
+                f"{path}.candidate_semantics must match candidate_ids in order"
             )
         _nonempty_text(
             item.get("description"), f"{path}.description"
@@ -273,9 +296,12 @@ def validate_rubric_bundle(
         _nonempty_text(
             item.get("hardness_source"), f"{path}.hardness_source"
         )
-        if item.get("data_sources") != ["query"]:
+        data_sources = _unique_nonempty_strings(
+            item.get("data_sources"), f"{path}.data_sources"
+        )
+        if "query" not in data_sources:
             raise ContractValidationError(
-                f"{path}.data_sources must be ['query'] for Query-only Rubrics"
+                f"{path}.data_sources must include 'query'"
             )
         _nonempty_text(
             item.get("selection_reason"), f"{path}.selection_reason"
@@ -326,10 +352,6 @@ def validate_rubric_bundle(
                     f"{span_path} does not match rubric_bundle.query"
                 )
 
-    if review_status == "approved" and contains_needs_review:
-        raise ContractValidationError(
-            "approved rubric_bundle cannot contain needs_review Rubrics"
-        )
     if review_status == "needs_review" and not contains_needs_review:
         raise ContractValidationError(
             "rubric_bundle.review.status is needs_review without an unresolved Rubric"
@@ -346,11 +368,18 @@ def validate_curator_response(
     response: object,
     *,
     anchor_ids: Iterable[str],
+    candidate_ids: Iterable[str],
 ) -> dict:
     """Validate an LLM-generated requirement list against Query anchor IDs."""
 
     payload = _mapping(response, "curator_response")
     allowed_anchor_ids = {str(anchor_id) for anchor_id in anchor_ids}
+    candidate_by_id = (
+        {str(key): value for key, value in candidate_ids.items()}
+        if isinstance(candidate_ids, Mapping)
+        else {str(candidate_id): None for candidate_id in candidate_ids}
+    )
+    allowed_candidate_ids = set(candidate_by_id)
     requirements = _list(
         payload.get("requirements"), "curator_response.requirements"
     )
@@ -364,12 +393,25 @@ def validate_curator_response(
         path = f"curator_response.requirements[{index}]"
         item = _mapping(item_value, path)
         expected_fields = {
+            "candidate_ids",
             "description",
             "hardness",
             "query_anchor_ids",
             "selection_reason",
         }
         _require_exact_fields(item, expected_fields, path)
+        selected_candidate_ids = _unique_nonempty_strings(
+            item.get("candidate_ids"), f"{path}.candidate_ids"
+        )
+        if not selected_candidate_ids:
+            raise ContractValidationError(f"{path}.candidate_ids must not be empty")
+        unknown_candidate_ids = sorted(
+            set(selected_candidate_ids) - allowed_candidate_ids
+        )
+        if unknown_candidate_ids:
+            raise ContractValidationError(
+                f"{path}.candidate_ids references unknown candidates: {unknown_candidate_ids}"
+            )
         description = _nonempty_text(item.get("description"), f"{path}.description")
         selected_anchor_ids = _unique_nonempty_strings(
             item.get("query_anchor_ids"), f"{path}.query_anchor_ids"

@@ -44,6 +44,12 @@ def parse_args():
         help="LABEL=ROOT; ROOT must contain CONDITION/evaluations.jsonl",
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--condition",
+        action="append",
+        choices=MULTITURN_CONDITIONS,
+        help="Condition to compare; omit only for the full G+/G-/C+ grid.",
+    )
     parser.add_argument("--allow-blind-final", action="store_true")
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
@@ -117,14 +123,6 @@ def _load_verified_condition(
         manifest,
         expected_tasks_sha256=expected_tasks_sha256,
     )
-    parser.add_argument(
-        "--condition",
-        action="append",
-        choices=MULTITURN_CONDITIONS,
-        help="Condition to compare; omit only for the full G+/G-/C+ grid.",
-    )
-
-
 def main():
     args = parse_args()
     guard_declared_final_tasks(

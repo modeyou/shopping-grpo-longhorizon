@@ -1,4 +1,4 @@
-"""Query-only Rubric drafting and immutable bundle materialization."""
+"""Candidate-constrained Rubric materialization."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from shopping_grpo.evaluation.contracts import (
 
 
 TASK_FACTS_VERSION = "shopping-query-facts-v1"
-RUBRIC_CURATOR_VERSION = "shopping-query-rubric-curator-v3"
+RUBRIC_CURATOR_VERSION = "shopping-candidate-rubric-curator-v5"
 QUERY_EVIDENCE_ANCHOR_VERSION = "shopping-query-evidence-anchors-v1"
 GENERIC_ACCEPTANCE_CRITERIA = (
     "仅依据 Actor 可见轨迹：存在直接支持该 Query 原文要求的可观察证据时判 "
@@ -86,21 +86,52 @@ def build_query_evidence_anchors(query: str) -> list[dict]:
 def materialize_rubric_bundle(
     *,
     task_facts: Mapping,
+    candidates: Mapping,
     curator_response: Mapping,
     curator_model: str,
     curator_prompt_version: str,
     rubric_version: str,
 ) -> dict:
-    """Freeze one Query-only curator response into a validated Rubric bundle."""
+    """Freeze a candidate-constrained curator response into a Rubric bundle."""
 
     if task_facts.get("schema_version") != TASK_FACTS_VERSION:
         raise ContractValidationError("unsupported query facts schema")
     query = str(task_facts.get("query") or "")
     anchors = build_query_evidence_anchors(query)
     by_anchor_id = {anchor["anchor_id"]: anchor for anchor in anchors}
+    candidate_rows = candidates.get("candidates")
+    if not isinstance(candidate_rows, list):
+        raise ContractValidationError("candidates.candidates must be a list")
+    from shopping_grpo.evaluation.candidates import (
+        RUBRIC_CANDIDATE_VERSION,
+        REWARD_VERSION,
+    )
+
+    if candidates.get("schema_version") != RUBRIC_CANDIDATE_VERSION:
+        raise ContractValidationError("unsupported Rubric candidate schema")
+    if candidates.get("reward_version") != REWARD_VERSION:
+        raise ContractValidationError("Rubric candidates must use Reward v4")
+    claimed_candidate_hash = str(candidates.get("candidate_hash") or "")
+    hash_material = {
+        key: value for key, value in candidates.items() if key != "candidate_hash"
+    }
+    if claimed_candidate_hash != stable_hash(hash_material):
+        raise ContractValidationError("candidate_hash does not match candidate content")
+    if int(candidates.get("task_id", -1)) != int(task_facts["task_id"]):
+        raise ContractValidationError("candidate task_id does not match task facts")
+    if str(candidates.get("query") or "") != query:
+        raise ContractValidationError("candidate Query does not match task facts")
+    by_candidate_id = {
+        str(item.get("candidate_id")): item
+        for item in candidate_rows
+        if isinstance(item, Mapping)
+    }
+    if len(by_candidate_id) != len(candidate_rows):
+        raise ContractValidationError("candidate IDs must be present and unique")
     response = validate_curator_response(
         curator_response,
         anchor_ids=by_anchor_id,
+        candidate_ids=by_candidate_id,
     )
 
     rubrics = []
@@ -114,17 +145,41 @@ def materialize_rubric_bundle(
             }
             for anchor_id in anchor_ids
         ]
+        selected_candidates = [
+            by_candidate_id[candidate_id]
+            for candidate_id in requirement["candidate_ids"]
+        ]
         rubrics.append(
             {
                 "rubric_id": f"r{len(rubrics) + 1:04d}",
-                "rubric_source": "query_only_llm",
+                "rubric_source": "reward_v4_candidates_llm",
+                "candidate_ids": requirement["candidate_ids"],
+                "candidate_semantics": [
+                    {
+                        "candidate_id": candidate["candidate_id"],
+                        "constraint_type": candidate["constraint_type"],
+                        "field_path": candidate["field_path"],
+                        "operator": candidate["operator"],
+                        "expected_value": candidate["expected_value"],
+                    }
+                    for candidate in selected_candidates
+                ],
                 "description": requirement["description"].strip(),
                 "acceptance_criteria": GENERIC_ACCEPTANCE_CRITERIA,
                 "hardness": requirement["hardness"],
                 "hardness_source": "curator_query_interpretation",
                 "query_spans": quote_spans,
                 "query_anchor_ids": anchor_ids,
-                "data_sources": ["query"],
+                "data_sources": sorted(
+                    {
+                        "query",
+                        *(
+                            source
+                            for candidate in selected_candidates
+                            for source in candidate.get("data_sources") or []
+                        ),
+                    }
+                ),
                 "selection_reason": requirement["selection_reason"].strip(),
             }
         )
@@ -138,6 +193,7 @@ def materialize_rubric_bundle(
             "curator_version": RUBRIC_CURATOR_VERSION,
             "curator_model": str(curator_model),
             "curator_prompt_version": str(curator_prompt_version),
+            "candidate_hash": str(candidates.get("candidate_hash") or ""),
             "task_data_hash": str(task_facts["task_data_hash"]),
             "query_hash": str(task_facts["query_hash"]),
         },
@@ -147,8 +203,6 @@ def materialize_rubric_bundle(
                 if any(item["hardness"] == "needs_review" for item in rubrics)
                 else "auto_drafted"
             ),
-            "reviewer": None,
-            "reviewed_at": None,
         },
         "rubrics": rubrics,
     }

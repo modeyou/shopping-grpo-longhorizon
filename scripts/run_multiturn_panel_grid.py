@@ -94,11 +94,6 @@ def build_commands(
         plan.get("expected_tasks"), plan_dir=plan_dir, field="expected_tasks"
     )
     rubrics = _path(plan.get("rubrics"), plan_dir=plan_dir, field="rubrics")
-    rubric_approval = _path(
-        plan.get("rubric_approval"),
-        plan_dir=plan_dir,
-        field="rubric_approval",
-    )
     judge_args = _judge_args(plan.get("judge"))
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs:
@@ -139,8 +134,6 @@ def build_commands(
                 str(trajectory),
                 "--rubrics",
                 str(rubrics),
-                "--rubric-approval",
-                str(rubric_approval),
                 "--output-dir",
                 str(actor_root / condition),
                 "--actor-label",

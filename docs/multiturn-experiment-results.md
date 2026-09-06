@@ -208,5 +208,7 @@ Local 阶段设计。CARL-BPO v1 当前仓库证据只覆盖训练 validation �
 ## 当前项目发布口径
 
 DEV-500 已参与 checkpoint 和方案选择，所以当前 README 和简历将它称为冻结开发基准，而不是未见测试集。
-Base/SFT/BPO v1 的结果已经足以构成当前可复核项目版本；CARL-BPO v2.1、独立 Final-200、置信区间和
-全量 Rubric/Judge 作为后续增强，不反向改变上述已验证结论。
+独立 Final-200 G+ 已完成 Base、SFT checkpoint-325 和 Root/Local 双分支 RL step-200 的 Reward v4、
+共享 Rubric 与轨迹 Judge 评测。RL 的 strict 为 62.5%，SFT 为 61.0%；计入合格替代品后的购买成功率
+分别为 64.5% 和 62.5%。该结果为小幅正向变化，但配对 exact McNemar `p=0.4531`，不声明统计显著。
+完整协议、过程指标与适用边界见 [Final-200 G+ 正式评测结果](final200-evaluation-results.md)。
