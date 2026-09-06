@@ -33,12 +33,13 @@ from shopping_grpo.evaluation.prompts import (
 from shopping_grpo.evaluation.rubric import (
     materialize_rubric_bundle,
     RUBRIC_CURATOR_VERSION,
+    QUERY_EVIDENCE_ANCHOR_VERSION,
 )
 from shopping_grpo.evaluation.task_facts import task_facts_from_products
 from shopping_grpo.multiturn.benchmark import load_products
 
 
-RUBRIC_FREEZE_VERSION = "shopping-multiturn-rubric-freeze-v3"
+RUBRIC_FREEZE_VERSION = "shopping-multiturn-rubric-freeze-v4"
 
 
 def parse_args():
@@ -139,6 +140,7 @@ def _run_plan(args) -> dict:
         "task_manifest_sha256": sha256_file(args.tasks),
         "product_data_sha256": sha256_file(args.products),
         "curator_version": RUBRIC_CURATOR_VERSION,
+        "query_evidence_anchor_version": QUERY_EVIDENCE_ANCHOR_VERSION,
         "curator": {
             "model": args.model,
             "base_url": args.base_url,
@@ -313,6 +315,7 @@ def main():
         "task_manifest_sha256": sha256_file(args.tasks),
         "product_data_sha256": sha256_file(args.products),
         "curator_version": RUBRIC_CURATOR_VERSION,
+        "query_evidence_anchor_version": QUERY_EVIDENCE_ANCHOR_VERSION,
         "curator_model": args.model,
         "curator_prompt_version": RUBRIC_CURATOR_PROMPT_VERSION,
         "thinking": False,

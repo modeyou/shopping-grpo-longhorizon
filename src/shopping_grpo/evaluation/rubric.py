@@ -16,7 +16,8 @@ from shopping_grpo.evaluation.contracts import (
 
 
 TASK_FACTS_VERSION = "shopping-query-facts-v1"
-RUBRIC_CURATOR_VERSION = "shopping-query-rubric-curator-v1"
+RUBRIC_CURATOR_VERSION = "shopping-query-rubric-curator-v2"
+QUERY_EVIDENCE_ANCHOR_VERSION = "shopping-query-evidence-anchors-v1"
 
 
 def _canonical_json(value: object) -> str:
@@ -53,18 +54,28 @@ def build_task_facts(*, task_id: int, query: str) -> dict:
     return payload
 
 
-def _spans_from_quote(query: str, quote: str) -> list[dict]:
-    quote = str(quote or "").strip()
-    if not quote:
-        return []
-    return [
-        {
-            "text": query[match.start() : match.end()],
-            "start": match.start(),
-            "end": match.end(),
-        }
-        for match in re.finditer(re.escape(quote), query, flags=re.IGNORECASE)
-    ]
+def build_query_evidence_anchors(query: str) -> list[dict]:
+    """Split only public Query text into exact, non-semantic evidence anchors."""
+
+    text = str(query or "")
+    anchors = []
+    for match in re.finditer(r"[^，,。！？!?；;\n]+", text):
+        raw = match.group(0)
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        start = match.start() + len(raw) - len(raw.lstrip())
+        anchors.append(
+            {
+                "anchor_id": f"q{len(anchors) + 1:04d}",
+                "text": stripped,
+                "start": start,
+                "end": start + len(stripped),
+            }
+        )
+    if not anchors:
+        raise ValueError("Query must contain at least one evidence anchor")
+    return anchors
 
 
 def materialize_rubric_bundle(
@@ -80,15 +91,24 @@ def materialize_rubric_bundle(
     if task_facts.get("schema_version") != TASK_FACTS_VERSION:
         raise ContractValidationError("unsupported query facts schema")
     query = str(task_facts.get("query") or "")
-    response = validate_curator_response(curator_response, query=query)
+    anchors = build_query_evidence_anchors(query)
+    by_anchor_id = {anchor["anchor_id"]: anchor for anchor in anchors}
+    response = validate_curator_response(
+        curator_response,
+        anchor_ids=by_anchor_id,
+    )
 
     rubrics = []
     for requirement in response["requirements"]:
-        quote_spans = _spans_from_quote(query, requirement["query_quote"])
-        if not quote_spans:
-            raise ContractValidationError(
-                "requirement query_quote must produce at least one Query span"
-            )
+        anchor_ids = requirement["query_anchor_ids"]
+        quote_spans = [
+            {
+                "text": by_anchor_id[anchor_id]["text"],
+                "start": by_anchor_id[anchor_id]["start"],
+                "end": by_anchor_id[anchor_id]["end"],
+            }
+            for anchor_id in anchor_ids
+        ]
         rubrics.append(
             {
                 "rubric_id": f"r{len(rubrics) + 1:04d}",
@@ -100,6 +120,7 @@ def materialize_rubric_bundle(
                 "hardness": requirement["hardness"],
                 "hardness_source": "curator_query_interpretation",
                 "query_spans": quote_spans,
+                "query_anchor_ids": anchor_ids,
                 "data_sources": ["query"],
                 "selection_reason": requirement["selection_reason"].strip(),
             }

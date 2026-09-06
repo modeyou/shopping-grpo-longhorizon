@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from shopping_grpo.evaluation.contracts import ContractValidationError
@@ -15,14 +17,16 @@ def _facts():
     return build_task_facts(task_id=7, query="预算100元以内，优先木制手串")
 
 
-def _response(*, quote="100元以内", criteria="最终购买价格不超过100元"):
+def _response(*, anchor_ids=None, criteria="最终购买价格不超过100元"):
+    if anchor_ids is None:
+        anchor_ids = ["q0001"]
     return {
         "requirements": [
             {
                 "description": "价格不超过100元",
                 "acceptance_criteria": criteria,
                 "hardness": "hard",
-                "query_quote": quote,
+                "query_anchor_ids": anchor_ids,
                 "selection_reason": "用户明确给出了预算上限",
             }
         ]
@@ -43,8 +47,9 @@ def test_query_only_rubric_has_exact_query_evidence_and_no_private_fields():
     assert rubric["rubric_source"] == "query_only_llm"
     assert rubric["data_sources"] == ["query"]
     assert rubric["query_spans"] == [
-        {"text": "100元以内", "start": 2, "end": 8}
+        {"text": "预算100元以内", "start": 0, "end": 8}
     ]
+    assert rubric["query_anchor_ids"] == ["q0001"]
     assert "candidate_id" not in rubric
     assert "expected_value" not in rubric
     assert "target_product" not in facts
@@ -57,7 +62,13 @@ def test_curator_request_contains_only_task_id_and_query():
         query="预算100元以内",
     )
 
-    assert messages[1]["content"] == '{"query": "预算100元以内", "task_id": 7}'
+    payload = json.loads(messages[1]["content"])
+    assert payload["task_id"] == 7
+    assert payload["query"] == "预算100元以内"
+    assert payload["query_evidence_anchors"] == [
+        {"anchor_id": "q0001", "text": "预算100元以内", "start": 0, "end": 8}
+    ]
+    assert "candidates" not in payload
 
 
 def test_curator_prompt_marks_optional_and_unverifiable_requirements():
@@ -67,12 +78,12 @@ def test_curator_prompt_marks_optional_and_unverifiable_requirements():
     )
 
 
-@pytest.mark.parametrize("quote", ["", "预算200元以内", "不存在"])
-def test_query_only_rubric_rejects_missing_or_unrelated_query_evidence(quote):
+@pytest.mark.parametrize("anchor_ids", [[], ["q9999"], ["q0001", "q0001"]])
+def test_query_only_rubric_rejects_missing_or_unknown_query_evidence(anchor_ids):
     with pytest.raises(ContractValidationError):
         materialize_rubric_bundle(
             task_facts=_facts(),
-            curator_response=_response(quote=quote),
+            curator_response=_response(anchor_ids=anchor_ids),
             curator_model="curator",
             curator_prompt_version="test",
             rubric_version="test",
@@ -97,7 +108,7 @@ def test_query_only_rubric_preserves_multiple_independent_requirements():
             "description": "优先选择木制手串",
             "acceptance_criteria": "轨迹中的候选或最终购买商品有可见木制证据",
             "hardness": "soft",
-            "query_quote": "优先木制手串",
+            "query_anchor_ids": ["q0002"],
             "selection_reason": "用户以优先措辞提出材质和品类偏好",
         }
     )

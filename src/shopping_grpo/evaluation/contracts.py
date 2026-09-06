@@ -174,6 +174,13 @@ def validate_rubric_bundle(
         _nonempty_text(
             item.get("selection_reason"), f"{path}.selection_reason"
         )
+        anchor_ids = _unique_nonempty_strings(
+            item.get("query_anchor_ids"), f"{path}.query_anchor_ids"
+        )
+        if not anchor_ids:
+            raise ContractValidationError(
+                f"{path}.query_anchor_ids must contain at least one anchor"
+            )
         spans = _list(item.get("query_spans"), f"{path}.query_spans")
         if not spans:
             raise ContractValidationError(
@@ -200,11 +207,12 @@ def validate_rubric_bundle(
 def validate_curator_response(
     response: object,
     *,
-    query: str,
+    anchor_ids: Iterable[str],
 ) -> dict:
-    """Validate an LLM-generated requirement list against its Query evidence."""
+    """Validate an LLM-generated requirement list against Query anchor IDs."""
 
     payload = _mapping(response, "curator_response")
+    allowed_anchor_ids = {str(anchor_id) for anchor_id in anchor_ids}
     requirements = _list(
         payload.get("requirements"), "curator_response.requirements"
     )
@@ -217,8 +225,20 @@ def validate_curator_response(
         path = f"curator_response.requirements[{index}]"
         item = _mapping(item_value, path)
         description = _nonempty_text(item.get("description"), f"{path}.description")
-        quote = _nonempty_text(item.get("query_quote"), f"{path}.query_quote")
-        identity = (description, quote)
+        selected_anchor_ids = _unique_nonempty_strings(
+            item.get("query_anchor_ids"), f"{path}.query_anchor_ids"
+        )
+        if not selected_anchor_ids:
+            raise ContractValidationError(
+                f"{path}.query_anchor_ids must contain at least one anchor"
+            )
+        unknown_anchor_ids = sorted(set(selected_anchor_ids) - allowed_anchor_ids)
+        if unknown_anchor_ids:
+            raise ContractValidationError(
+                f"{path}.query_anchor_ids references unknown anchors: "
+                f"{unknown_anchor_ids}"
+            )
+        identity = (description, tuple(selected_anchor_ids))
         if identity in seen:
             raise ContractValidationError(
                 f"{path} repeats a requirement with the same description and quote"
@@ -231,10 +251,6 @@ def validate_curator_response(
         if hardness not in RUBRIC_HARDNESS:
             raise ContractValidationError(
                 f"{path}.hardness must be one of {sorted(RUBRIC_HARDNESS)}"
-            )
-        if quote not in query:
-            raise ContractValidationError(
-                f"{path}.query_quote must occur verbatim in the Query"
             )
         _nonempty_text(
             item.get("selection_reason"), f"{path}.selection_reason"

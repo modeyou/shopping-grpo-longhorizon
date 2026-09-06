@@ -13,8 +13,9 @@ from shopping_grpo.evaluation.contracts import (
     validate_rubric_bundle,
 )
 from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
+from shopping_grpo.evaluation.rubric import build_query_evidence_anchors
 
-RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v2-query-only-r1"
+RUBRIC_CURATOR_PROMPT_VERSION = "rubric-curator-v2-query-only-r2"
 TRAJECTORY_JUDGE_PROMPT_VERSION = "trajectory-judge-v2-draft-r1"
 _JUDGE_VISIBLE_ERROR_TAXONOMY = ERROR_TAXONOMY - {
     "reward_rubric_disagreement",
@@ -30,7 +31,7 @@ RUBRIC_CURATOR_SYSTEM_PROMPT = """\
 品牌、材质、规格、功能、价格、数量或商品属性。
 
 每条 requirement 必须：
-- 用 query_quote 给出 Query 中连续、逐字存在且非空的原文；
+- 用 query_anchor_ids 选择输入中的一个或多个 anchor_id；不得手写、改写或猜测 Query 原文；
 - description 只重述该项要求，不扩写；
 - acceptance_criteria 说明 Judge 应从 Actor 可见的搜索结果、详情、规格、价格或最终操作中看到什么
   才能判为 satisfied；证据不可见时 Judge 应判 unknown；
@@ -48,7 +49,7 @@ RUBRIC_CURATOR_SYSTEM_PROMPT = """\
       "description": "非空、简短、用户可读的要求重述",
       "acceptance_criteria": "可由可见轨迹核验的满足条件",
       "hardness": "hard | soft | needs_review",
-      "query_quote": "Query 中逐字存在的连续原文",
+      "query_anchor_ids": ["q0001"],
       "selection_reason": "该原文如何直接支持此要求"
     }
   ]
@@ -99,6 +100,7 @@ def build_rubric_curator_messages(
     payload = {
         "task_id": int(task_id),
         "query": str(query),
+        "query_evidence_anchors": build_query_evidence_anchors(query),
     }
     return [
         {"role": "system", "content": RUBRIC_CURATOR_SYSTEM_PROMPT},
